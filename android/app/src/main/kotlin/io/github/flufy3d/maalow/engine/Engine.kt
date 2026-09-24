@@ -7,7 +7,10 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import io.github.flufy3d.maalow.IPrivileged
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -25,8 +28,9 @@ import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 /**
- * Owns the capture/input pipeline and MaaFramework instances. Device operations run one at a time on the
- * engine thread; frame snapshots do not touch that thread.
+ * Owns the capture/input pipeline and MaaFramework instances. Maa calls run one at a time on the engine thread;
+ * frame snapshots do not touch that thread. Multi-step device work (a task, a teaching step, a guard check)
+ * holds the device lock so steps from different sources do not interleave.
  */
 class Engine(private val context: Context) {
     private val thread = Executors.newSingleThreadExecutor { Thread(it, "maalow-engine") }.asCoroutineDispatcher()
@@ -48,11 +52,38 @@ class Engine(private val context: Context) {
     private var priv: IPrivileged? = null
     private var mirrorId = -1
     private var controller = 0L
-    private var loaded: Loaded? = null
+    @Volatile private var loaded: Loaded? = null
 
     private class Loaded(val name: String, val stamp: Long, val resource: Long, val tasker: Long)
 
     suspend fun <T> onEngine(block: () -> T): T = withContext(thread) { block() }
+
+    private val device = Mutex()
+
+    /** Who holds the device lock, e.g. "task:WhereWindsMeet/DailySignIn"; null when idle. */
+    @Volatile var busy: String? = null
+        private set
+
+    suspend fun <T> exclusive(owner: String, block: suspend () -> T): T = device.withLock {
+        busy = owner
+        try {
+            block()
+        } finally {
+            busy = null
+        }
+    }
+
+    /** Like [exclusive], but returns null at once if the device is busy. */
+    suspend fun <T> tryExclusive(owner: String, block: suspend () -> T): T? {
+        if (!device.tryLock()) return null
+        busy = owner
+        try {
+            return block()
+        } finally {
+            busy = null
+            device.unlock()
+        }
+    }
 
     suspend fun start() {
         if (state == State.RUNNING || state == State.STARTING) return
@@ -125,7 +156,25 @@ class Engine(private val context: Context) {
         priv = null
     }
 
+    suspend fun restart() {
+        stop()
+        start()
+    }
+
     fun privileged(): IPrivileged = priv ?: error("engine not running")
+
+    /** Shell command in the privileged process; returns (exit code, output). */
+    suspend fun shell(cmd: String): Pair<Int, String> = withContext(Dispatchers.IO) {
+        val out = privileged().exec(cmd)
+        val nl = out.indexOf('\n').let { if (it < 0) out.length else it }
+        (out.substring(0, nl).removePrefix("exit=").toIntOrNull() ?: -1) to out.substring(minOf(nl + 1, out.length))
+    }
+
+    /** Package of the resumed (focused) activity, or null. */
+    suspend fun foreground(): String? {
+        val (_, out) = shell("dumpsys activity activities | grep -m1 topResumedActivity")
+        return Regex("""u\d+ ([\w.]+)/""").find(out)?.groupValues?.get(1)
+    }
 
     private fun requireRunning() = check(state == State.RUNNING && controller != 0L) { "engine not running" }
 
@@ -182,9 +231,11 @@ class Engine(private val context: Context) {
 
     // ---- pipeline (engine thread)
 
+    /** Changes whenever a pipeline or template file is added, removed, resized or touched. */
     private fun stampOf(ws: File): Long =
         listOf("pipeline", "templates").flatMap { File(ws, it).walkTopDown().filter { f -> f.isFile }.toList() }
-            .maxOfOrNull { it.lastModified() } ?: 0
+            .sortedBy { it.path }
+            .fold(17L) { h, f -> ((h * 31 + f.path.hashCode()) * 31 + f.length()) * 31 + f.lastModified() }
 
     /** Resource + tasker for a workspace, reloaded when its pipeline or templates change. */
     private fun load(name: String): Loaded {
@@ -229,6 +280,11 @@ class Engine(private val context: Context) {
         requireRunning()
         val l = load(workspace)
         summarize(Maa.taskerRun(l.tasker, node, override(node, once, stop)))
+    }
+
+    /** Ask a running task to stop; it ends at the next node boundary. */
+    fun stopTask() {
+        loaded?.let { Maa.taskerStop(it.tasker) }
     }
 
     /** Would this node fire on the given image? Runs offline against an image controller; touches no device. */

@@ -7,8 +7,10 @@ import android.os.IBinder
 import io.github.flufy3d.maalow.BuildConfig
 import io.github.flufy3d.maalow.IPrivileged
 import io.github.flufy3d.maalow.priv.PrivilegedService
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import rikka.shizuku.Shizuku
 import kotlin.coroutines.resume
 
@@ -23,6 +25,11 @@ object ShizukuLink {
         Shizuku.isPreV11() -> State.NOT_RUNNING
         Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED -> State.NO_PERMISSION
         else -> State.READY
+    }
+
+    /** Shizuku hands its binder over asynchronously after the process starts; wait a moment for it. */
+    suspend fun settle(timeoutMs: Long = 5000) {
+        withTimeoutOrNull(timeoutMs) { while (!Shizuku.pingBinder()) delay(100) }
     }
 
     fun requestPermission() {
@@ -61,7 +68,7 @@ object ShizukuLink {
     }
 
     fun unbind() {
-        connection?.let { Shizuku.unbindUserService(args, it, true) }
+        connection?.let { runCatching { Shizuku.unbindUserService(args, it, true) } } // throws once Shizuku is gone
         connection = null
         service = null
     }
