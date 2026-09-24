@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 
 from maalow import __version__
+from maalow import sync
 from maalow.client import HOME, Client, grid_png
 from maalow.skills import registry
 from maalow.workspace import Workspace
@@ -87,6 +88,42 @@ def _add_ws_parser(sub) -> None:
     p.add_argument("--extract", type=Path, help="also unpack into this directory (e.g. workspaces/NAME)")
 
 
+def _add_sync_parser(sub) -> None:
+    p = sub.add_parser("sync", help="sync a local workspace (--root/NAME) with the app, moving only changed files")
+    _add_server_args(p)
+    p.add_argument("name")
+    way = p.add_mutually_exclusive_group()
+    way.add_argument("--push", dest="direction", action="store_const", const="push", help="only send local changes")
+    way.add_argument("--pull", dest="direction", action="store_const", const="pull", help="only fetch app changes")
+    way.add_argument("--watch", action="store_true",
+                     help="keep pushing workspace.json, pipeline/, templates/ and skills/ whenever they change")
+    p.set_defaults(direction="both")
+    p.add_argument("--prefer", choices=("local", "remote"), help="settle conflicts (both sides changed a file) this way")
+    p.add_argument("--dry-run", action="store_true", help="only print the plan")
+    p.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+                   help="leave out matching paths (repeatable; ** spans directories), e.g. 'memory/**'")
+    p.add_argument("--screenshots", action="store_true", help=f"include {sync.SCREENSHOTS} (left out by default)")
+
+
+def _sync(args, client: Client) -> int:
+    exclude = args.exclude + ([] if args.screenshots else [sync.SCREENSHOTS])
+    if args.watch:
+        def emit(out):
+            print(json.dumps(out, ensure_ascii=False), flush=True)
+
+        try:
+            sync.watch(client, args.name, args.root, emit, args.prefer, exclude)
+        except KeyboardInterrupt:
+            pass
+        return 0
+    try:
+        out = sync.sync(client, args.name, args.root, args.direction, args.prefer, exclude, dry_run=args.dry_run)
+    except Exception as e:  # network or app errors, as JSON like everything else
+        out = {"workspace": args.name, "error": f"{type(e).__name__}: {e}"}
+    print(json.dumps(out, ensure_ascii=False))
+    return 1 if "error" in out else 0
+
+
 def _with_views(client: Client, root: Path, out):
     """Fetch screenshots the app mentions and add local paths (view: grid image) for the AI to look at."""
     if isinstance(out, list):
@@ -160,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _add_do_parser(sub)
     _add_ws_parser(sub)
+    _add_sync_parser(sub)
 
     args = parser.parse_args(argv)
 
@@ -174,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "skills":
         for name in registry.names():
             print(name)
+    elif args.command == "sync":
+        return _sync(args, Client(args.server, args.token))
     elif args.command in ("do", "ws"):
         client = Client(args.server, args.token)
         out = (_do if args.command == "do" else _ws)(args, client)

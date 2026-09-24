@@ -1,11 +1,14 @@
 package io.github.flufy3d.maalow.store
 
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.io.File
 import java.io.InputStream
@@ -96,6 +99,7 @@ class Workspaces(val root: File) {
         check(exists(ws) || f == File(dir(ws), CONFIG)) { "no workspace: $ws (write workspace.json first)" }
         f.writeAtomic(input)
         mtime?.let { f.setLastModified(it) }
+        hashes.remove(f.path)
         return entry(ws, f)
     }
 
@@ -107,9 +111,11 @@ class Workspaces(val root: File) {
 
     // ---- zip
 
-    fun export(ws: String, out: OutputStream) {
+    /** Zip the workspace, or only the given paths (missing ones are skipped). */
+    fun export(ws: String, out: OutputStream, paths: List<String>? = null) {
+        val list = paths?.map { file(ws, it) }?.filter { it.isFile } ?: files(ws)
         ZipOutputStream(out).use { zip ->
-            for (f in files(ws)) {
+            for (f in list) {
                 zip.putNextEntry(ZipEntry(f.relativeTo(dir(ws)).invariantSeparatorsPath).apply { time = f.lastModified() })
                 f.inputStream().use { it.copyTo(zip) }
                 zip.closeEntry()
@@ -165,7 +171,42 @@ class Workspaces(val root: File) {
         }
     }
 
+    /**
+     * Apply a batch from `maalow sync`: a zip whose entries are files to write, plus an optional [BATCH] entry
+     * {"mtime": {path: ms}, "delete": [path]}. Writes go in zip order (workspace.json first creates a workspace),
+     * then mtimes are set and deletes run.
+     */
+    fun batch(ws: String, input: InputStream): JsonObject = synchronized(this) {
+        var manifest: JsonObject? = null
+        val written = mutableListOf<String>()
+        ZipInputStream(input).use { z ->
+            for (e in generateSequence { z.nextEntry }) {
+                val name = e.name.replace('\\', '/')
+                when {
+                    e.isDirectory -> {}
+                    name == BATCH -> manifest = Json.parseToJsonElement(z.readBytes().decodeToString()).jsonObject
+                    else -> {
+                        val f = file(ws, name)
+                        check(exists(ws) || f == File(dir(ws), CONFIG)) { "no workspace: $ws (write workspace.json first)" }
+                        f.writeAtomic(z)
+                        hashes.remove(f.path)
+                        written.add(name)
+                    }
+                }
+            }
+        }
+        val mtimes = manifest?.get("mtime")?.jsonObject.orEmpty()
+        for (path in written) mtimes[path]?.jsonPrimitive?.longOrNull?.let { file(ws, path).setLastModified(it) }
+        val deleted = manifest?.optArray("delete")?.map { it.jsonPrimitive.content }?.filter { delete(ws, it) }.orEmpty()
+        buildJsonObject {
+            put("workspace", ws)
+            put("files", buildJsonArray { written.forEach { add(entry(ws, file(ws, it))) } })
+            put("deleted", JsonArray(deleted.map { JsonPrimitive(it) }))
+        }
+    }
+
     companion object {
+        const val BATCH = ".batch.json"
         const val CONFIG = "workspace.json"
         val NAME = Regex("^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
     }
