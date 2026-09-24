@@ -4,6 +4,9 @@ import android.app.Application
 import io.github.flufy3d.maalow.auto.Guards
 import io.github.flufy3d.maalow.auto.Scheduler
 import io.github.flufy3d.maalow.engine.Engine
+import io.github.flufy3d.maalow.record.Frames
+import io.github.flufy3d.maalow.record.Recorder
+import io.github.flufy3d.maalow.record.Recordings
 import io.github.flufy3d.maalow.server.ApiServer
 import io.github.flufy3d.maalow.skill.Skills
 import io.github.flufy3d.maalow.store.Events
@@ -13,6 +16,7 @@ import io.github.flufy3d.maalow.teach.Teaching
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
 import java.security.SecureRandom
 
@@ -32,6 +36,12 @@ class App : Application() {
     lateinit var scheduler: Scheduler
         private set
     lateinit var skills: Skills
+        private set
+    lateinit var recorder: Recorder
+        private set
+    lateinit var recordings: Recordings
+        private set
+    lateinit var frames: Frames
         private set
 
     /** Background work that outlives a request (e.g. a triggered run with wait=false). */
@@ -69,9 +79,14 @@ class App : Application() {
         skills = Skills(this)
         engine.custom = skills
         teaching = Teaching(this)
+        frames = Frames()
+        recordings = Recordings(this)
+        recorder = Recorder(this)
+        engine.onPrivilegedGone = { recorder.stopAsync("engine") }
         guards = Guards(this)
         scheduler = Scheduler(this)
         server = ApiServer(this)
+        scope.launch(Dispatchers.IO) { recordings.recoverAll() } // cut short by a kill or crash
     }
 
     companion object {

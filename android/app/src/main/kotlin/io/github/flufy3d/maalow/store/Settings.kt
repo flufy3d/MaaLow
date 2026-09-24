@@ -11,6 +11,8 @@ data class Settings(
     val workspace: String = "",
     @SerialName("guards_enabled") val guardsEnabled: Boolean = true,
     @SerialName("guard_interval_ms") val guardIntervalMs: Long = 2000,
+    /** H.264 bit rate of screen recordings, bits per second. */
+    @SerialName("record_bitrate") val recordBitrate: Int = 3_000_000,
 ) {
     companion object {
         private val lock = Any()

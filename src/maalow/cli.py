@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 
 from maalow import __version__
-from maalow import sync
+from maalow import rec, sync
 from maalow.client import HOME, Client, grid_png
 from maalow.skills import registry
 from maalow.workspace import Workspace
@@ -96,6 +96,50 @@ def _add_ws_parser(sub) -> None:
     p.add_argument("--extract", type=Path, help="also unpack into this directory (e.g. workspaces/NAME)")
 
 
+def _add_rec_parser(sub) -> None:
+    p_rec = sub.add_parser("rec", help="screen recordings on the companion app (replay teaching)")
+    _add_server_args(p_rec)
+    p_rec.add_argument("--workspace", help="workspace on the app (default: the app's)")
+    ops = p_rec.add_subparsers(dest="op", required=True)
+    p = ops.add_parser("start", help="start recording the tablet screen (at most 3 minutes)")
+    p.add_argument("--name", help="recording name")
+    p.add_argument("--note", help="a note on the recording")
+    p.add_argument("--bitrate", type=int, help="bits per second (default: the app's, 3000000)")
+    ops.add_parser("stop", help="stop recording and wait until it is saved")
+    ops.add_parser("list", help="list recordings")
+    ops.add_parser("status", help="recording state")
+    p = ops.add_parser("pull", help="download a recording (meta, labels, video) into the local workspace")
+    p.add_argument("id", help="recording id, a unique prefix of one, or 'latest'")
+    p.add_argument("--no-video", action="store_true", help="only meta.json and labels.json")
+    p = ops.add_parser("frame", help="exact frame N as an image, plus a copy with a coordinate grid")
+    p.add_argument("id", help="recording id, a unique prefix of one, or 'latest'")
+    p.add_argument("--n", type=int, required=True, help="frame number (frame N is at N / 30 s)")
+    p.add_argument("--fmt", choices=("png", "jpg"), default="png")
+    p = ops.add_parser("labels", help="what was marked on which frame, as JSON")
+    p.add_argument("id", help="recording id, a unique prefix of one, or 'latest'")
+
+
+def _rec(args, client: Client):
+    if args.op == "status":
+        return client.get("/record")
+    if args.op == "stop":
+        out = client.post("/record/stop", timeout=300)
+        return out if "error" in out else rec.summary(out)
+    ws = rec.workspace_of(client, args.workspace)
+    if args.op == "start":
+        body = {"workspace": ws} | {k: v for k, v in (("name", args.name), ("note", args.note), ("bitrate", args.bitrate)) if v}
+        return client.post("/record/start", body)
+    if args.op == "list":
+        out = client.get(f"/recordings?workspace={ws}")
+        return [rec.summary(r) for r in out] if isinstance(out, list) else out
+    rid = rec.resolve(client, ws, args.id)
+    if args.op == "pull":
+        return rec.pull(client, args.root, ws, rid, video=not args.no_video)
+    if args.op == "frame":
+        return rec.frame(client, ws, rid, args.n, args.fmt)
+    return rec.labels(client, ws, rid)
+
+
 def _add_sync_parser(sub) -> None:
     p = sub.add_parser("sync", help="sync a local workspace (--root/NAME) with the app, moving only changed files")
     _add_server_args(p)
@@ -111,10 +155,12 @@ def _add_sync_parser(sub) -> None:
     p.add_argument("--exclude", action="append", default=[], metavar="GLOB",
                    help="leave out matching paths (repeatable; ** spans directories), e.g. 'memory/**'")
     p.add_argument("--screenshots", action="store_true", help=f"include {sync.SCREENSHOTS} (left out by default)")
+    p.add_argument("--videos", action="store_true",
+                   help="include recording videos and thumbnails (left out by default; meta.json and labels.json always sync)")
 
 
 def _sync(args, client: Client) -> int:
-    exclude = args.exclude + ([] if args.screenshots else [sync.SCREENSHOTS])
+    exclude = args.exclude + ([] if args.screenshots else [sync.SCREENSHOTS]) + ([] if args.videos else list(sync.VIDEOS))
     if args.watch:
         def emit(out):
             print(json.dumps(out, ensure_ascii=False), flush=True)
@@ -214,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _add_do_parser(sub)
     _add_ws_parser(sub)
+    _add_rec_parser(sub)
     _add_sync_parser(sub)
 
     args = parser.parse_args(argv)
@@ -231,6 +278,14 @@ def main(argv: list[str] | None = None) -> int:
             print(name)
     elif args.command == "sync":
         return _sync(args, Client(args.server, args.token))
+    elif args.command == "rec":
+        client = Client(args.server, args.token)
+        try:
+            out = _rec(args, client)
+        except Exception as e:  # network or app errors, as JSON like everything else
+            out = {"error": f"{type(e).__name__}: {e}"}
+        print(json.dumps(out, ensure_ascii=False))
+        return 1 if isinstance(out, dict) and "error" in out else 0
     elif args.command in ("do", "ws"):
         client = Client(args.server, args.token)
         out = (_do if args.command == "do" else _ws)(args, client)

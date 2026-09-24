@@ -3,22 +3,41 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MaaLow Teaching</title>
+<title>MaaLow 指导</title>
 <style>
-  :root { --bg:#16181d; --panel:#1f2229; --line:#2e323b; --text:#e6e6e6; --dim:#8a8f99; --accent:#e0b34a; }
+  :root { --bg:#16181d; --panel:#1f2229; --line:#2e323b; --text:#e6e6e6; --dim:#8a8f99; --accent:#e0b34a; --red:#ff4d4f; --ok:#73d13d; }
   * { box-sizing: border-box; }
+  html, body { height:100%; }
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 system-ui, "Microsoft YaHei", sans-serif;
-         display:flex; height:100vh; }
+         display:flex; flex-direction:column; overflow:hidden; }
+  button { font:inherit; }
+  .btn { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 10px;
+         cursor:pointer; min-height:34px; touch-action:manipulation; user-select:none; -webkit-user-select:none; }
+  .btn:hover { border-color:#555b66; }
+  .btn.on { border-color:var(--accent); color:var(--accent); }
+  .btn:disabled { opacity:.4; cursor:default; }
+  .sep { width:1px; height:22px; background:var(--line); margin:0 4px; flex:none; }
+  input, textarea, select { background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:6px; font:inherit; }
+
+  /* mode bar */
+  #modebar { display:flex; align-items:center; gap:8px; padding:6px 10px; border-bottom:1px solid var(--line); background:var(--panel); flex:none; }
+  #modebar .tab { background:transparent; border:0; color:var(--dim); padding:6px 14px; border-radius:6px; cursor:pointer; font-size:15px; min-height:36px; }
+  #modebar .tab.on { color:var(--text); background:var(--bg); box-shadow:inset 0 -2px 0 var(--accent); }
+  #recbadge { display:none; color:var(--red); font-variant-numeric:tabular-nums; margin-left:8px; }
+  #recbadge.show { display:inline; }
+  #recbadge::before { content:"●"; margin-right:4px; animation:pulse 1.2s infinite; }
+  #modebar .grow { flex:1; }
+  #helpbtn { width:36px; }
+  .mode { flex:1; min-height:0; display:none; }
+  .mode.on { display:flex; }
+
+  /* live teaching */
   #left { flex:1; display:flex; flex-direction:column; min-width:0; padding:10px; gap:8px; }
   #tools { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-  #tools button { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px;
-                  padding:5px 10px; cursor:pointer; }
-  #tools button.on { border-color:var(--accent); color:var(--accent); }
-  #tools .sep { width:1px; height:22px; background:var(--line); margin:0 4px; }
   #tools #shot { border-color:var(--accent); }
   #info { margin-left:auto; color:var(--dim); font-variant-numeric:tabular-nums; }
   #stage { flex:1; display:flex; align-items:center; justify-content:center; min-height:0; position:relative; }
-  canvas { max-width:100%; max-height:100%; cursor:crosshair; border:1px solid var(--line); touch-action:none; }
+  #cv { max-width:100%; max-height:100%; cursor:crosshair; border:1px solid var(--line); touch-action:none; }
   #empty { position:absolute; color:var(--dim); pointer-events:none; }
   #right { width:380px; display:flex; flex-direction:column; border-left:1px solid var(--line); background:var(--panel); }
   #head { padding:10px 12px; border-bottom:1px solid var(--line); color:var(--dim); }
@@ -29,9 +48,8 @@
   .msg .meta { font-size:12px; color:var(--dim); margin-bottom:2px; }
   .msg img { max-width:100%; margin-top:6px; border-radius:4px; cursor:zoom-in; }
   #compose { border-top:1px solid var(--line); padding:10px 12px; display:flex; flex-direction:column; gap:6px; }
-  #text { width:100%; height:80px; resize:vertical; background:var(--bg); color:var(--text); border:1px solid var(--line);
-          border-radius:6px; padding:6px 8px; font:inherit; }
-  #send { background:var(--accent); color:#1a1a1a; border:0; border-radius:6px; padding:7px; font-weight:600; cursor:pointer; }
+  #text { width:100%; height:80px; resize:vertical; padding:6px 8px; }
+  #send { background:var(--accent); color:#1a1a1a; border:0; border-radius:6px; padding:7px; font-weight:600; cursor:pointer; min-height:38px; }
   #hint { font-size:12px; color:var(--dim); }
   #status { font-size:12px; color:var(--dim); margin-left:6px; }
   #status.away { color:#ff7875; }
@@ -41,50 +59,247 @@
   @keyframes pulse { 50% { opacity:.4; } }
   #thinking span { animation: pulse 1.2s infinite; }
   .msg.ai.auto { background:transparent; border-left-color:var(--line); color:var(--dim); font-size:12px; padding:2px 10px; }
-  @media (max-width: 900px) { body { flex-direction:column; } #right { width:auto; height:45vh; border-left:0; border-top:1px solid var(--line); } }
+
+  /* replay teaching */
+  #rp-main { flex:1; display:flex; flex-direction:column; min-width:0; padding:10px; gap:8px; }
+  #rp-tools { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  #rp-rec { border-color:var(--red); color:var(--red); font-weight:600; min-width:108px; }
+  #rp-rec.live { background:var(--red); color:#fff; }
+  #rp-rectime { font-variant-numeric:tabular-nums; color:var(--dim); min-width:0; }
+  #rp-rectime.live { color:var(--red); }
+  #rp-save { margin-left:auto; font-size:13px; color:var(--dim); white-space:nowrap; }
+  #rp-save.dirty { color:var(--accent); } #rp-save.bad { color:var(--red); } #rp-save.ok { color:var(--ok); }
+  #rp-stage { flex:1; min-height:0; position:relative; display:flex; align-items:center; justify-content:center; }
+  #rp-box { position:relative; line-height:0; }
+  #rp-cv { display:block; cursor:crosshair; border:1px solid var(--line); touch-action:none; background:#000; }
+  #rp-video { position:absolute; inset:0; width:100%; height:100%; display:none; background:#000; border:1px solid var(--line); }
+  #rp-box.playing #rp-video { display:block; }
+  #rp-badge { position:absolute; left:8px; top:8px; background:rgba(0,0,0,.65); color:#fff; padding:2px 8px; border-radius:4px;
+              font:600 13px/1.6 ui-monospace, Consolas, monospace; pointer-events:none; }
+  #rp-badge .ld { color:var(--accent); display:none; } #rp-badge.loading .ld { display:inline; }
+  #rp-placeholder { position:absolute; color:var(--dim); text-align:center; line-height:1.8; pointer-events:none; }
+  #rp-scrubwrap { position:relative; align-self:center; flex:none; }
+  #rp-scrub { display:block; width:100%; height:40px; cursor:pointer; touch-action:none; border-radius:6px; }
+  #rp-pop { position:absolute; bottom:48px; display:none; pointer-events:none; background:var(--panel); border:1px solid var(--line);
+            border-radius:6px; padding:4px; box-shadow:0 4px 16px rgba(0,0,0,.5); transform:translateX(-50%); z-index:5; }
+  #rp-pop div { background-repeat:no-repeat; border-radius:3px; background-color:#000; }
+  #rp-pop span { display:block; text-align:center; font:12px/1.6 ui-monospace, Consolas, monospace; color:var(--text); }
+  #rp-transport { display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:center; }
+  #rp-transport .btn { min-width:46px; min-height:40px; font-size:15px; }
+  #rp-play { min-width:64px !important; border-color:var(--accent); }
+  #rp-pos { display:flex; align-items:center; gap:6px; font-variant-numeric:tabular-nums; margin-left:6px; }
+  #rp-n { width:82px; padding:6px 8px; text-align:right; font-variant-numeric:tabular-nums; min-height:40px; }
+  #rp-time { color:var(--dim); min-width:150px; }
+  #rp-side { width:360px; display:flex; flex-direction:column; border-left:1px solid var(--line); background:var(--panel); min-height:0; }
+  .sec { border-bottom:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  .sec h3 { margin:0; padding:8px 12px; font-size:13px; font-weight:600; color:var(--dim); display:flex; align-items:center; gap:6px; }
+  .sec h3 .grow { flex:1; }
+  #rp-recs { overflow-y:auto; max-height:34vh; padding:0 8px 8px; display:flex; flex-direction:column; gap:6px; }
+  .rec { display:flex; gap:8px; padding:6px; border-radius:6px; border:1px solid transparent; cursor:pointer; align-items:flex-start; }
+  .rec:hover { background:#262a32; }
+  .rec.cur { border-color:var(--accent); background:#262a32; }
+  .rec .th { width:96px; height:64px; flex:none; border-radius:4px; background:#000 no-repeat; }
+  .rec .bd { flex:1; min-width:0; }
+  .rec .nm { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rec .sub { font-size:12px; color:var(--dim); }
+  .rec .nt { font-size:12px; color:#b8bcc4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rec .acts { display:flex; flex-direction:column; gap:4px; }
+  .rec .acts button { min-height:28px; padding:2px 8px; font-size:12px; }
+  .rec.live .sub { color:var(--red); }
+  .rec input, .rec textarea { width:100%; padding:3px 6px; margin-bottom:4px; }
+  .rec textarea { height:48px; resize:vertical; }
+  #rp-frame { flex:1; overflow-y:auto; padding:0 12px 10px; display:flex; flex-direction:column; gap:8px; min-height:120px; }
+  #rp-note { width:100%; min-height:56px; resize:vertical; padding:6px 8px; }
+  .mk { display:flex; gap:6px; align-items:center; padding:4px; border-radius:6px; border:1px solid transparent; }
+  .mk.sel { border-color:var(--accent); background:#262a32; }
+  .mk .chip { flex:none; min-width:58px; font-size:12px; padding:2px 6px; border-radius:4px; color:#000; font-weight:600; text-align:center; cursor:pointer; }
+  .mk input { flex:1; min-width:0; padding:6px 8px; min-height:34px; }
+  .mk button { min-height:34px; }
+  .none { color:var(--dim); font-size:12px; }
+  #rp-labeled { overflow-y:auto; max-height:26vh; padding:0 8px 8px; }
+  .lf { display:flex; gap:8px; padding:5px 6px; border-radius:6px; cursor:pointer; font-size:13px; align-items:baseline; }
+  .lf:hover { background:#262a32; } .lf.cur { background:#2b3342; }
+  .lf b { font-variant-numeric:tabular-nums; min-width:64px; } .lf .t { color:var(--dim); font-size:12px; min-width:64px; font-variant-numeric:tabular-nums; }
+  .lf .s { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#b8bcc4; }
+  #rp-ws { max-width:140px; padding:2px 4px; }
+
+  /* help */
+  #help { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; z-index:20; }
+  #help.on { display:flex; }
+  #help .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 20px; max-width:640px; width:92vw; max-height:88vh; overflow:auto; }
+  #help h2 { margin:0 0 8px; font-size:16px; }
+  #help h4 { margin:12px 0 4px; color:var(--accent); font-size:13px; }
+  #help table { border-collapse:collapse; width:100%; }
+  #help td { padding:3px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  #help td:first-child { white-space:nowrap; width:40%; }
+  kbd { background:var(--bg); border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:0 5px; font:12px ui-monospace, Consolas, monospace; }
+  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#333842; color:var(--text); padding:8px 16px;
+           border-radius:8px; display:none; z-index:30; box-shadow:0 4px 16px rgba(0,0,0,.5); max-width:90vw; }
+
+  @media (max-width: 1000px) {
+    #live, #replay { flex-direction:column; overflow-y:auto; }
+    #right { width:auto; height:45vh; border-left:0; border-top:1px solid var(--line); flex:none; }
+    #rp-main { flex:none; height:auto; }
+    #rp-stage { flex:none; height:min(62vw, 60vh); }
+    #rp-side { width:auto; border-left:0; border-top:1px solid var(--line); flex:none; }
+    #rp-frame { flex:none; }
+    #rp-side .sec:nth-child(1) { order:2; } /* annotations first, right under the frame; recordings last */
+  }
 </style>
 </head>
 <body>
-<div id="left">
-  <div id="tools">
-    <button id="shot" title="S">📷 截图</button>
-    <span class="sep"></span>
-    <button data-tool="rect" title="1">▭ 框选</button>
-    <button data-tool="circle" title="2">◯ 圈</button>
-    <button data-tool="arrow" title="3">➔ 箭头</button>
-    <button data-tool="click" title="4">✚ 点击点</button>
-    <button data-tool="region" title="5">⬚ 区域</button>
-    <span class="sep"></span>
-    <button id="undo" title="Ctrl+Z">撤销</button>
-    <button id="clear">清空</button>
-    <span id="info"></span>
-  </div>
-  <div id="stage"><canvas id="cv" width="1080" height="720"></canvas><div id="empty">点“截图”获取当前画面</div></div>
+<div id="modebar">
+  <button class="tab" data-mode="live">实时指导</button>
+  <button class="tab" data-mode="replay">回放指导</button>
+  <span id="recbadge"></span>
+  <span class="grow"></span>
+  <button class="btn" id="helpbtn" title="快捷键（?）">?</button>
 </div>
-<div id="right">
-  <div id="head">MaaLow 教学 · <span id="task"></span><span id="status"></span></div>
-  <div id="log"></div>
-  <div id="compose">
-    <div id="thinking"><span>MaaLow 思考中…</span> <b id="elapsed"></b><a id="force">仍要发送</a></div>
-    <textarea id="text" placeholder="告诉 MaaLow 做什么，例如：点 1 号框里的按钮"></textarea>
-    <button id="send">发送（Ctrl+Enter）</button>
-    <div id="hint">先截图再标注；标注会编号，文字里可以直接说“1 号”“2 号”。快捷键 S 截图，1–5 切换工具。</div>
+
+<div id="live" class="mode">
+  <div id="left">
+    <div id="tools">
+      <button class="btn" id="shot" title="S">📷 截图</button>
+      <span class="sep"></span>
+      <button class="btn" data-tool="rect" title="1">▭ 框选</button>
+      <button class="btn" data-tool="circle" title="2">◯ 圈</button>
+      <button class="btn" data-tool="arrow" title="3">➔ 箭头</button>
+      <button class="btn" data-tool="click" title="4">✚ 点击点</button>
+      <button class="btn" data-tool="region" title="5">⬚ 区域</button>
+      <span class="sep"></span>
+      <button class="btn" id="undo" title="Ctrl+Z">撤销</button>
+      <button class="btn" id="clear">清空</button>
+      <span id="info"></span>
+    </div>
+    <div id="stage"><canvas id="cv" width="1080" height="720"></canvas><div id="empty">点“截图”获取当前画面</div></div>
+  </div>
+  <div id="right">
+    <div id="head">MaaLow 教学 · <span id="task"></span><span id="status"></span></div>
+    <div id="log"></div>
+    <div id="compose">
+      <div id="thinking"><span>MaaLow 思考中…</span> <b id="elapsed"></b><a id="force">仍要发送</a></div>
+      <textarea id="text" placeholder="告诉 MaaLow 做什么，例如：点 1 号框里的按钮"></textarea>
+      <button id="send">发送（Ctrl+Enter）</button>
+      <div id="hint">先截图再标注；标注会编号，文字里可以直接说“1 号”“2 号”。快捷键 S 截图，1–5 切换工具。</div>
+    </div>
   </div>
 </div>
+
+<div id="replay" class="mode">
+  <div id="rp-main">
+    <div id="rp-tools">
+      <button class="btn" id="rp-rec">● 开始录制</button>
+      <span id="rp-rectime"></span>
+      <span class="sep"></span>
+      <button class="btn" data-rtool="rect" title="1">▭ 框选</button>
+      <button class="btn" data-rtool="circle" title="2">◯ 圈</button>
+      <button class="btn" data-rtool="arrow" title="3">➔ 箭头</button>
+      <button class="btn" data-rtool="click" title="4">✚ 点击点</button>
+      <button class="btn" data-rtool="region" title="5">⬚ 区域</button>
+      <span class="sep"></span>
+      <button class="btn" id="rp-undo" title="Ctrl+Z">↶ 撤销</button>
+      <button class="btn" id="rp-redo" title="Ctrl+Shift+Z">↷ 重做</button>
+      <span id="rp-save"></span>
+    </div>
+    <div id="rp-stage">
+      <div id="rp-box">
+        <canvas id="rp-cv" width="1080" height="720"></canvas>
+        <video id="rp-video" muted playsinline preload="auto"></video>
+        <div id="rp-badge"><span id="rp-badgetext">—</span> <span class="ld">· 加载中</span></div>
+      </div>
+      <div id="rp-placeholder"></div>
+    </div>
+    <div id="rp-scrubwrap">
+      <canvas id="rp-scrub"></canvas>
+      <div id="rp-pop"><div></div><span></span></div>
+    </div>
+    <div id="rp-transport">
+      <button class="btn" id="rp-prevlab" title="上一个已标注帧（[）">⏮</button>
+      <button class="btn" id="rp-back10" title="后退 10 帧（Shift+←）">«10</button>
+      <button class="btn" id="rp-prev" title="上一帧（←，按住连走）">◀</button>
+      <button class="btn" id="rp-play" title="播放 / 暂停（空格）">▶</button>
+      <button class="btn" id="rp-next" title="下一帧（→，按住连走）">▶|</button>
+      <button class="btn" id="rp-fwd10" title="前进 10 帧（Shift+→）">10»</button>
+      <button class="btn" id="rp-nextlab" title="下一个已标注帧（]）">⏭</button>
+      <span id="rp-pos">帧 <input id="rp-n" inputmode="numeric" title="输入帧号回车跳转（G）"> / <span id="rp-total">0</span></span>
+      <span id="rp-time"></span>
+    </div>
+  </div>
+  <div id="rp-side">
+    <div class="sec">
+      <h3>录像 <select id="rp-ws" title="工作区"></select><span class="grow"></span><button class="btn" id="rp-refresh" title="刷新列表">↻</button></h3>
+      <div id="rp-recs"></div>
+    </div>
+    <div class="sec" style="flex:1">
+      <h3 id="rp-framehead">当前帧</h3>
+      <div id="rp-frame">
+        <textarea id="rp-note" placeholder="这一帧的整体说明：看到了什么、为什么这样操作（N）"></textarea>
+        <div id="rp-marks"></div>
+      </div>
+    </div>
+    <div class="sec" style="border-bottom:0">
+      <h3>已标注帧 <span id="rp-labcount" class="none"></span></h3>
+      <div id="rp-labeled"></div>
+    </div>
+  </div>
+</div>
+
+<div id="help"><div class="card">
+  <h2>快捷键</h2>
+  <h4>回放指导 · 定位</h4>
+  <table>
+    <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>上一帧 / 下一帧，按住连走</td></tr>
+    <tr><td><kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd></td><td>后退 / 前进 10 帧</td></tr>
+    <tr><td><kbd>Home</kbd> <kbd>End</kbd></td><td>第一帧 / 最后一帧</td></tr>
+    <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>上一个 / 下一个已标注帧</td></tr>
+    <tr><td><kbd>空格</kbd></td><td>播放 / 暂停（暂停后显示 App 解码的精确帧）</td></tr>
+    <tr><td><kbd>G</kbd></td><td>输入帧号跳转</td></tr>
+    <tr><td>拖动进度条</td><td>粗定位，显示缩略图；松手加载精确帧</td></tr>
+  </table>
+  <h4>标注（两种模式通用）</h4>
+  <table>
+    <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>框选 / 圈 / 箭头 / 点击点 / 区域</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>撤销</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>重做（回放指导）</td></tr>
+    <tr><td><kbd>Delete</kbd></td><td>删除选中的标注（回放指导）</td></tr>
+    <tr><td><kbd>N</kbd></td><td>编辑这一帧的整体说明（回放指导）</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>取消正在画的形状、取消选中、离开输入框</td></tr>
+    <tr><td><kbd>S</kbd></td><td>截图（实时指导）</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>发送（实时指导）</td></tr>
+    <tr><td><kbd>?</kbd></td><td>打开 / 关闭本帮助</td></tr>
+  </table>
+  <p class="none">回放指导的标注按帧号保存，修改后自动保存；框统一用 1080×720 坐标。</p>
+</div></div>
+<div id="toast"></div>
+
+<script src="web/common.js"></script>
 <script>
-const TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("maalow-token") || "";
-if (TOKEN) localStorage.setItem("maalow-token", TOKEN);
-const API = "/api/v1";
-const api = (path, opts = {}) =>
-  fetch(API + path, { ...opts, headers: { ...(opts.headers || {}), Authorization: "Bearer " + TOKEN } });
-const json = async (path, opts) => { const r = await api(path, opts); if (!r.ok) throw new Error(await r.text()); return r.json(); };
-const post = (path, body) => json(path, { method: "POST", body: JSON.stringify(body || {}) });
+"use strict";
+// ---- mode switch (kept in the URL hash: #live, #replay/<recording>/<frame>)
+let mode = "";
+function setMode(m) {
+  if (m === mode) return;
+  mode = m;
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
+  document.querySelectorAll(".mode").forEach(d => d.classList.toggle("on", d.id === m));
+  if (m === "replay") window.replay?.enter(); else { window.replay?.leave(); history.replaceState(null, "", "#live"); }
+}
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+
+function toast(msg, ms = 3000) {
+  const t = $("toast");
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", ms);
+}
+const help = () => $("help").classList.toggle("on");
+$("helpbtn").onclick = help;
+$("help").onclick = e => { if (e.target.id === "help") help(); };
+
+// ---- live teaching
 let workspace = "";
 const fileUrl = p => `${API}/files/${encodeURIComponent(workspace)}/${p}?token=${encodeURIComponent(TOKEN)}`;
 
-const COLORS = { rect:"#ff4d4f", circle:"#40a9ff", arrow:"#52c41a", click:"#faad14", region:"#b37feb" };
-const NAMES = { rect:"框选", circle:"圈", arrow:"箭头", click:"点击点", region:"区域" };
-const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const cv = $("cv"), ctx = cv.getContext("2d");
 let tool = "rect", marks = [], draft = null, img = new Image(), shot = "", seen = 0;
 
 function setTool(t) {
@@ -94,53 +309,12 @@ function setTool(t) {
 document.querySelectorAll("[data-tool]").forEach(b => b.onclick = () => setTool(b.dataset.tool));
 setTool("rect");
 
-function pos(e) {
-  const r = cv.getBoundingClientRect();
-  return [Math.round((e.clientX - r.left) * cv.width / r.width), Math.round((e.clientY - r.top) * cv.height / r.height)];
-}
-
-// coords follow maalow.teaching.Annotation: rect/region/circle [x,y,w,h], arrow [x1,y1,x2,y2], click [x,y]
-function toMark(kind, a, b) {
-  if (kind === "click") return { kind, coords: b };
-  if (kind === "arrow") return { kind, coords: [a[0], a[1], b[0], b[1]] };
-  return { kind, coords: [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1])] };
-}
-
-function drawMark(m, n) {
-  const c = COLORS[m.kind], [x, y, w, h] = m.coords;
-  ctx.strokeStyle = c; ctx.fillStyle = c; ctx.lineWidth = 3;
-  ctx.setLineDash(m.kind === "region" ? [8, 6] : []);
-  let lx = x, ly = y;
-  if (m.kind === "rect" || m.kind === "region") ctx.strokeRect(x, y, w, h);
-  else if (m.kind === "circle") {
-    ctx.beginPath(); ctx.ellipse(x + w / 2, y + h / 2, Math.max(w / 2, 1), Math.max(h / 2, 1), 0, 0, 2 * Math.PI); ctx.stroke();
-  } else if (m.kind === "arrow") {
-    const [x2, y2] = [w, h], ang = Math.atan2(y2 - y, x2 - x);
-    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x2, y2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x2, y2);
-    ctx.lineTo(x2 - 16 * Math.cos(ang - 0.4), y2 - 16 * Math.sin(ang - 0.4));
-    ctx.lineTo(x2 - 16 * Math.cos(ang + 0.4), y2 - 16 * Math.sin(ang + 0.4));
-    ctx.closePath(); ctx.fill();
-  } else if (m.kind === "click") {
-    ctx.beginPath(); ctx.arc(x, y, 10, 0, 2 * Math.PI); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(x - 16, y); ctx.lineTo(x + 16, y); ctx.moveTo(x, y - 16); ctx.lineTo(x, y + 16); ctx.stroke();
-    lx = x + 12; ly = y - 12;
-  }
-  ctx.setLineDash([]);
-  if (n) {
-    ctx.font = "bold 16px sans-serif";
-    const t = String(n), tw = ctx.measureText(t).width + 8;
-    ctx.fillRect(lx, ly - 20, tw, 20);
-    ctx.fillStyle = "#000"; ctx.fillText(t, lx + 4, ly - 4);
-  }
-}
-
 function render() {
   ctx.clearRect(0, 0, cv.width, cv.height);
   if (img.complete && img.naturalWidth) ctx.drawImage(img, 0, 0);
-  marks.forEach((m, i) => drawMark(m, i + 1));
-  if (draft) drawMark(draft, 0);
-  document.getElementById("empty").style.display = shot ? "none" : "block";
+  marks.forEach((m, i) => drawMark(ctx, m, i + 1));
+  if (draft) drawMark(ctx, draft, 0);
+  $("empty").style.display = shot ? "none" : "block";
 }
 
 // pointer events: mouse, pen and touch (the page may be opened on the tablet itself)
@@ -148,25 +322,24 @@ let start = null;
 cv.onpointerdown = e => {
   if (!shot) return;
   cv.setPointerCapture(e.pointerId);
-  start = pos(e);
+  start = canvasPos(cv, e);
   if (tool === "click") { marks.push(toMark("click", start, start)); start = null; render(); }
 };
 cv.onpointermove = e => {
-  const p = pos(e);
-  document.getElementById("info").textContent = `(${p[0]}, ${p[1]})  ${cv.width}×${cv.height}`;
+  const p = canvasPos(cv, e);
+  $("info").textContent = `(${p[0]}, ${p[1]})  ${cv.width}×${cv.height}`;
   if (start) { draft = toMark(tool, start, p); render(); }
 };
 cv.onpointerup = e => {
   if (!start) return;
-  const m = toMark(tool, start, pos(e));
+  const m = toMark(tool, start, canvasPos(cv, e));
   start = null; draft = null;
-  const tiny = m.kind === "arrow" ? Math.hypot(m.coords[2] - m.coords[0], m.coords[3] - m.coords[1]) < 5 : m.coords[2] < 4 || m.coords[3] < 4;
-  if (!tiny) marks.push(m);
+  if (!tinyMark(m)) marks.push(m);
   render();
 };
 cv.onpointercancel = () => { start = null; draft = null; render(); };
-document.getElementById("undo").onclick = () => { marks.pop(); render(); };
-document.getElementById("clear").onclick = () => { marks = []; render(); };
+$("undo").onclick = () => { marks.pop(); render(); };
+$("clear").onclick = () => { marks = []; render(); };
 
 // A screenshot is a saved workspace file; marks are drawn on it and sent with its path.
 function show(path) {
@@ -179,7 +352,7 @@ let shooting = false;
 async function takeShot() {
   if (shooting) return;
   shooting = true;
-  const b = document.getElementById("shot");
+  const b = $("shot");
   b.textContent = "📷 截图中…";
   try {
     const s = await post("/shot");
@@ -193,7 +366,7 @@ async function takeShot() {
     b.textContent = "📷 截图";
   }
 }
-document.getElementById("shot").onclick = takeShot;
+$("shot").onclick = takeShot;
 
 // the AI acted: show its new screenshot, unless the teacher is in the middle of drawing
 function followShot(path) {
@@ -210,7 +383,7 @@ function addMsg(m) {
     i.src = fileUrl(m.note); i.onclick = () => window.open(i.src);
     d.appendChild(i);
   }
-  const log = document.getElementById("log");
+  const log = $("log");
   log.appendChild(d); log.scrollTop = log.scrollHeight;
 }
 
@@ -220,12 +393,12 @@ async function poll() {
     const s = await json("/state");
     if (s.task !== task || s.workspace !== workspace) {  // new session: reload its chat
       task = s.task; workspace = s.workspace; seen = 0;
-      document.getElementById("log").innerHTML = "";
+      $("log").innerHTML = "";
     }
-    document.getElementById("task").textContent = `${s.workspace} · 任务 ${s.task} · 第 ${s.steps} 步`;
+    $("task").textContent = `${s.workspace} · 任务 ${s.task} · 第 ${s.steps} 步`;
     followShot(s.screenshot);
     setWaiting(s.waiting);
-    const st = document.getElementById("status");
+    const st = $("status");
     st.textContent = { listening: " · MaaLow 在线", busy: " · MaaLow 处理中", away: " · MaaLow 未在监听，消息会排队" }[s.ai] || "";
     st.className = s.ai === "away" ? "away" : "";
     const ms = await json("/messages?since=" + seen);
@@ -240,26 +413,26 @@ function setWaiting(w) {
   if (w && !waitingSince) waitingSince = Date.now();
   if (!w) { waitingSince = 0; forced = false; }
   const locked = w && !forced;
-  document.getElementById("compose").classList.toggle("locked", locked);
-  document.getElementById("thinking").style.display = locked ? "block" : "none";
+  $("compose").classList.toggle("locked", locked);
+  $("thinking").style.display = locked ? "block" : "none";
   const secs = waitingSince ? Math.round((Date.now() - waitingSince) / 1000) : 0;
-  document.getElementById("elapsed").textContent = secs + " 秒";
-  document.getElementById("force").style.display = secs >= 60 ? "inline" : "none";
+  $("elapsed").textContent = secs + " 秒";
+  $("force").style.display = secs >= 60 ? "inline" : "none";
 }
-document.getElementById("force").onclick = () => { forced = true; setWaiting(true); };
+$("force").onclick = () => { forced = true; setWaiting(true); };
 setInterval(() => { if (waitingSince) setWaiting(true); }, 1000);
 
 let sending = false;
 async function send() {
-  const text = document.getElementById("text").value.trim();
+  const text = $("text").value.trim();
   if (sending || (!text && !marks.length)) return;
-  if (document.getElementById("compose").classList.contains("locked")) return;
+  if ($("compose").classList.contains("locked")) return;
   sending = true;
   try {
     const labeled = marks.map((m, i) => ({ ...m, label: `${i + 1}号${NAMES[m.kind]}` }));
     const image = marks.length ? cv.toDataURL("image/png") : "";
     await post("/teach", { text, annotations: labeled, image, screenshot: shot });
-    document.getElementById("text").value = ""; marks = []; render();
+    $("text").value = ""; marks = []; render();
     forced = false; setWaiting(true); poll();
   } catch (e) {
     alert("发送失败：" + e.message);
@@ -267,18 +440,24 @@ async function send() {
     sending = false;
   }
 }
-document.getElementById("send").onclick = send;
-document.getElementById("text").onkeydown = e => {
+$("send").onclick = send;
+$("text").onkeydown = e => {
   if (e.key === "Enter" && e.ctrlKey && !e.repeat && !e.isComposing) { e.preventDefault(); send(); }
 };
-window.onkeydown = e => {
-  if (e.target.tagName === "TEXTAREA") return;
-  const t = ["rect", "circle", "arrow", "click", "region"][Number(e.key) - 1];
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape" && $("help").classList.contains("on")) { help(); return; }
+  if (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return;
+  if (e.key === "?") { help(); return; }
+  if (mode !== "live") return;
+  const t = TOOLS[Number(e.key) - 1];
   if (t) setTool(t);
-  if (e.key === "s" || e.key === "S") takeShot();
+  if ((e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey) takeShot();
   if (e.key === "z" && e.ctrlKey) { marks.pop(); render(); }
-};
+  if (e.key === "Escape") { start = null; draft = null; render(); }
+});
 render();
 </script>
+<script src="web/replay.js"></script>
+<script>setMode(location.hash.startsWith("#replay") ? "replay" : "live");</script>
 </body>
 </html>

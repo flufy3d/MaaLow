@@ -61,6 +61,9 @@ class Engine(private val context: Context) {
     /** Serves the skills registered as custom actions / recognitions. */
     var custom: Maa.Custom? = null
 
+    /** Called before the privileged process goes away (engine stop, or it died): users of its mirrors let go. */
+    var onPrivilegedGone: (() -> Unit)? = null
+
     private class Loaded(val name: String, val stamp: Long, val resource: Long, val tasker: Long) {
         var skills: Set<String> = emptySet() // registered as custom actions / recognitions
     }
@@ -121,6 +124,7 @@ class Engine(private val context: Context) {
 
     private fun onPrivilegedDied() {
         Log.w(TAG, "privileged service died")
+        runCatching { onPrivilegedGone?.invoke() }
         error = "Shizuku 服务已断开"
         state = State.ERROR
     }
@@ -161,6 +165,7 @@ class Engine(private val context: Context) {
     }
 
     private fun tearDown() {
+        runCatching { onPrivilegedGone?.invoke() }.onFailure { Log.w(TAG, "privileged-gone hook failed", it) }
         loaded?.let { Maa.taskerDestroy(it.tasker); Maa.resourceDestroy(it.resource) }
         loaded = null
         if (controller != 0L) Maa.controllerDestroy(controller)
@@ -177,6 +182,8 @@ class Engine(private val context: Context) {
     }
 
     fun privileged(): IPrivileged = priv ?: error("engine not running")
+
+    fun privilegedOrNull(): IPrivileged? = priv
 
     /** Shell command in the privileged process; returns (exit code, output). */
     suspend fun shell(cmd: String): Pair<Int, String> = withContext(Dispatchers.IO) {

@@ -116,6 +116,15 @@ AI 读取标注和对应的帧，写出 Skill / 识别规则
 * 录像和标注存在工作区 `recordings/<id>/`，框统一用 1080×720 坐标
 * **给 AI**：`maalow rec` 列出录像、按帧号取帧（带坐标网格）、输出标注摘要
 
+实现要点：
+
+* **录制**：特权进程再开一路屏幕镜像，送进 App 里的 SurfaceTexture；App 的 GL 线程按固定 30 fps 时钟把最新画面画进 H.264 硬件编码器的输入 Surface，时间戳就是 `帧号 / 30`。镜像只在画面变化时出帧，时钟不管有没有新画面都照常出帧；线程晚了就把错过的帧补成重复帧，所以帧数始终等于录制时长 × 30。识别用的截图通路不动，录制不占设备锁，守护规则和 Skill 照常运行。码率默认 3 Mbps，可在 `PUT /api/v1/settings {"record_bitrate"}` 或开始录制时指定。
+* **不怕被杀**：录制中编码输出直接写进 `recordings/<id>/` 下的隐藏文件（裸 H.264 + 帧索引），结束时再封装成 `video.mp4`；App 被杀、重装或引擎重启后，下次启动会自动把没封装完的录像修复出来（`stopped_by: "recovered"`）。
+* **取帧**：`GET /api/v1/recordings/{ws}/{id}/frame?n=N&fmt=jpg|png&q=90`，App 用 MediaExtractor + 硬件解码器从 N 之前的关键帧解到第 N 帧（关键帧间隔 1 秒）。解码器状态常驻：向后走接着解；向前走时把整个 GOP 缓存下来；每走一步还会顺着方向预取、预编码下一帧。
+* **缩略图**：录制时每 5 帧顺手画一张 192×128 的小图，100 张拼成一张 `thumbs/NNN.jpg`，布局写在 `meta.json` 的 `thumbs` 里。
+* **标注**：`recordings/<id>/labels.json`，按帧号组织：`{"version", "frames": {"帧号": {"rev", "time_ms", "note", "annotations": [{"kind", "coords", "label"}]}}}`，形状格式和实时指导相同，坐标 1080×720（框是 `[x, y, w, h]`）。网页按帧增量保存（`PUT .../labels/{n}`，带 `rev`）；两个页面改了同一帧时，后保存的一方会收到 409，由用户选覆盖还是载入对方的。
+* `maalow sync` 默认不同步录像视频和缩略图（`--videos` 带上），`meta.json` 和 `labels.json` 照常同步。
+
 先人工逐帧标注。等标注攒够了，再做 YOLO 导出、训练和模型接入，用来识别通用的预警信号（红光、金光、蓄力、锁定、Boss 血条），不按具体敌人一个个做。
 
 ## 自动运行

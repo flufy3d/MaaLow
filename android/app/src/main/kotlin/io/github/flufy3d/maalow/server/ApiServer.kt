@@ -12,6 +12,7 @@ import io.github.flufy3d.maalow.engine.Engine
 import io.github.flufy3d.maalow.engine.Maa
 import io.github.flufy3d.maalow.engine.ShizukuLink
 import io.github.flufy3d.maalow.store.optBool
+import io.github.flufy3d.maalow.store.optInt
 import io.github.flufy3d.maalow.store.optLong
 import io.github.flufy3d.maalow.store.optStr
 import io.github.flufy3d.maalow.store.str
@@ -23,6 +24,7 @@ import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.plugins.partialcontent.PartialContent
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.header
@@ -59,11 +61,13 @@ class ApiServer(private val app: App) {
         server = embeddedServer(CIO, port = App.PORT, host = "0.0.0.0") {
             install(createApplicationPlugin("Token") {
                 onCall { call ->
+                    if (call.request.local.uri.startsWith("/web/")) return@onCall // the UI's static scripts
                     val auth = call.request.headers["Authorization"]?.removePrefix("Bearer ")?.trim()
                     val token = auth ?: call.request.queryParameters["token"]
                     if (token != app.token) call.respondJson(HttpStatusCode.Unauthorized, errorBody("bad or missing token"))
                 }
             })
+            install(PartialContent) // video seeking in the replay page
             install(StatusPages) {
                 exception<Throwable> { call, e ->
                     val code = when (e) {
@@ -81,6 +85,7 @@ class ApiServer(private val app: App) {
                 fileRoutes(app)
                 autoRoutes(app)
                 skillRoutes(app)
+                recordRoutes(app)
                 webRoutes(app)
             }
         }.start(wait = false)
@@ -155,7 +160,7 @@ class ApiServer(private val app: App) {
 
         get("/api/v1/settings") { call.respondJson(settings()) }
 
-        // {workspace?, guards_enabled?, guard_interval_ms?}
+        // {workspace?, guards_enabled?, guard_interval_ms?, record_bitrate?}
         put("/api/v1/settings") {
             val body = call.body()
             body.optStr("workspace")?.let { require(it.isEmpty() || app.workspaces.exists(it)) { "no workspace: $it" } }
@@ -164,6 +169,8 @@ class ApiServer(private val app: App) {
                     workspace = body.optStr("workspace") ?: s.workspace,
                     guardsEnabled = body.optBool("guards_enabled") ?: s.guardsEnabled,
                     guardIntervalMs = body.optLong("guard_interval_ms") ?: s.guardIntervalMs,
+                    recordBitrate = body.optInt("record_bitrate")?.also { require(it in 250_000..50_000_000) { "record_bitrate out of range" } }
+                        ?: s.recordBitrate,
                 )
             }
             call.respondJson(settings())
@@ -190,6 +197,7 @@ class ApiServer(private val app: App) {
         put("workspace", app.defaultWorkspace())
         put("guards_enabled", s.guardsEnabled)
         put("guard_interval_ms", s.guardIntervalMs)
+        put("record_bitrate", s.recordBitrate)
     }
 
     private fun status(): JsonObject = buildJsonObject {
@@ -200,6 +208,7 @@ class ApiServer(private val app: App) {
         maalow.error?.let { put("error", it) }
         put("busy", maalow.busy)
         put("skills", JsonArray(app.skills.running.map { JsonPrimitive(it) }))
+        put("record", app.recorder.state())
         put("workspace", app.defaultWorkspace())
         put("frame", buildJsonObject {
             put("width", maalow.width)

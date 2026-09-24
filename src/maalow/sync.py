@@ -37,6 +37,7 @@ SYNC_HOME = HOME / "sync"
 CONFIG_FILE = "workspace.json"
 BATCH = ".batch.json"  # manifest entry of a batch upload (the app never lists dot files)
 SCREENSHOTS = "teaching/**/*.png"
+VIDEOS = ("recordings/**/*.mp4", "recordings/**/thumbs/**")  # big; meta.json and labels.json sync as usual
 WATCH = ("workspace.json", "pipeline", "templates", "skills")
 STORED = (".png", ".jpg", ".jpeg", ".zip")  # already compressed
 TYPES = "skills/maalow.d.ts"

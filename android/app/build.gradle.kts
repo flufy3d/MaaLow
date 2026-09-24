@@ -68,6 +68,7 @@ dependencies {
     implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
     implementation("io.ktor:ktor-server-cio:3.6.0")
     implementation("io.ktor:ktor-server-status-pages:3.6.0")
+    implementation("io.ktor:ktor-server-partial-content:3.6.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 }
