@@ -123,6 +123,22 @@ SearchChest
 
 普通 UI 用 Pipeline，实时复杂行为用 Skill / Custom Action。
 
+Skill 是工作区里的 `skills/<name>.js`（ES 模块），在伴生 App 里由 QuickJS 执行，API 见 `skills/maalow.d.ts`（`maalow sync` 时从 App 取下来）：
+
+```js
+export const meta = { description: "关弹窗", timeout: 30_000 };
+
+export default function (args, ctx) {
+  const hit = recognize("CloseShopPopup", { image: screenshot() });
+  if (hit.hit) click(hit);
+  return { closed: hit.hit };
+}
+```
+
+* 运行：`maalow do skill <name> --args '{...}'`、定时任务的 `"skill"` 字段，或 Pipeline 节点 `"action": "Custom", "custom_action": "<name>"`（识别用 `"custom_recognition": "<name>.recognize"`）
+* 改完 `maalow sync` 即生效，不用重装 App；报错带文件名和行号
+* 检查：`npx -p typescript tsc -p workspaces/<ws>/skills`
+
 ## 目标
 
 把传统 Maa 自动化开发：

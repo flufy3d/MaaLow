@@ -41,8 +41,11 @@ import java.time.ZoneId
 @Serializable
 data class Schedule(
     val id: String = "",
-    /** Pipeline entry node to run to completion. */
+    /** Pipeline entry node to run to completion; or: */
     val node: String = "",
+    /** Skill (skills/<name>.js) to run, with args. */
+    val skill: String = "",
+    val args: JsonObject = JsonObject(emptyMap()),
     /** Local time of day, "HH:mm". */
     val at: String = "",
     /** ISO weekdays (1 = Monday ... 7 = Sunday); empty means every day. */
@@ -58,7 +61,7 @@ data class Schedule(
 
     fun validate(): Schedule {
         require(ID.matches(id)) { "bad schedule id: $id" }
-        require(node.isNotEmpty()) { "missing node" }
+        require(node.isNotEmpty() != skill.isNotEmpty()) { "give either node or skill" }
         require(runCatching { time() }.isSuccess) { "bad time: $at (want HH:mm)" }
         require(days.all { it in 1..7 }) { "days must be 1..7" }
         return this
@@ -258,6 +261,17 @@ class Scheduler(private val app: App) {
                     ?: return done("failed", "launch_timeout") { put("woke", woke) }
             }
 
+            if (s.skill.isNotEmpty()) {
+                val result = app.skills.run(ws, s.skill, s.args, trigger = "schedule")
+                val ok = result["ok"]!!.jsonPrimitive.boolean
+                return done(if (ok) "ok" else "failed", if (ok) null else "skill_${result["reason"]!!.jsonPrimitive.content}") {
+                    put("woke", woke)
+                    put("launched", launched)
+                    put("ms", result["ms"]!!)
+                    result["value"]?.let { put("value", it) }
+                    result["error"]?.let { put("error", it) }
+                }
+            }
             val result = engine.exclusive("task:$ws/${s.node}") { engine.run(ws, s.node, once = false) }
             val hit = result["hit"]!!.jsonPrimitive.boolean
             done(if (hit) "ok" else "failed", if (hit) null else "task_failed") {
@@ -279,7 +293,7 @@ class Scheduler(private val app: App) {
             put("id", "$start-${s.id}")
             put("workspace", ws)
             put("schedule", s.id)
-            put("node", s.node)
+            if (s.skill.isNotEmpty()) put("skill", s.skill) else put("node", s.node)
             put("trigger", trigger)
             planned?.let { put("planned", it) }
             put("start", start)

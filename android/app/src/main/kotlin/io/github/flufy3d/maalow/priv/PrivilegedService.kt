@@ -193,8 +193,10 @@ private class Injector {
     fun touch(type: Int, contact: Int, x: Float, y: Float): Boolean {
         val now = SystemClock.uptimeMillis()
         val c = coords.getOrPut(contact) { MotionEvent.PointerCoords() }
-        c.x = x
-        c.y = y
+        if (type != PrivilegedService.TOUCH_UP || contact !in active) { // Maa's touch up carries no position: lift where it is
+            c.x = x
+            c.y = y
+        }
         c.pressure = 1f
         c.size = 1f
         val action = when (type) {

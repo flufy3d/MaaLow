@@ -5,6 +5,7 @@ import io.github.flufy3d.maalow.auto.Guards
 import io.github.flufy3d.maalow.auto.Scheduler
 import io.github.flufy3d.maalow.engine.Engine
 import io.github.flufy3d.maalow.server.ApiServer
+import io.github.flufy3d.maalow.skill.Skills
 import io.github.flufy3d.maalow.store.Events
 import io.github.flufy3d.maalow.store.Settings
 import io.github.flufy3d.maalow.store.Workspaces
@@ -29,6 +30,8 @@ class App : Application() {
     lateinit var guards: Guards
         private set
     lateinit var scheduler: Scheduler
+        private set
+    lateinit var skills: Skills
         private set
 
     /** Background work that outlives a request (e.g. a triggered run with wait=false). */
@@ -63,6 +66,8 @@ class App : Application() {
         engine = Engine(this)
         workspaces = Workspaces(engine.workspaces)
         events = Events(File(storeDir, "events.jsonl"))
+        skills = Skills(this)
+        engine.custom = skills
         teaching = Teaching(this)
         guards = Guards(this)
         scheduler = Scheduler(this)

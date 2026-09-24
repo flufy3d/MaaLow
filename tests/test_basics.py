@@ -106,3 +106,24 @@ def test_do_fetches_screenshot_with_grid(tmp_path, monkeypatch):
     assert Path(out["image"]) == (ws.path / "teaching/t/0001.png").resolve()
     grid = Image.open(out["view"])
     assert grid.size == (300, 200) and grid.getpixel((100, 50)) == (255, 0, 255)  # grid line at x=100
+
+
+def test_do_skill_posts_run_and_fails_on_skill_error(tmp_path, monkeypatch, capsys):
+    import json
+
+    from maalow import cli
+
+    posts = []
+
+    class App:
+        def __init__(self, *a):
+            pass
+
+        def post(self, path, body=None, timeout=120):
+            posts.append((path, body, timeout))
+            return {"skill": body["name"], "ok": False, "reason": "error", "error": {"file": "skills/x.js", "line": 3}}
+
+    monkeypatch.setattr(cli, "Client", App)
+    assert main(["do", "skill", "x", "--args", '{"n": 2}', "--timeout", "5000"]) == 1
+    assert posts == [("/skill/run", {"name": "x", "args": {"n": 2}, "wait": True, "timeout": 5000}, 65.0)]
+    assert json.loads(capsys.readouterr().out)["error"]["line"] == 3

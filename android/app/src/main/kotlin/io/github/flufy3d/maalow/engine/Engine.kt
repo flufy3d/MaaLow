@@ -7,12 +7,14 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import io.github.flufy3d.maalow.IPrivileged
+import io.github.flufy3d.maalow.skill.Skills
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonArray
@@ -29,8 +31,10 @@ import kotlin.math.roundToInt
 
 /**
  * Owns the capture/input pipeline and MaaFramework instances. Maa calls run one at a time on the engine thread;
- * frame snapshots do not touch that thread. Multi-step device work (a task, a teaching step, a guard check)
- * holds the device lock so steps from different sources do not interleave.
+ * frame snapshots do not touch that thread. Skills are the exception: they run inside a task, on the tasker's
+ * thread while the engine thread waits for that task, and call Maa through their context directly. Multi-step
+ * device work (a task, a skill, a teaching step, a guard check) holds the device lock so steps from different
+ * sources do not interleave.
  */
 class Engine(private val context: Context) {
     private val thread = Executors.newSingleThreadExecutor { Thread(it, "maalow-engine") }.asCoroutineDispatcher()
@@ -54,7 +58,15 @@ class Engine(private val context: Context) {
     private var controller = 0L
     @Volatile private var loaded: Loaded? = null
 
-    private class Loaded(val name: String, val stamp: Long, val resource: Long, val tasker: Long)
+    /** Serves the skills registered as custom actions / recognitions. */
+    var custom: Maa.Custom? = null
+
+    private class Loaded(val name: String, val stamp: Long, val resource: Long, val tasker: Long) {
+        var skills: Set<String> = emptySet() // registered as custom actions / recognitions
+    }
+
+    /** Workspace whose resources are loaded: the one a running custom action (skill) belongs to. */
+    val loadedWorkspace: String? get() = loaded?.name
 
     suspend fun <T> onEngine(block: () -> T): T = withContext(thread) { block() }
 
@@ -133,6 +145,7 @@ class Engine(private val context: Context) {
         Os.close(a)
         Os.close(b)
 
+        Maa.custom = custom
         Maa.setLogDir(File(context.getExternalFilesDir(null), "maa-log").apply { mkdirs() }.absolutePath)
         val config = buildJsonObject {
             put("library_path", "$nativeLibDir/lib${Bridge.LIBRARY}.so")
@@ -231,21 +244,35 @@ class Engine(private val context: Context) {
 
     // ---- pipeline (engine thread)
 
-    /** Changes whenever a pipeline or template file is added, removed, resized or touched. */
+    /** Changes whenever a pipeline, template or model file is added, removed, resized or touched. */
     private fun stampOf(ws: File): Long =
-        listOf("pipeline", "templates").flatMap { File(ws, it).walkTopDown().filter { f -> f.isFile }.toList() }
+        listOf("pipeline", "templates", "model").flatMap { File(ws, it).walkTopDown().filter { f -> f.isFile }.toList() }
             .sortedBy { it.path }
             .fold(17L) { h, f -> ((h * 31 + f.path.hashCode()) * 31 + f.length()) * 31 + f.lastModified() }
 
-    /** Resource + tasker for a workspace, reloaded when its pipeline or templates change. */
-    private fun load(name: String): Loaded {
+    /**
+     * Resource + tasker for a workspace, reloaded when its pipeline or templates change. Skills (skills/<name>.js) are
+     * registered on the resource under their names; their code is read fresh on every run.
+     */
+    private fun load(name: String): Loaded = loadResource(name).also { l ->
+        val names = Skills.names(File(workspaces, name)).toSet()
+        if (names != l.skills) {
+            (l.skills - names).forEach { Maa.resourceUnregisterCustom(l.resource, it) }
+            (names - l.skills).forEach { check(Maa.resourceRegisterCustom(l.resource, it)) { "cannot register skill $it" } }
+            l.skills = names
+        }
+    }
+
+    private fun loadResource(name: String): Loaded {
         val ws = File(workspaces, name)
         check(File(ws, "workspace.json").isFile) { "no workspace: $name" }
         val stamp = stampOf(ws)
         loaded?.let { if (it.name == name && it.stamp == stamp) return it }
         val res = Maa.resourceCreate()
+        val ocr = File(ws, "model/ocr") // optional PaddleOCR model (det.onnx, rec.onnx, keys.txt)
         val ok = Maa.resourceLoad(res, 1, File(ws, "pipeline").absolutePath) &&
-            Maa.resourceLoad(res, 2, File(ws, "templates").absolutePath)
+            Maa.resourceLoad(res, 2, File(ws, "templates").absolutePath) &&
+            (!ocr.isDirectory || Maa.resourceLoad(res, 3, ocr.absolutePath))
         if (!ok) {
             Maa.resourceDestroy(res)
             error("failed to load resources of $name")
@@ -263,23 +290,32 @@ class Engine(private val context: Context) {
         })
     }.toString()
 
-    private fun summarize(detail: String): JsonObject {
-        val d = Json.parseToJsonElement(detail).jsonObject
-        val nodes = d["nodes"]!!.jsonArray
-        val hit = d["status"]!!.jsonPrimitive.int == Maa.STATUS_SUCCEEDED && nodes.isNotEmpty() &&
-            nodes.last().jsonObject["completed"]!!.jsonPrimitive.boolean
-        return buildJsonObject {
-            put("hit", hit)
-            put("status", d["status"]!!)
-            put("nodes", buildJsonArray { nodes.forEach { add(it.jsonObject["name"]!!) } })
-        }
-    }
-
     /** Run a pipeline node on the device. once: check the current screen only; stop: don't follow next. */
     suspend fun run(workspace: String, node: String, once: Boolean, stop: Boolean = false): JsonObject = onEngine {
         requireRunning()
         val l = load(workspace)
         summarize(Maa.taskerRun(l.tasker, node, override(node, once, stop)))
+    }
+
+    /**
+     * Run a skill on the device as a one-node task whose action is the skill ([SKILL_NODE]), so it gets a Maa
+     * context just like a skill a pipeline node calls. Blocks the engine thread until the skill returns.
+     */
+    suspend fun runSkill(workspace: String, name: String, args: JsonElement): JsonObject = onEngine {
+        requireRunning()
+        val l = load(workspace)
+        check(name in l.skills) { "no skill $name in $workspace" }
+        val node = buildJsonObject {
+            put(SKILL_NODE, buildJsonObject {
+                put("recognition", "DirectHit")
+                put("action", "Custom")
+                put("custom_action", name)
+                put("custom_action_param", args)
+                put("pre_delay", 0)
+                put("post_delay", 0)
+            })
+        }
+        summarize(Maa.taskerRun(l.tasker, SKILL_NODE, node.toString()))
     }
 
     /** Ask a running task to stop; it ends at the next node boundary. */
@@ -327,5 +363,20 @@ class Engine(private val context: Context) {
     companion object {
         const val TAG = "MaaLowEngine"
         const val SHORT_SIDE = 720
+        /** Entry of the one-node task a standalone skill run is. */
+        const val SKILL_NODE = "MaaLow.Skill"
+
+        /** {hit, status, nodes: [names]} from a task detail; hit: it succeeded and its last node completed. */
+        fun summarize(detail: String): JsonObject {
+            val d = Json.parseToJsonElement(detail).jsonObject
+            val nodes = d["nodes"]!!.jsonArray
+            val hit = d["status"]!!.jsonPrimitive.int == Maa.STATUS_SUCCEEDED && nodes.isNotEmpty() &&
+                nodes.last().jsonObject["completed"]!!.jsonPrimitive.boolean
+            return buildJsonObject {
+                put("hit", hit)
+                put("status", d["status"]!!)
+                put("nodes", buildJsonArray { nodes.forEach { add(it.jsonObject["name"]!!) } })
+            }
+        }
     }
 }

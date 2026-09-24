@@ -1,0 +1,11 @@
+{
+    "ClearPopups": {
+        "desc": "关掉所有弹窗直到画面干净（Skill clear_popups，Custom Action）",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "clear_popups",
+        "custom_action_param": {
+            "clear_frames": 3
+        }
+    }
+}

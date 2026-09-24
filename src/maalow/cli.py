@@ -56,6 +56,14 @@ def _add_do_parser(sub) -> None:
     p = ops.add_parser("run", help="run a learned pipeline node")
     p.add_argument("node")
     p.add_argument("--full", action="store_true", help="run the whole task instead of checking the current screen once")
+    p = ops.add_parser("skill", help="run a skill (skills/NAME.js) on the app")
+    p.add_argument("name")
+    p.add_argument("--args", type=json.loads, default={}, help="arguments as JSON, e.g. '{\"rounds\": 20}'")
+    p.add_argument("--workspace", help="workspace on the app (default: the app's)")
+    p.add_argument("--timeout", type=int, help="ms, instead of the skill's meta.timeout")
+    p.add_argument("--no-wait", action="store_true", help="start it and return at once")
+    ops.add_parser("skills", help="list the app's skills and their load errors").add_argument("--workspace")
+    ops.add_parser("stop", help="stop the running task or skill")
     ops.add_parser("say", help="reply to the teacher in the web UI").add_argument("text")
     ops.add_parser("listen", help="wait for teacher messages").add_argument("--timeout", type=int, default=1800)
     p = op("click", "tap a point")
@@ -158,6 +166,15 @@ def _do(args, client: Client):
         return _with_views(client, args.root, client.get(f"/listen?timeout={args.timeout}", timeout=args.timeout + 30))
     if op == "run":
         return _with_views(client, args.root, client.post("/run", {"node": args.node, "once": not args.full}, timeout=900))
+    if op == "skill":
+        body = {"name": args.name, "args": args.args, "wait": not args.no_wait}
+        body |= {k: v for k, v in (("workspace", args.workspace), ("timeout", args.timeout)) if v}
+        timeout = (args.timeout or 600_000) / 1000 + 60
+        return client.post("/skill/run", body, timeout=timeout)
+    if op == "skills":
+        return client.get("/skills" + (f"?workspace={args.workspace}" if args.workspace else ""))
+    if op == "stop":
+        return client.post("/stop")
     if op == "task":
         return client.post("/task", {"name": args.name, **({"workspace": args.workspace} if args.workspace else {})})
     body = {"action": _action(args), "say": args.say, "wait": args.wait}
@@ -218,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         client = Client(args.server, args.token)
         out = (_do if args.command == "do" else _ws)(args, client)
         print(json.dumps(out, ensure_ascii=False))
-        return 1 if isinstance(out, dict) and "error" in out else 0
+        return 1 if isinstance(out, dict) and ("error" in out or out.get("ok") is False) else 0
     return 0
 
 

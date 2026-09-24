@@ -11,6 +11,9 @@ the workspace in ~/.maalow/sync/<server>/<ws>.json. Per path, with L / R / B the
 
 A delete is only ever planned for a path that is in the baseline, so a first sync never deletes anything. push and
 pull apply one side of that plan and leave the rest (and its baseline) for later.
+
+Before planning, the app's skill API declarations are written to the local skills/maalow.d.ts (with a tsconfig.json
+for checking skills, the first time), so editors and `npx -p typescript tsc -p <ws>/skills` know the API.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import re
 import shutil
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import zipfile
 from dataclasses import dataclass, field
@@ -35,6 +39,22 @@ BATCH = ".batch.json"  # manifest entry of a batch upload (the app never lists d
 SCREENSHOTS = "teaching/**/*.png"
 WATCH = ("workspace.json", "pipeline", "templates", "skills")
 STORED = (".png", ".jpg", ".jpeg", ".zip")  # already compressed
+TYPES = "skills/maalow.d.ts"
+TSCONFIG = "skills/tsconfig.json"
+TSCONFIG_TEXT = """{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "ES2023",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023"],
+    "types": []
+  },
+  "include": ["**/*.js", "maalow.d.ts"]
+}
+"""
 
 
 def glob_re(pattern: str) -> re.Pattern:
@@ -157,6 +177,23 @@ def plan(local: dict, remote: dict, base: dict[str, str], direction: str = "both
     return p
 
 
+def refresh_types(client: Client, base: Path) -> bool:
+    """Write the app's skill API declarations into the local workspace; True when the file changed."""
+    try:
+        with client._open("GET", "/skills/maalow.d.ts") as r:
+            data = r.read()
+    except (urllib.error.URLError, OSError):  # an app without skills: nothing to write
+        return False
+    dest = base / TYPES
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not (base / TSCONFIG).exists():
+        (base / TSCONFIG).write_text(TSCONFIG_TEXT, encoding="utf-8")
+    if dest.is_file() and dest.read_bytes() == data:
+        return False
+    dest.write_bytes(data)
+    return True
+
+
 # ---- baseline
 
 
@@ -246,6 +283,7 @@ def sync(client: Client, workspace: str, root: Path, direction: str = "both", pr
         return {"error": f"no workspace {workspace} on the app"}
     if not has_local and direction == "push":
         return {"error": f"no local workspace: {base_dir}"}
+    types = has_local and not dry_run and keep(TYPES) and refresh_types(client, base_dir)
     local = local_tree(base_dir, keep, state["cache"])
     p = plan(local, remote or {}, state["files"], direction, prefer, keep)
 
@@ -262,6 +300,8 @@ def sync(client: Client, workspace: str, root: Path, direction: str = "both", pr
         "bytes_up": sum(local[x]["size"] for x in p.push),
         "bytes_down": sum(remote[x]["size"] for x in p.pull),
     }
+    if types:
+        out["types"] = TYPES
     if dry_run:
         out["dry_run"] = True
     else:

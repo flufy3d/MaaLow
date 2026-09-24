@@ -80,6 +80,7 @@ class ApiServer(private val app: App) {
                 teachRoutes(app)
                 fileRoutes(app)
                 autoRoutes(app)
+                skillRoutes(app)
                 webRoutes(app)
             }
         }.start(wait = false)
@@ -129,9 +130,14 @@ class ApiServer(private val app: App) {
             }
         }
 
+        // Stops the running task and any running skill; the device lock is released as they end.
         post("/api/v1/stop") {
+            val skills = app.skills.stop()
             maalow.stopTask()
-            call.respondJson(buildJsonObject { put("busy", maalow.busy) })
+            call.respondJson(buildJsonObject {
+                put("busy", maalow.busy)
+                put("skills_stopped", skills)
+            })
         }
 
         // Offline check of a node on a workspace image, e.g. {"workspace","node","path":"teaching/explore/0001.png"}
@@ -193,6 +199,7 @@ class ApiServer(private val app: App) {
         put("engine", maalow.state.name.lowercase())
         maalow.error?.let { put("error", it) }
         put("busy", maalow.busy)
+        put("skills", JsonArray(app.skills.running.map { JsonPrimitive(it) }))
         put("workspace", app.defaultWorkspace())
         put("frame", buildJsonObject {
             put("width", maalow.width)

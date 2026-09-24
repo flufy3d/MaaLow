@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import urllib.error
 import zipfile
 
 import pytest
@@ -93,6 +94,7 @@ class FakeApp:
     def __init__(self):
         self.files: dict[str, tuple[bytes, int]] = {}  # path -> (content, mtime)
         self.requests: list[str] = []
+        self.types: bytes | None = None  # maalow.d.ts; None: an app without skills
 
     def entry(self, path):
         data, mtime = self.files[path]
@@ -116,6 +118,10 @@ class FakeApp:
         return {"files": [self.entry(n) for n in written], "deleted": manifest["delete"]}
 
     def _open(self, method, path, data=None, *a, **kw):
+        if path == "/skills/maalow.d.ts":
+            if self.types is None:
+                raise urllib.error.HTTPError(path, 404, "not found", {}, None)
+            return io.BytesIO(self.types)
         self.requests.append("pull")
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
@@ -200,6 +206,25 @@ def test_sync_dry_run_changes_nothing(env):
     out = run(app, root, dry_run=True)
     assert out["dry_run"] and out["push"] and app.files == {}
     assert not sync.state_file(app.server, "demo").exists()
+
+
+def test_sync_writes_skill_types_and_pushes_them(env):
+    app, root = env
+    ws = root / "demo"
+    app.types = b"declare function click(x: number, y: number): void;\n"
+    out = run(app, root)
+    assert out["types"] == sync.TYPES
+    assert (ws / sync.TYPES).read_bytes() == app.types
+    assert json.loads((ws / sync.TSCONFIG).read_text())["compilerOptions"]["checkJs"]
+    assert {sync.TYPES, sync.TSCONFIG} <= set(out["push"])
+
+    (ws / sync.TSCONFIG).write_text("{}")  # the user's own settings stay
+    out = run(app, root)
+    assert "types" not in out and out["push"] == [sync.TSCONFIG]
+    app.types = b"// newer app\n"
+    out = run(app, root)
+    assert out["types"] == sync.TYPES and out["push"] == [sync.TYPES]
+    assert (ws / sync.TSCONFIG).read_text() == "{}"
 
 
 def test_cli_sync_parser(env, monkeypatch, capsys):

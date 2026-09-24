@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "ES2023",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023"],
+    "types": []
+  },
+  "include": ["**/*.js", "maalow.d.ts"]
+}
