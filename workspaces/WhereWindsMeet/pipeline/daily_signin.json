@@ -18,13 +18,14 @@
         "desc": "大世界右上角菜单按钮",
         "recognition": "TemplateMatch",
         "template": "world_menu_button.png",
+        "green_mask": true,
         "roi": [
             990,
             0,
             89,
             60
         ],
-        "threshold": 0.7,
+        "threshold": 0.6,
         "action": "Click",
         "post_delay": 1500,
         "next": [
@@ -149,12 +150,13 @@
         "desc": "回到大世界（能看到菜单按钮），任务结束",
         "recognition": "TemplateMatch",
         "template": "world_menu_button.png",
+        "green_mask": true,
         "roi": [
             990,
             0,
             89,
             60
         ],
-        "threshold": 0.7
+        "threshold": 0.6
     }
 }
