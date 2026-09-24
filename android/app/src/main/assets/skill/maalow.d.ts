@@ -6,7 +6,7 @@
 //                                                 //   {"action": "Custom", "custom_action": "<name>", "custom_action_param": {args}}
 //   export function recognize(args, ctx) { ... }  // optional: {"recognition": "Custom", "custom_recognition": "<name>.recognize"}
 //
-// Calls are synchronous and block the skill's thread. Coordinates are in the capture space (1079x720 on the
+// Calls are synchronous and block the skill's thread. Coordinates are in the capture space (1080x720 on the
 // tablet, landscape), the same as pipeline ROIs. Import helpers with relative paths: import { f } from "./lib/util.js".
 // Top-level module code runs when the skill loads (also when listing): keep it to declarations.
 

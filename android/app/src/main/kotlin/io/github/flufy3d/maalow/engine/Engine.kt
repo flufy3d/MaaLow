@@ -27,7 +27,7 @@ import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.Executors
-import kotlin.math.roundToInt
+import kotlin.math.ceil
 
 /**
  * Owns the capture/input pipeline and MaaFramework instances. Maa calls run one at a time on the engine thread;
@@ -130,8 +130,10 @@ class Engine(private val context: Context) {
         val (lw, lh) = s.displayInfo()
         val long = maxOf(lw, lh)
         val short = minOf(lw, lh)
+        // Short side 720, long side rounded up to a multiple of 8 (1080 on the 3200x2136 tablet): even sizes suit video
+        // encoders. The mirror keeps the aspect ratio (a sub-pixel black edge), and input maps back the same way.
         height = SHORT_SIDE
-        width = (SHORT_SIDE.toDouble() * long / short).roundToInt()
+        width = ceil(SHORT_SIDE.toDouble() * long / short / 8).toInt() * 8
 
         val surface = Bridge.nativeCreate(width, height) ?: error("AImageReader creation failed")
         mirrorId = s.mirror(surface, width, height, "maalow-capture")
