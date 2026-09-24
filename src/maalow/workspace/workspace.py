@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 CONFIG_FILE = "workspace.json"
@@ -11,8 +11,6 @@ SUBDIRS = ("tasks", "templates", "pipeline", "skills", "teaching", "memory")
 @dataclass
 class WorkspaceConfig:
     name: str
-    controller: str = "adb"  # adb | win32
-    target: str = ""  # adb serial or window title
     package: str = ""  # android package to launch
     guards: list[str] = field(default_factory=list)  # pipeline nodes checked on every frame (popups, idle screens)
     extra: dict = field(default_factory=dict)
@@ -40,7 +38,8 @@ class Workspace:
     def open(cls, path: Path) -> Workspace:
         path = Path(path)
         data = json.loads((path / CONFIG_FILE).read_text(encoding="utf-8"))
-        return cls(path, WorkspaceConfig(**data))
+        known = {f.name for f in fields(WorkspaceConfig)}
+        return cls(path, WorkspaceConfig(**{k: v for k, v in data.items() if k in known}))  # ignore retired keys
 
     @staticmethod
     def list(root: Path) -> list[str]:

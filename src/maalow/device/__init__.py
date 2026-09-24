@@ -1,5 +1,1 @@
-"""Device control through MaaFramework controllers."""
-
-from maalow.device.device import Device, find_adb
-
-__all__ = ["Device", "find_adb"]
+"""Offline MaaFramework controllers (maalow.device.replay) for checking rules on saved screenshots."""

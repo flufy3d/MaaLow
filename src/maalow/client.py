@@ -128,10 +128,25 @@ class Client:
             return self.upload("POST", f"/workspaces/{urllib.parse.quote(workspace)}/import?mode={mode}", zpath, "application/zip")
 
 
+GRID = 100
+
+
+def draw_grid(img) -> None:
+    """Draw a labeled coordinate grid on a PIL image, so the AI can read positions off a screenshot."""
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    for x in range(0, w, GRID):
+        draw.line([(x, 0), (x, h)], fill=(255, 0, 255), width=1)
+        draw.text((x + 2, 2), str(x), fill=(255, 255, 0))
+    for y in range(0, h, GRID):
+        draw.line([(0, y), (w, y)], fill=(255, 0, 255), width=1)
+        draw.text((2, y + 2), str(y), fill=(255, 255, 0))
+
+
 def grid_png(src: Path, dst: Path) -> None:
     from PIL import Image
-
-    from maalow.teaching.server import draw_grid
 
     img = Image.open(src).convert("RGB")
     draw_grid(img)

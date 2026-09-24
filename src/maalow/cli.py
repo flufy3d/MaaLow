@@ -35,7 +35,7 @@ def _add_server_args(p) -> None:
 
 
 def _add_do_parser(sub) -> None:
-    p_do = sub.add_parser("do", help="teaching actions on the companion app (or a PC teach server)")
+    p_do = sub.add_parser("do", help="teaching actions on the companion app")
     _add_server_args(p_do)
     ops = p_do.add_subparsers(dest="op", required=True)
 
@@ -91,7 +91,7 @@ def _with_views(client: Client, root: Path, out):
     """Fetch screenshots the app mentions and add local paths (view: grid image) for the AI to look at."""
     if isinstance(out, list):
         return [_with_views(client, root, m) for m in out]
-    if not isinstance(out, dict) or "error" in out or "view" in out:  # a PC teach server already gives local paths
+    if not isinstance(out, dict) or "error" in out:
         return out
     ws = out.get("workspace")
     if ws is None and (out.get("screenshot") or out.get("note")):
@@ -153,19 +153,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p_init = sub.add_parser("init", help="create a new workspace")
     p_init.add_argument("name")
-    p_init.add_argument("--target", default="", help="adb address")
     p_init.add_argument("--package", default="", help="android package")
 
     sub.add_parser("list", help="list workspaces")
     sub.add_parser("skills", help="list registered skills")
-
-    p_teach = sub.add_parser("teach", help="connect the device and run the teaching server")
-    p_teach.add_argument("workspace")
-    p_teach.add_argument("--task", default="explore")
-    p_teach.add_argument("--target", help="override and save the adb address")
-    p_teach.add_argument("--adb", help="adb executable path")
-    p_teach.add_argument("--host", action="append", help="address to listen on; repeatable (default 127.0.0.1)")
-    p_teach.add_argument("--port", type=int, default=8765)
 
     _add_do_parser(sub)
     _add_ws_parser(sub)
@@ -174,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init":
         ws = Workspace.create(args.root, args.name)
-        ws.config.target, ws.config.package = args.target, args.package
+        ws.config.package = args.package
         ws.save()
         print(f"created workspace: {ws.path}")
     elif args.command == "list":
@@ -183,18 +174,6 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "skills":
         for name in registry.names():
             print(name)
-    elif args.command == "teach":
-        from maalow.device import Device
-        from maalow.teaching.server import TeachingServer
-
-        ws = Workspace.open(args.root / args.workspace)
-        if args.target:
-            ws.config.target = args.target
-            ws.save()
-        device = Device(ws.config.target, args.adb)
-        print(f"connecting {ws.config.target} ...", flush=True)
-        device.connect()
-        TeachingServer(ws, device, args.task).serve(tuple(args.host or ["127.0.0.1"]), args.port)
     elif args.command in ("do", "ws"):
         client = Client(args.server, args.token)
         out = (_do if args.command == "do" else _ws)(args, client)
