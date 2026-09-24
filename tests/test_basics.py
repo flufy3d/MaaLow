@@ -137,3 +137,76 @@ def test_waiting_until_ai_replies(tmp_path):
     assert server.state()["waiting"]  # guard notices are not an answer
     server.say("已签到")
     assert not server.state()["waiting"]
+
+
+def test_client_config_precedence(tmp_path, monkeypatch):
+    from maalow import client
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('server = "http://tablet:8765"\ntoken = "from-file"\n', encoding="utf-8")
+    monkeypatch.setattr(client, "CONFIG", cfg)
+    monkeypatch.delenv("MAALOW_SERVER", raising=False)
+    monkeypatch.setenv("MAALOW_TOKEN", "from-env")
+    c = client.Client()
+    assert (c.server, c.token) == ("http://tablet:8765", "from-env")
+    assert client.Client("http://other:1/", "arg").server == "http://other:1"
+
+
+def test_client_against_teach_server(tmp_path):
+    """`maalow do` speaks /api/v1, which the PC teach server also serves."""
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    import numpy as np
+
+    from maalow.client import Client
+    from maalow.teaching.server import TeachingServer
+
+    class FakeDevice:
+        def screenshot(self):
+            return np.zeros((72, 108, 3), dtype=np.uint8)
+
+        def click(self, x, y):
+            pass
+
+    server = TeachingServer(Workspace.create(tmp_path, "demo"), FakeDevice(), "daily")
+    started = threading.Event()
+    real_init = ThreadingHTTPServer.__init__
+
+    def init(self, addr, handler):
+        real_init(self, ("127.0.0.1", 0), handler)
+        server.port = self.server_address[1]
+        started.set()
+
+    ThreadingHTTPServer.__init__ = init
+    try:
+        threading.Thread(target=server.serve, daemon=True).start()
+        started.wait(5)
+    finally:
+        ThreadingHTTPServer.__init__ = real_init
+    c = Client(f"http://127.0.0.1:{server.port}", "unused")
+    c.post("/teach", {"text": "点签到", "annotations": []})
+    assert [m["text"] for m in c.get("/listen?timeout=0")] == ["点签到"]
+    out = c.post("/act", {"action": {"type": "click", "x": 1, "y": 2}, "wait": 0})
+    assert out["step"] == 1 and out["view"].endswith(".grid.png")
+
+
+def test_import_zip_skips_grids(tmp_path, monkeypatch):
+    import zipfile
+
+    from maalow.client import Client
+
+    ws = Workspace.create(tmp_path, "demo")
+    (ws.dir("teaching") / "t").mkdir()
+    for name in ("0001.png", "0001.grid.png"):
+        (ws.dir("teaching") / "t" / name).write_bytes(b"x")
+    sent = {}
+
+    def upload(self, method, path, file, ctype="", timeout=0):
+        sent["path"], sent["names"] = path, sorted(zipfile.ZipFile(file).namelist())
+        return {"files": len(sent["names"])}
+
+    monkeypatch.setattr(Client, "upload", upload)
+    Client("http://x", "t").import_dir("demo", ws.path, "replace")
+    assert sent["path"] == "/workspaces/demo/import?mode=replace"
+    assert sent["names"] == ["teaching/t/0001.png", "workspace.json"]

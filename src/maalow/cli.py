@@ -5,25 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import urllib.error
-import urllib.request
+import zipfile
 from pathlib import Path
 
 from maalow import __version__
+from maalow.client import HOME, Client, grid_png
 from maalow.skills import registry
 from maalow.workspace import Workspace
-
-DEFAULT_SERVER = "http://127.0.0.1:8765"
-
-
-def _request(server: str, path: str, body: dict | None = None, timeout: float = 120):
-    data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(server + path, data=data, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        return json.loads(e.read())
 
 
 def _action(args: argparse.Namespace) -> dict:
@@ -41,9 +29,14 @@ def _action(args: argparse.Namespace) -> dict:
     return {"type": op}  # back, home, start_app, stop_app
 
 
+def _add_server_args(p) -> None:
+    p.add_argument("--server", help="app address, e.g. http://100.123.41.110:8765 (default: $MAALOW_SERVER or ~/.maalow/config.toml)")
+    p.add_argument("--token", help="API token (default: $MAALOW_TOKEN or ~/.maalow/config.toml)")
+
+
 def _add_do_parser(sub) -> None:
-    p_do = sub.add_parser("do", help="send a teaching action to a running teach server")
-    p_do.add_argument("--server", default=DEFAULT_SERVER)
+    p_do = sub.add_parser("do", help="teaching actions on the companion app (or a PC teach server)")
+    _add_server_args(p_do)
     ops = p_do.add_subparsers(dest="op", required=True)
 
     def op(name: str, help: str):
@@ -53,8 +46,12 @@ def _add_do_parser(sub) -> None:
         return p
 
     ops.add_parser("shot", help="take a screenshot")
+    ops.add_parser("screen", help="look at the current screen without recording it")
     ops.add_parser("state", help="show server state")
-    ops.add_parser("task", help="start a new teaching task").add_argument("name")
+    ops.add_parser("status", help="show device, engine and automation status")
+    p = ops.add_parser("task", help="start a new teaching task")
+    p.add_argument("name")
+    p.add_argument("--workspace", help="switch the session to another workspace")
     p = ops.add_parser("run", help="run a learned pipeline node")
     p.add_argument("node")
     p.add_argument("--full", action="store_true", help="run the whole task instead of checking the current screen once")
@@ -72,6 +69,80 @@ def _add_do_parser(sub) -> None:
     op("wait", "just wait, then screenshot").add_argument("ms", type=int)
     for name in ("back", "home", "start_app", "stop_app"):
         op(name, name.replace("_", " "))
+
+
+def _add_ws_parser(sub) -> None:
+    p_ws = sub.add_parser("ws", help="workspaces on the companion app")
+    _add_server_args(p_ws)
+    ops = p_ws.add_subparsers(dest="op", required=True)
+    ops.add_parser("list", help="list workspaces on the app")
+    p = ops.add_parser("import", help="copy a local workspace (--root/NAME) into the app")
+    p.add_argument("name")
+    p.add_argument("--mode", choices=("merge", "replace"), default="merge",
+                   help="merge: add and overwrite files; replace: the app copy becomes exactly the local one")
+    p.add_argument("--no-teaching", action="store_true", help="leave out teaching records and screenshots")
+    p = ops.add_parser("export", help="download a workspace from the app as a zip")
+    p.add_argument("name")
+    p.add_argument("-o", "--out", type=Path, help="zip path (default: NAME.zip)")
+    p.add_argument("--extract", type=Path, help="also unpack into this directory (e.g. workspaces/NAME)")
+
+
+def _with_views(client: Client, root: Path, out):
+    """Fetch screenshots the app mentions and add local paths (view: grid image) for the AI to look at."""
+    if isinstance(out, list):
+        return [_with_views(client, root, m) for m in out]
+    if not isinstance(out, dict) or "error" in out or "view" in out:  # a PC teach server already gives local paths
+        return out
+    ws = out.get("workspace")
+    if ws is None and (out.get("screenshot") or out.get("note")):
+        ws = client.get("/state").get("workspace")
+    if out.get("note"):
+        out = {**out, "view": client.fetch(ws, out["note"], root, grid=False)["image"]}
+    elif out.get("screenshot"):
+        out = {**out, **client.fetch(ws, out["screenshot"], root)}
+    return out
+
+
+def _do(args, client: Client):
+    op = args.op
+    if op == "state":
+        return client.get("/state")
+    if op == "status":
+        return client.get("/status")
+    if op == "screen":
+        dest = client.download("/screen?fmt=png", HOME / "cache" / "screen.png")
+        grid_png(dest, dest.with_suffix(".grid.png"))
+        return {"image": str(dest), "view": str(dest.with_suffix(".grid.png"))}
+    if op == "shot":
+        return _with_views(client, args.root, client.post("/shot"))
+    if op == "say":
+        return client.post("/say", {"text": args.text})
+    if op == "listen":
+        return _with_views(client, args.root, client.get(f"/listen?timeout={args.timeout}", timeout=args.timeout + 30))
+    if op == "run":
+        return _with_views(client, args.root, client.post("/run", {"node": args.node, "once": not args.full}, timeout=900))
+    if op == "task":
+        return client.post("/task", {"name": args.name, **({"workspace": args.workspace} if args.workspace else {})})
+    body = {"action": _action(args), "say": args.say, "wait": args.wait}
+    return _with_views(client, args.root, client.post("/act", body))
+
+
+def _ws(args, client: Client):
+    if args.op == "list":
+        return client.get("/workspaces")
+    if args.op == "import":
+        src = args.root / args.name
+        if not (src / "workspace.json").is_file():
+            return {"error": f"no local workspace: {src}"}
+        return client.import_dir(args.name, src, args.mode, teaching=not args.no_teaching)
+    out = args.out or Path(f"{args.name}.zip")
+    client.export_zip(args.name, out)
+    result = {"zip": str(out.resolve())}
+    if args.extract:
+        with zipfile.ZipFile(out) as z:
+            z.extractall(args.extract)
+            result |= {"extracted": str(args.extract.resolve()), "files": len(z.namelist())}
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     p_teach.add_argument("--port", type=int, default=8765)
 
     _add_do_parser(sub)
+    _add_ws_parser(sub)
 
     args = parser.parse_args(argv)
 
@@ -123,21 +195,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"connecting {ws.config.target} ...", flush=True)
         device.connect()
         TeachingServer(ws, device, args.task).serve(tuple(args.host or ["127.0.0.1"]), args.port)
-    elif args.command == "do":
-        if args.op == "state":
-            out = _request(args.server, "/state")
-        elif args.op == "shot":
-            out = _request(args.server, "/shot", {})
-        elif args.op == "say":
-            out = _request(args.server, "/say", {"text": args.text})
-        elif args.op == "listen":
-            out = _request(args.server, f"/listen?timeout={args.timeout}", timeout=args.timeout + 30)
-        elif args.op == "run":
-            out = _request(args.server, "/run", {"node": args.node, "once": not args.full}, timeout=900)
-        elif args.op == "task":
-            out = _request(args.server, "/task", {"name": args.name})
-        else:
-            out = _request(args.server, "/act", {"action": _action(args), "say": args.say, "wait": args.wait})
+    elif args.command in ("do", "ws"):
+        client = Client(args.server, args.token)
+        out = (_do if args.command == "do" else _ws)(args, client)
         print(json.dumps(out, ensure_ascii=False))
         return 1 if isinstance(out, dict) and "error" in out else 0
     return 0

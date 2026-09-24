@@ -16,6 +16,8 @@ The AI engineer listens for teacher messages and drives the device:
     POST /task  {name}              save the current session and start a new one
     POST /run   {node, once}        run a learned pipeline node on the device (once=false: the whole task)
 
+Every path is also served under /api/v1, like the companion app, so `maalow do` works against either.
+
 Guard nodes (workspace config "guards") are checked offline on every captured frame and
 run on the device when they match, so learned popups and idle screens clear themselves.
 """
@@ -41,19 +43,26 @@ GUARD_IDLE = 10  # seconds without a frame before the guard takes its own screen
 UI = Path(__file__).with_name("ui.html")
 
 
+def draw_grid(img) -> None:
+    """Draw a labeled coordinate grid on a PIL image, so the AI can read positions off a screenshot."""
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    for x in range(0, w, GRID):
+        draw.line([(x, 0), (x, h)], fill=(255, 0, 255), width=1)
+        draw.text((x + 2, 2), str(x), fill=(255, 255, 0))
+    for y in range(0, h, GRID):
+        draw.line([(0, y), (w, y)], fill=(255, 0, 255), width=1)
+        draw.text((2, y + 2), str(y), fill=(255, 255, 0))
+
+
 def save_png(image, path: Path, grid: bool = False) -> None:
-    from PIL import Image, ImageDraw
+    from PIL import Image
 
     img = Image.fromarray(image[:, :, ::-1])  # BGR -> RGB
     if grid:
-        draw = ImageDraw.Draw(img)
-        w, h = img.size
-        for x in range(0, w, GRID):
-            draw.line([(x, 0), (x, h)], fill=(255, 0, 255), width=1)
-            draw.text((x + 2, 2), str(x), fill=(255, 255, 0))
-        for y in range(0, h, GRID):
-            draw.line([(0, y), (w, y)], fill=(255, 0, 255), width=1)
-            draw.text((2, y + 2), str(y), fill=(255, 255, 0))
+        draw_grid(img)
     img.save(path)
 
 
@@ -308,7 +317,7 @@ class TeachingServer:
                 self._send(code, json.dumps(body, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
             def do_GET(self):
-                url = urlparse(self.path)
+                url = urlparse(self.path.removeprefix("/api/v1"))
                 q = {k: v[0] for k, v in parse_qs(url.query).items()}
                 if url.path == "/":
                     return self._send(200, UI.read_bytes(), "text/html; charset=utf-8")
@@ -340,6 +349,7 @@ class TeachingServer:
             def do_POST(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length) or b"{}")
+                self.path = self.path.removeprefix("/api/v1")
                 try:
                     if self.path == "/teach":
                         return self._reply(
