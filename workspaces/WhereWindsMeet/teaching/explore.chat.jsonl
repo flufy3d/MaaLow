@@ -1,0 +1,29 @@
+{"id": 1, "time": "01:39:17", "role": "ai", "text": "教学台已就绪。当前画面是大世界。你可以在截图上画框/箭头/点击点，写上要做什么，然后发送。"}
+{"id": 2, "time": "01:48:35", "role": "teacher", "text": "出现1号框里的logo 多半就是 幻灯片了 你需要点一下屏幕 它就消失了", "annotations": [{"kind": "rect", "coords": [11, 11, 255, 79], "label": "1号框选"}], "screenshot": "", "note": "teaching/explore/note-0001.png", "view": "D:\\Projects\\MaaLow\\workspaces\\WhereWindsMeet\\teaching\\explore\\note-0001.png"}
+{"id": 3, "time": "01:54:10", "role": "ai", "text": "已学会：DismissIdleSlideshow —— 左上角出现燕云 Logo（用你框的 1 号区域做了去背景模板）就点屏幕中央。离线验证 3 张幻灯片全命中，8 张其他画面全不误判；刚才真机点一下已回到大世界（野外，任务「打败独夫」）。下一步做什么？"}
+{"id": 4, "time": "01:57:27", "role": "ai", "text": "规则现在会自动运行了：每一帧画面都会检查 CloseShopPopup / DismissIdleSlideshow，命中就自动点掉，并在这里提示 [自动]。网页没开时也会每 10 秒自查一次。"}
+{"id": 5, "time": "01:58:00", "role": "ai", "text": "[自动] 规则 DismissIdleSlideshow 已触发"}
+{"id": 6, "time": "01:58:38", "role": "teacher", "text": "点方框 是开启菜单栏", "annotations": [{"kind": "rect", "coords": [1018, 10, 39, 32], "label": "1号框选"}], "screenshot": "teaching/explore/0026.png", "note": "teaching/explore/note-0002.png", "view": "D:\\Projects\\MaaLow\\workspaces\\WhereWindsMeet\\teaching\\explore\\note-0002.png"}
+{"id": 7, "time": "01:59:15", "role": "ai", "text": "菜单已打开（右侧面板）。\n顶部：楚行云 / 已达版本等级上限 / 单人模式 · 十六级·开明\n角色：包裹 · 培养 · 外观 · 营生\n商店：商店 · 活动 · 和鸣 · 战令\n故事：武林录 · 任务 · 博物志\n玩法：江湖行 · 赛季 · 伙伴 · 家业\n社交：社交 · 百业 · 门派 · 戏乐\n右侧竖栏图标：邮件、时间(?)、相机、设置等；右上 « 是收起。\n每日任务一般在哪个入口？（活动 / 江湖行 / 任务？）"}
+{"id": 8, "time": "01:59:52", "role": "teacher", "text": "点活动", "annotations": [], "screenshot": "teaching/explore/0028.png", "note": "", "view": ""}
+{"id": 9, "time": "02:00:23", "role": "ai", "text": "进入「燕语江湖」活动页。\n左侧大类：活动（当前）/ 推荐\n活动列表：逃离燕科夫 · 踏岳寻珍(选中) · 鹅礼相迎 NEW · 行山札记 NEW · 镇守群英荟 · 赋燕有灵 NEW · 朝夕共赏(红点) · 江湖百晓\n右侧详情：不见山宝藏，剩余 20天20时；开启条件：需完成探游任务「藏宝秘闻」；右下「前往解锁」。\n左下 ! 按钮，右上 « 返回。\n有红点的「朝夕共赏」可能有可领奖励。下一步？"}
+{"id": 10, "time": "02:00:59", "role": "teacher", "text": "点朝夕共赏 一般今天没领取 就会有红点提醒", "annotations": [{"kind": "rect", "coords": [127, 434, 90, 49], "label": "1号框选"}], "screenshot": "teaching/explore/0030.png", "note": "teaching/explore/note-0003.png", "view": "D:\\Projects\\MaaLow\\workspaces\\WhereWindsMeet\\teaching\\explore\\note-0003.png"}
+{"id": 11, "time": "02:01:29", "role": "ai", "text": "朝夕共赏（每日登录签到）页面：\n- 说明：每日登录领取奖励，奖励每个版本刷新；刷新时间 20天20时\n- 签到进度：第6/7/8天 显示「可补签」，第9天高亮（今天应领的），第10天 心法心得·散本，第18天 折音券\n- 右侧：心法心得·散本「1日后可领取」\n- 本周期剩余补签次数：0\n- 右下「签到」按钮带红点 ≈ (940,680)\n要点「签到」吗？"}
+{"id": 12, "time": "02:01:36", "role": "teacher", "text": "点签到", "annotations": [], "screenshot": "teaching/explore/0032.png", "note": "", "view": ""}
+{"id": 13, "time": "02:01:36", "role": "teacher", "text": "点签到", "annotations": [], "screenshot": "teaching/explore/0032.png", "note": "", "view": ""}
+{"id": 14, "time": "02:01:59", "role": "ai", "text": "签到成功 ✅ 弹出「获得」奖励框：心法心得·散本 ×2；底部提示「点击空白区域关闭」；背后第9天格子已打勾，按钮变成「查看补签」。\n这个「获得」弹窗之后领任何奖励都会出现，要不要也学成守护规则（看到「获得」+「点击空白区域关闭」就点空白处）？"}
+{"id": 15, "time": "02:02:06", "role": "teacher", "text": "点空白区域关闭", "annotations": [{"kind": "click", "coords": [541, 508], "label": "1号点击点"}], "screenshot": "teaching/explore/0034.png", "note": "teaching/explore/note-0004.png", "view": "D:\\Projects\\MaaLow\\workspaces\\WhereWindsMeet\\teaching\\explore\\note-0004.png"}
+{"id": 16, "time": "02:03:59", "role": "ai", "text": "奖励弹窗已关，今日签到完成（第9天打勾、红点消失）。\n新学会守护规则 CloseRewardPopup：底部出现「点击空白区域关闭」就点你给的点 (541,508)。三条守护规则在 35 张截图上交叉验证：每条只命中它自己的画面。\n另外修了网页重复发送（刚才「点签到」被提交了两次，我没重复执行）。请刷新一下网页。\n下一步？"}
+{"id": 17, "time": "02:04:40", "role": "ai", "text": "[自动] 规则 DismissIdleSlideshow 已触发"}
+{"id": 18, "time": "02:06:50", "role": "ai", "text": "网页新增「思考中」状态：你发送后输入框会锁住并显示「MaaLow 思考中… N 秒」，我回复后自动解锁；超过 60 秒可点「仍要发送」。标题栏会显示我是否在线。请刷新网页。"}
+{"id": 19, "time": "02:07:06", "role": "ai", "text": "[自动] 规则 DismissIdleSlideshow 已触发", "auto": true}
+{"id": 20, "time": "02:07:33", "role": "teacher", "text": "点返回", "annotations": [{"kind": "rect", "coords": [995, 19, 52, 38], "label": "1号框选"}], "screenshot": "teaching/explore/0038.png", "note": "teaching/explore/note-0005.png", "view": "D:\\Projects\\MaaLow\\workspaces\\WhereWindsMeet\\teaching\\explore\\note-0005.png"}
+{"id": 21, "time": "02:08:05", "role": "ai", "text": "已返回到菜单面板（地图上的右侧菜单）。「活动」上的红点已消失。\n注意：物品提示条「心法心得·散本 ✕」一直停在 (775,368)，挡住了「故事」那一行，要关掉它吗（点它的 ✕ ≈ (862,368)）？还是继续下一步？"}
+{"id": 22, "time": "02:09:18", "role": "teacher", "text": "可以 以后类似这种 提示使用物品的 我们直接关掉 以后同意背包里使用", "annotations": [{"kind": "rect", "coords": [673, 340, 224, 54], "label": "1号框选"}], "screenshot": "teaching/explore/0040.png", "note": "teaching/explore/note-0006.png", "view": "D:\\Projects\\MaaLow\\workspaces\\WhereWindsMeet\\teaching\\explore\\note-0006.png"}
+{"id": 23, "time": "02:11:30", "role": "ai", "text": "已关闭提示条，并学会第 4 条守护规则 CloseItemTip：物品提示条出现就点它的 ✕（物品统一去背包使用）。交叉验证：只在提示条存在的 8 张截图上命中，关掉后的画面不命中。\n以后新增守护规则不用再重启服务器。\n当前在菜单面板，下一步？"}
+{"id": 24, "time": "02:11:55", "role": "ai", "text": "[自动] 规则 DismissIdleSlideshow 已触发", "auto": true}
+{"id": 25, "time": "02:12:41", "role": "teacher", "text": "点返回 回到初始状态", "annotations": [{"kind": "rect", "coords": [1018, 14, 48, 46], "label": "1号框选"}], "screenshot": "teaching/explore/0043.png", "note": "teaching/explore/note-0007.png", "view": "D:\\Projects\\MaaLow\\workspaces\\WhereWindsMeet\\teaching\\explore\\note-0007.png"}
+{"id": 26, "time": "02:13:08", "role": "ai", "text": "已回到初始状态（大世界，无菜单）。\n这一轮完整走通了第一个每日任务：大世界 → 菜单 → 活动 → 朝夕共赏 →（有红点）签到 → 关奖励弹窗/提示条 → 返回 → 返回。\n要我现在把它整理成可自动重放的 Pipeline 任务「DailySignIn」吗？（以后一键跑，已签到则跳过）还是继续教下一个日常？"}
+{"id": 27, "time": "02:15:17", "role": "ai", "text": "[自动] 规则 DismissIdleSlideshow 已触发", "auto": true}
+{"id": 28, "time": "02:17:40", "role": "ai", "text": "[自动] 规则 DismissIdleSlideshow 已触发", "auto": true}
+{"id": 29, "time": "02:19:56", "role": "ai", "text": "[自动] 规则 DismissIdleSlideshow 已触发", "auto": true}

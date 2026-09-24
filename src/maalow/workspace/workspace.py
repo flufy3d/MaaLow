@@ -13,6 +13,8 @@ class WorkspaceConfig:
     name: str
     controller: str = "adb"  # adb | win32
     target: str = ""  # adb serial or window title
+    package: str = ""  # android package to launch
+    guards: list[str] = field(default_factory=list)  # pipeline nodes checked on every frame (popups, idle screens)
     extra: dict = field(default_factory=dict)
 
 

@@ -1,0 +1,160 @@
+{
+    "DailySignIn": {
+        "desc": "每日签到：大世界 → 菜单 → 活动 → 朝夕共赏 → 签到（已签则跳过）→ 返回大世界（教学 explore 第 8–15 步）",
+        "recognition": "DirectHit",
+        "next": [
+            "[JumpBack]CloseRewardPopup",
+            "SignIn_Done",
+            "SignIn_ClickSign",
+            "SignIn_OpenZhaoxi",
+            "SignIn_OpenActivity",
+            "SignIn_OpenMenu",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]CloseShopPopup",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "SignIn_OpenMenu": {
+        "desc": "大世界右上角菜单按钮",
+        "recognition": "TemplateMatch",
+        "template": "world_menu_button.png",
+        "roi": [
+            990,
+            0,
+            89,
+            60
+        ],
+        "threshold": 0.7,
+        "action": "Click",
+        "post_delay": 1500,
+        "next": [
+            "SignIn_OpenActivity",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "SignIn_OpenActivity": {
+        "desc": "菜单面板里的「活动」",
+        "recognition": "TemplateMatch",
+        "template": "menu_activity.png",
+        "roi": [
+            690,
+            270,
+            320,
+            80
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "post_delay": 2000,
+        "next": [
+            "SignIn_Done",
+            "SignIn_ClickSign",
+            "SignIn_OpenZhaoxi",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "SignIn_OpenZhaoxi": {
+        "desc": "燕语江湖活动列表里的「朝夕共赏」（未选中）",
+        "recognition": "TemplateMatch",
+        "template": "activity_zhaoxi.png",
+        "roi": [
+            110,
+            80,
+            200,
+            500
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "post_delay": 2000,
+        "next": [
+            "SignIn_Done",
+            "SignIn_ClickSign",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "SignIn_ClickSign": {
+        "desc": "朝夕共赏右下「签到」按钮（今天还没签）",
+        "recognition": "TemplateMatch",
+        "template": "signin_button.png",
+        "roi": [
+            860,
+            640,
+            219,
+            80
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "post_delay": 2500,
+        "next": [
+            "[JumpBack]CloseRewardPopup",
+            "SignIn_Done",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "SignIn_Done": {
+        "desc": "按钮变成「查看补签」= 今天已签到，点左上返回退出活动页",
+        "recognition": "TemplateMatch",
+        "template": "signin_done.png",
+        "roi": [
+            900,
+            640,
+            179,
+            80
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "target": [
+            1021,
+            38,
+            1,
+            1
+        ],
+        "post_delay": 2000,
+        "next": [
+            "SignIn_CloseMenu",
+            "SignIn_InWorld",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "SignIn_CloseMenu": {
+        "desc": "菜单面板（「单人模式」），点右上 « 收起",
+        "recognition": "TemplateMatch",
+        "template": "menu_single_mode.png",
+        "roi": [
+            690,
+            95,
+            150,
+            45
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "target": [
+            1042,
+            36,
+            1,
+            1
+        ],
+        "post_delay": 1500,
+        "next": [
+            "SignIn_InWorld",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "SignIn_InWorld": {
+        "desc": "回到大世界（能看到菜单按钮），任务结束",
+        "recognition": "TemplateMatch",
+        "template": "world_menu_button.png",
+        "roi": [
+            990,
+            0,
+            89,
+            60
+        ],
+        "threshold": 0.7
+    }
+}

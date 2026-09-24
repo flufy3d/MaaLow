@@ -1,0 +1,12 @@
+{
+    "CloseRewardPopup": {
+        "desc": "「获得」奖励弹窗：底部提示「点击空白区域关闭」，点空白处关闭（教学 explore 消息 15）",
+        "recognition": "TemplateMatch",
+        "template": "reward_close_hint.png",
+        "roi": [380, 580, 320, 110],
+        "threshold": 0.8,
+        "action": "Click",
+        "target": [541, 508, 1, 1],
+        "post_delay": 1000
+    }
+}

@@ -4,20 +4,38 @@ from maalow.workspace import Workspace
 
 
 class Runner:
-    """Loads a workspace pipeline into MaaFramework and runs tasks locally."""
+    """Loads a workspace pipeline into MaaFramework and runs tasks on a controller."""
 
-    def __init__(self, workspace: Workspace):
+    def __init__(self, workspace: Workspace, controller, resource=None):
+        from maa.resource import Resource
+        from maa.tasker import Tasker
+
         self.workspace = workspace
-        self._tasker = None
+        if resource is None:
+            resource = Resource()
+            resource.post_pipeline(workspace.dir("pipeline")).wait()
+            resource.post_image(workspace.dir("templates")).wait()
+            if not resource.loaded:
+                raise RuntimeError(f"failed to load resources of {workspace.path}")
+        self.resource = resource
+        self.tasker = Tasker()
+        if not self.tasker.bind(self.resource, controller):
+            raise RuntimeError("failed to bind tasker")
 
-    def connect(self) -> None:
-        try:
-            from maa.toolkit import Toolkit  # noqa: F401
-        except ImportError as e:
-            raise RuntimeError("MaaFramework not installed; run: uv sync --extra maa") from e
-        raise NotImplementedError("controller setup not implemented yet")
+    def check(self, task: str, image) -> bool:
+        """Would this node fire on the given frame? Runs offline, touching no device."""
+        from maalow.device.replay import ImageController
 
-    def run(self, task: str) -> bool:
-        if self._tasker is None:
-            self.connect()
-        raise NotImplementedError
+        ctrl = ImageController(image)
+        ctrl.post_connection().wait()
+        return Runner(self.workspace, ctrl, self.resource).run(task, once=True, stop=True)
+
+    def run(self, task: str, once: bool = False, stop: bool = False) -> bool:
+        """Run a pipeline entry node; True if it recognized and acted successfully.
+
+        once: check the current screen only, instead of waiting up to the node timeout.
+        stop: run just this node, without following its next list.
+        """
+        override = {task: {**({"timeout": 0} if once else {}), **({"next": []} if stop else {})}}
+        detail = self.tasker.post_task(task, override).wait().get()
+        return bool(detail and detail.status.succeeded and detail.nodes and detail.nodes[-1].completed)

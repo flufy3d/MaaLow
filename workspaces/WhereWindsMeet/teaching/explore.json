@@ -1,0 +1,256 @@
+{
+  "task": "explore",
+  "steps": [
+    {
+      "screenshot": "teaching/explore/0001.png",
+      "instruction": "启动燕云十六声",
+      "annotations": [],
+      "action": {
+        "type": "start_app"
+      },
+      "result": "",
+      "after": "teaching/explore/0002.png"
+    },
+    {
+      "screenshot": "teaching/explore/0002.png",
+      "instruction": "",
+      "annotations": [],
+      "action": {
+        "type": "wait",
+        "ms": 15000
+      },
+      "result": "",
+      "after": "teaching/explore/0003.png"
+    },
+    {
+      "screenshot": "teaching/explore/0004.png",
+      "instruction": "公告栏：点右上角返回按钮",
+      "annotations": [],
+      "action": {
+        "type": "click",
+        "x": 1032,
+        "y": 34
+      },
+      "result": "",
+      "after": "teaching/explore/0005.png"
+    },
+    {
+      "screenshot": "teaching/explore/0005.png",
+      "instruction": "登录界面：点继续游戏（角色楚行云）",
+      "annotations": [],
+      "action": {
+        "type": "click",
+        "x": 950,
+        "y": 365
+      },
+      "result": "",
+      "after": "teaching/explore/0006.png"
+    },
+    {
+      "screenshot": "teaching/explore/0006.png",
+      "instruction": "",
+      "annotations": [],
+      "action": {
+        "type": "wait",
+        "ms": 12000
+      },
+      "result": "",
+      "after": "teaching/explore/0007.png"
+    },
+    {
+      "screenshot": "teaching/explore/0007.png",
+      "instruction": "商城上新弹窗：点右上角 ✕ 关闭（固定规则）",
+      "annotations": [],
+      "action": {
+        "type": "click",
+        "x": 998,
+        "y": 150
+      },
+      "result": "",
+      "after": "teaching/explore/0008.png"
+    },
+    {
+      "screenshot": "teaching/explore/0021.png",
+      "instruction": "出现1号框里的logo 多半就是 幻灯片了 你需要点一下屏幕 它就消失了",
+      "annotations": [
+        {
+          "kind": "rect",
+          "coords": [
+            11,
+            11,
+            255,
+            79
+          ],
+          "label": "1号框选"
+        }
+      ],
+      "action": {
+        "type": "click",
+        "x": 540,
+        "y": 360
+      },
+      "result": "",
+      "after": "teaching/explore/0022.png"
+    },
+    {
+      "screenshot": "teaching/explore/0026.png",
+      "instruction": "点方框 是开启菜单栏",
+      "annotations": [
+        {
+          "kind": "rect",
+          "coords": [
+            1018,
+            10,
+            39,
+            32
+          ],
+          "label": "1号框选"
+        }
+      ],
+      "action": {
+        "type": "click",
+        "x": 1037,
+        "y": 26
+      },
+      "result": "",
+      "after": "teaching/explore/0027.png"
+    },
+    {
+      "screenshot": "teaching/explore/0028.png",
+      "instruction": "菜单：点活动",
+      "annotations": [],
+      "action": {
+        "type": "click",
+        "x": 808,
+        "y": 310
+      },
+      "result": "",
+      "after": "teaching/explore/0029.png"
+    },
+    {
+      "screenshot": "teaching/explore/0030.png",
+      "instruction": "点朝夕共赏 一般今天没领取 就会有红点提醒",
+      "annotations": [
+        {
+          "kind": "rect",
+          "coords": [
+            127,
+            434,
+            90,
+            49
+          ],
+          "label": "1号框选"
+        }
+      ],
+      "action": {
+        "type": "click",
+        "x": 165,
+        "y": 460
+      },
+      "result": "",
+      "after": "teaching/explore/0031.png"
+    },
+    {
+      "screenshot": "teaching/explore/0032.png",
+      "instruction": "朝夕共赏：点签到",
+      "annotations": [],
+      "action": {
+        "type": "click",
+        "x": 940,
+        "y": 680
+      },
+      "result": "",
+      "after": "teaching/explore/0033.png"
+    },
+    {
+      "screenshot": "teaching/explore/0034.png",
+      "instruction": "点空白区域关闭",
+      "annotations": [
+        {
+          "kind": "click",
+          "coords": [
+            541,
+            508
+          ],
+          "label": "1号点击点"
+        }
+      ],
+      "action": {
+        "type": "click",
+        "x": 541,
+        "y": 508
+      },
+      "result": "",
+      "after": "teaching/explore/0035.png"
+    },
+    {
+      "screenshot": "teaching/explore/0038.png",
+      "instruction": "点返回",
+      "annotations": [
+        {
+          "kind": "rect",
+          "coords": [
+            995,
+            19,
+            52,
+            38
+          ],
+          "label": "1号框选"
+        }
+      ],
+      "action": {
+        "type": "click",
+        "x": 1021,
+        "y": 38
+      },
+      "result": "",
+      "after": "teaching/explore/0039.png"
+    },
+    {
+      "screenshot": "teaching/explore/0040.png",
+      "instruction": "可以 以后类似这种 提示使用物品的 我们直接关掉 以后同意背包里使用",
+      "annotations": [
+        {
+          "kind": "rect",
+          "coords": [
+            673,
+            340,
+            224,
+            54
+          ],
+          "label": "1号框选"
+        }
+      ],
+      "action": {
+        "type": "click",
+        "x": 862,
+        "y": 368
+      },
+      "result": "",
+      "after": "teaching/explore/0041.png"
+    },
+    {
+      "screenshot": "teaching/explore/0043.png",
+      "instruction": "点返回 回到初始状态",
+      "annotations": [
+        {
+          "kind": "rect",
+          "coords": [
+            1018,
+            14,
+            48,
+            46
+          ],
+          "label": "1号框选"
+        }
+      ],
+      "action": {
+        "type": "click",
+        "x": 1042,
+        "y": 36
+      },
+      "result": "",
+      "after": "teaching/explore/0044.png"
+    }
+  ]
+}

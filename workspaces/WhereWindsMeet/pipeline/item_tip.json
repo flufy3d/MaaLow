@@ -1,0 +1,11 @@
+{
+    "CloseItemTip": {
+        "desc": "获得物品后的「使用物品」提示条：直接点 ✕ 关闭，物品统一在背包里使用（教学 explore 消息 22）",
+        "recognition": "TemplateMatch",
+        "template": "item_tip_close.png",
+        "roi": [640, 320, 300, 100],
+        "threshold": 0.8,
+        "action": "Click",
+        "post_delay": 800
+    }
+}

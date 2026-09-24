@@ -1,0 +1,13 @@
+{
+    "DismissIdleSlideshow": {
+        "desc": "待机幻灯片：左上角出现燕云 Logo，点一下屏幕中央退出（教学 explore 消息 2）",
+        "recognition": "TemplateMatch",
+        "template": "idle_slideshow_logo.png",
+        "green_mask": true,
+        "roi": [0, 0, 300, 110],
+        "threshold": 0.7,
+        "action": "Click",
+        "target": [540, 360, 1, 1],
+        "post_delay": 1500
+    }
+}

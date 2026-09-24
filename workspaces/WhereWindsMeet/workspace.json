@@ -1,0 +1,13 @@
+{
+  "name": "WhereWindsMeet",
+  "controller": "adb",
+  "target": "100.123.41.110:44983",
+  "package": "com.netease.yysls",
+  "guards": [
+    "CloseShopPopup",
+    "DismissIdleSlideshow",
+    "CloseRewardPopup",
+    "CloseItemTip"
+  ],
+  "extra": {}
+}

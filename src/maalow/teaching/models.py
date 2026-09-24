@@ -27,6 +27,7 @@ class TeachingStep:
     annotations: list[Annotation] = field(default_factory=list)
     action: dict | None = None  # executed action
     result: str = ""  # observed outcome
+    after: str = ""  # screenshot taken after the action, relative to workspace
 
 
 @dataclass

@@ -1,0 +1,11 @@
+{
+    "CloseShopPopup": {
+        "desc": "商城上新弹窗：点右上角 ✕ 关闭（教学 explore 第 6 步）",
+        "recognition": "TemplateMatch",
+        "template": "popup_close_x.png",
+        "roi": [940, 100, 139, 110],
+        "threshold": 0.7,
+        "action": "Click",
+        "post_delay": 1500
+    }
+}
