@@ -112,7 +112,7 @@ class MaaLowService : Service() {
         nm.notify(
             ID_ALERT,
             Notification.Builder(this, ALERTS)
-                .setSmallIcon(android.R.drawable.stat_notify_error)
+                .setSmallIcon(R.drawable.ic_stat_maalow)
                 .setContentTitle("MaaLow 无法控制设备")
                 .setContentText(msg)
                 .setStyle(Notification.BigTextStyle().bigText(msg))
@@ -137,7 +137,7 @@ class MaaLowService : Service() {
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .setSmallIcon(R.drawable.ic_stat_maalow)
             .setContentTitle("MaaLow")
             .setContentText(text)
             .setContentIntent(open)
