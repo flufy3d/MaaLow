@@ -45,6 +45,7 @@ class Teaching(private val app: App) {
     private var delivered = 0 // messages already handed to the AI
     private var pending: JsonObject? = null // teacher message whose annotations go on the next step
     private var listeners = 0
+    private var lastPoll = 0L // when the last listen returned: the CLI polls again right away
     private var last = "" // latest screenshot, workspace-relative
     private var counter = 0
     private var session = 0 // bumped whenever another session (or a cleared one) is opened: the web UI reloads its chat
@@ -116,7 +117,8 @@ class Teaching(private val app: App) {
             put("messages", messages.size)
             put("screenshot", last)
             put("waiting", waiting)
-            put("ai", if (listeners > 0) "listening" else if (waiting) "busy" else "away")
+            val online = listeners > 0 || System.currentTimeMillis() - lastPoll < POLL_GAP_MS
+            put("ai", if (online) "listening" else if (waiting) "busy" else "away")
         }
     }
 
@@ -362,13 +364,17 @@ class Teaching(private val app: App) {
     }
 
     /** Wait for teacher messages not yet delivered to the AI. */
+    /**
+     * Short polls (at most [POLL_MAX_MS]): a listener that went away without closing its connection would otherwise
+     * keep the web UI showing the AI online until its long timeout ran out.
+     */
     suspend fun listen(timeoutMs: Long): List<JsonObject> {
         synchronized(lock) {
             ensure()
             listeners++
         }
         try {
-            val end = System.currentTimeMillis() + timeoutMs
+            val end = System.currentTimeMillis() + timeoutMs.coerceAtMost(POLL_MAX_MS)
             while (true) {
                 val seen = changed.value
                 synchronized(lock) {
@@ -388,7 +394,7 @@ class Teaching(private val app: App) {
                 withTimeoutOrNull(left) { changed.first { it > seen } }
             }
         } finally {
-            synchronized(lock) { listeners-- }
+            synchronized(lock) { listeners--; lastPoll = System.currentTimeMillis() }
         }
     }
 
@@ -405,5 +411,7 @@ class Teaching(private val app: App) {
         const val PNG_URL = "data:image/png;base64,"
         const val DEFAULT_TASK = "explore" // the scratch task: where teaching starts and ending a task returns to
         const val NOTICE_WINDOW_MS = 30 * 60_000L
+        const val POLL_MAX_MS = 25_000L
+        const val POLL_GAP_MS = 5_000L // still online this long after a poll returned
     }
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -209,7 +210,13 @@ def _do(args, client: Client):
     if op == "say":
         return client.post("/say", {"text": args.text})
     if op == "listen":
-        return _with_views(client, args.root, client.get(f"/listen?timeout={args.timeout}", timeout=args.timeout + 30))
+        # the app answers each poll within 25 s, so it notices soon when nobody is listening any more
+        end = time.monotonic() + args.timeout
+        while True:
+            left = end - time.monotonic()
+            got = client.get(f"/listen?timeout={max(1, min(25, round(left)))}", timeout=60)
+            if got or left <= 25:
+                return _with_views(client, args.root, got)
     if op == "run":
         return _with_views(client, args.root, client.post("/run", {"node": args.node, "once": not args.full}, timeout=900))
     if op == "skill":
