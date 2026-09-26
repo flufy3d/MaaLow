@@ -3,253 +3,135 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MaaLow 指导</title>
-<style>
-  :root { --bg:#16181d; --panel:#1f2229; --line:#2e323b; --text:#e6e6e6; --dim:#8a8f99; --accent:#e0b34a; --red:#ff4d4f; --ok:#73d13d; }
-  * { box-sizing: border-box; }
-  html, body { height:100%; }
-  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 system-ui, "Microsoft YaHei", sans-serif;
-         display:flex; flex-direction:column; overflow:hidden; }
-  button { font:inherit; }
-  .btn { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 10px;
-         cursor:pointer; min-height:34px; touch-action:manipulation; user-select:none; -webkit-user-select:none; }
-  .btn:hover { border-color:#555b66; }
-  .btn.on { border-color:var(--accent); color:var(--accent); }
-  .btn:disabled { opacity:.4; cursor:default; }
-  .sep { width:1px; height:22px; background:var(--line); margin:0 4px; flex:none; }
-  input, textarea, select { background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:6px; font:inherit; }
-
-  /* mode bar */
-  #modebar { display:flex; align-items:center; gap:8px; padding:6px 10px; border-bottom:1px solid var(--line); background:var(--panel); flex:none; }
-  #modebar .tab { background:transparent; border:0; color:var(--dim); padding:6px 14px; border-radius:6px; cursor:pointer; font-size:15px; min-height:36px; }
-  #modebar .tab.on { color:var(--text); background:var(--bg); box-shadow:inset 0 -2px 0 var(--accent); }
-  #recbadge { display:none; color:var(--red); font-variant-numeric:tabular-nums; margin-left:8px; }
-  #recbadge.show { display:inline; }
-  #recbadge::before { content:"●"; margin-right:4px; animation:pulse 1.2s infinite; }
-  #modebar .grow { flex:1; }
-  #helpbtn { width:36px; }
-  .mode { flex:1; min-height:0; display:none; }
-  .mode.on { display:flex; }
-
-  /* live teaching */
-  #left { flex:1; display:flex; flex-direction:column; min-width:0; padding:10px; gap:8px; }
-  #tools { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-  #tools #shot { border-color:var(--accent); }
-  #info { margin-left:auto; color:var(--dim); font-variant-numeric:tabular-nums; }
-  #stage { flex:1; display:flex; align-items:center; justify-content:center; min-height:0; position:relative; }
-  #cv { max-width:100%; max-height:100%; cursor:crosshair; border:1px solid var(--line); touch-action:none; }
-  #empty { position:absolute; color:var(--dim); pointer-events:none; }
-  #right { width:380px; display:flex; flex-direction:column; border-left:1px solid var(--line); background:var(--panel); }
-  #head { padding:8px 12px; border-bottom:1px solid var(--line); color:var(--dim); display:flex; flex-direction:column; gap:6px; }
-  #taskbar { display:flex; gap:6px; align-items:center; }
-  #tasksel { flex:1; min-width:0; min-height:34px; padding:2px 6px; }
-  #taskbar .btn { flex:none; }
-  #taskinfo { display:flex; gap:6px; align-items:center; }
-  #taskinfo .txt { flex:1; min-width:0; }
-  #taskinfo .btn { flex:none; min-height:28px; padding:2px 8px; font-size:12px; }
-  #taskinfo .btn.danger { color:#ff7875; }
-  #older { align-self:center; font-size:12px; color:var(--dim); cursor:pointer; text-decoration:underline; }
-  .msg.system { align-self:center; background:transparent; color:var(--dim); font-size:12px; padding:2px 10px;
-                border-top:1px dashed var(--line); border-bottom:1px dashed var(--line); border-radius:0; text-align:center; }
-  #log { flex:1; overflow-y:auto; padding:10px 12px; display:flex; flex-direction:column; gap:10px; }
-  .msg { padding:8px 10px; border-radius:8px; white-space:pre-wrap; word-break:break-word; }
-  .msg.teacher { background:#2b3342; align-self:flex-end; max-width:90%; }
-  .msg.ai { background:#2a2d24; border-left:3px solid var(--accent); }
-  .msg .meta { font-size:12px; color:var(--dim); margin-bottom:2px; }
-  .msg img { max-width:100%; margin-top:6px; border-radius:4px; cursor:zoom-in; }
-  #compose { border-top:1px solid var(--line); padding:10px 12px; display:flex; flex-direction:column; gap:6px; }
-  #text { width:100%; height:80px; resize:vertical; padding:6px 8px; }
-  #send { background:var(--accent); color:#1a1a1a; border:0; border-radius:6px; padding:7px; font-weight:600; cursor:pointer; min-height:38px; }
-  #hint { font-size:12px; color:var(--dim); }
-  #status { font-size:12px; color:var(--dim); margin-left:6px; }
-  #status.away { color:#ff7875; }
-  #thinking { display:none; color:var(--accent); font-size:13px; }
-  #thinking a { color:var(--dim); margin-left:8px; cursor:pointer; text-decoration:underline; }
-  #compose.locked #text, #compose.locked #send { opacity:.45; pointer-events:none; }
-  @keyframes pulse { 50% { opacity:.4; } }
-  #thinking span { animation: pulse 1.2s infinite; }
-  .msg.ai.auto { background:transparent; border-left-color:var(--line); color:var(--dim); font-size:12px; padding:2px 10px; }
-
-  /* replay teaching */
-  #rp-main { flex:1; display:flex; flex-direction:column; min-width:0; padding:10px; gap:8px; }
-  #rp-tools { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-  #rp-rec { border-color:var(--red); color:var(--red); font-weight:600; min-width:108px; }
-  #rp-rec.live { background:var(--red); color:#fff; }
-  #rp-rectime { font-variant-numeric:tabular-nums; color:var(--dim); min-width:0; }
-  #rp-rectime.live { color:var(--red); }
-  #rp-save { margin-left:auto; font-size:13px; color:var(--dim); white-space:nowrap; }
-  #rp-save.dirty { color:var(--accent); } #rp-save.bad { color:var(--red); } #rp-save.ok { color:var(--ok); }
-  #rp-stage { flex:1; min-height:0; position:relative; display:flex; align-items:center; justify-content:center; }
-  #rp-box { position:relative; line-height:0; }
-  #rp-cv { display:block; cursor:crosshair; border:1px solid var(--line); touch-action:none; background:#000; }
-  #rp-video { position:absolute; inset:0; width:100%; height:100%; display:none; background:#000; border:1px solid var(--line); }
-  #rp-box.playing #rp-video { display:block; }
-  #rp-badge { position:absolute; left:8px; top:8px; background:rgba(0,0,0,.65); color:#fff; padding:2px 8px; border-radius:4px;
-              font:600 13px/1.6 ui-monospace, Consolas, monospace; pointer-events:none; }
-  #rp-badge .ld { color:var(--accent); display:none; } #rp-badge.loading .ld { display:inline; }
-  #rp-placeholder { position:absolute; color:var(--dim); text-align:center; line-height:1.8; pointer-events:none; }
-  #rp-scrubwrap { position:relative; align-self:center; flex:none; }
-  #rp-scrub { display:block; width:100%; height:40px; cursor:pointer; touch-action:none; border-radius:6px; }
-  #rp-pop { position:absolute; bottom:48px; display:none; pointer-events:none; background:var(--panel); border:1px solid var(--line);
-            border-radius:6px; padding:4px; box-shadow:0 4px 16px rgba(0,0,0,.5); transform:translateX(-50%); z-index:5; }
-  #rp-pop div { background-repeat:no-repeat; border-radius:3px; background-color:#000; }
-  #rp-pop span { display:block; text-align:center; font:12px/1.6 ui-monospace, Consolas, monospace; color:var(--text); }
-  #rp-transport { display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:center; }
-  #rp-transport .btn { min-width:46px; min-height:40px; font-size:15px; }
-  #rp-play { min-width:64px !important; border-color:var(--accent); }
-  #rp-pos { display:flex; align-items:center; gap:6px; font-variant-numeric:tabular-nums; margin-left:6px; }
-  #rp-n { width:82px; padding:6px 8px; text-align:right; font-variant-numeric:tabular-nums; min-height:40px; }
-  #rp-time { color:var(--dim); min-width:150px; }
-  #rp-side { width:360px; display:flex; flex-direction:column; border-left:1px solid var(--line); background:var(--panel); min-height:0; }
-  .sec { border-bottom:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
-  .sec h3 { margin:0; padding:8px 12px; font-size:13px; font-weight:600; color:var(--dim); display:flex; align-items:center; gap:6px; }
-  .sec h3 .grow { flex:1; }
-  #rp-recs { overflow-y:auto; max-height:34vh; padding:0 8px 8px; display:flex; flex-direction:column; gap:6px; }
-  .rec { display:flex; gap:8px; padding:6px; border-radius:6px; border:1px solid transparent; cursor:pointer; align-items:flex-start; }
-  .rec:hover { background:#262a32; }
-  .rec.cur { border-color:var(--accent); background:#262a32; }
-  .rec .th { width:96px; height:64px; flex:none; border-radius:4px; background:#000 no-repeat; }
-  .rec .bd { flex:1; min-width:0; }
-  .rec .nm { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .rec .sub { font-size:12px; color:var(--dim); }
-  .rec .nt { font-size:12px; color:#b8bcc4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .rec .acts { display:flex; flex-direction:column; gap:4px; }
-  .rec .acts button { min-height:28px; padding:2px 8px; font-size:12px; }
-  .rec.live .sub { color:var(--red); }
-  .rec input, .rec textarea { width:100%; padding:3px 6px; margin-bottom:4px; }
-  .rec textarea { height:48px; resize:vertical; }
-  #rp-frame { flex:1; overflow-y:auto; padding:0 12px 10px; display:flex; flex-direction:column; gap:8px; min-height:120px; }
-  #rp-note { width:100%; min-height:56px; resize:vertical; padding:6px 8px; }
-  .mk { display:flex; gap:6px; align-items:center; padding:4px; border-radius:6px; border:1px solid transparent; }
-  .mk.sel { border-color:var(--accent); background:#262a32; }
-  .mk .chip { flex:none; min-width:58px; font-size:12px; padding:2px 6px; border-radius:4px; color:#000; font-weight:600; text-align:center; cursor:pointer; }
-  .mk input { flex:1; min-width:0; padding:6px 8px; min-height:34px; }
-  .mk button { min-height:34px; }
-  .none { color:var(--dim); font-size:12px; }
-  #rp-labeled { overflow-y:auto; max-height:26vh; padding:0 8px 8px; }
-  .lf { display:flex; gap:8px; padding:5px 6px; border-radius:6px; cursor:pointer; font-size:13px; align-items:baseline; }
-  .lf:hover { background:#262a32; } .lf.cur { background:#2b3342; }
-  .lf b { font-variant-numeric:tabular-nums; min-width:64px; } .lf .t { color:var(--dim); font-size:12px; min-width:64px; font-variant-numeric:tabular-nums; }
-  .lf .s { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#b8bcc4; }
-  #rp-ws { max-width:140px; padding:2px 4px; }
-
-  /* help */
-  #help { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; z-index:20; }
-  #help.on { display:flex; }
-  #help .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 20px; max-width:640px; width:92vw; max-height:88vh; overflow:auto; }
-  #help h2 { margin:0 0 8px; font-size:16px; }
-  #help h4 { margin:12px 0 4px; color:var(--accent); font-size:13px; }
-  #help table { border-collapse:collapse; width:100%; }
-  #help td { padding:3px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
-  #help td:first-child { white-space:nowrap; width:40%; }
-  kbd { background:var(--bg); border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:0 5px; font:12px ui-monospace, Consolas, monospace; }
-  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#333842; color:var(--text); padding:8px 16px;
-           border-radius:8px; display:none; z-index:30; box-shadow:0 4px 16px rgba(0,0,0,.5); max-width:90vw; }
-
-  @media (max-width: 1000px) {
-    #live, #replay { flex-direction:column; overflow-y:auto; }
-    #right { width:auto; height:45vh; border-left:0; border-top:1px solid var(--line); flex:none; }
-    #rp-main { flex:none; height:auto; }
-    #rp-stage { flex:none; height:min(62vw, 60vh); }
-    #rp-side { width:auto; border-left:0; border-top:1px solid var(--line); flex:none; }
-    #rp-frame { flex:none; }
-    #rp-side .sec:nth-child(1) { order:2; } /* annotations first, right under the frame; recordings last */
-  }
-</style>
+<title>MaaLow — 可教学的低代码视觉自动化</title>
+<link rel="icon" href="web/favicon.png">
+<script>/* theme before first paint (common.js keeps it current) */
+try { const m = localStorage.getItem("maalow-theme") || "auto";
+  document.documentElement.dataset.theme = m === "dark" || (m === "auto" && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light"; } catch (e) {}
+</script>
+<link rel="stylesheet" href="web/style.css">
 </head>
 <body>
-<div id="modebar">
-  <button class="tab" data-mode="live">实时指导</button>
-  <button class="tab" data-mode="replay">回放指导</button>
-  <span id="recbadge"></span>
+<header id="topbar">
+  <div id="brand"><img src="web/mascot.png" alt=""><span>MaaLow</span></div>
+  <button class="btn" id="wsbtn" title="切换工作区"></button>
+  <nav id="tabs">
+    <button class="tab" data-mode="overview"><i data-i="home"></i>概览</button>
+    <button class="tab" data-mode="live"><i data-i="chat"></i>实时指导</button>
+    <button class="tab" data-mode="replay"><i data-i="film"></i>回放指导</button>
+    <button class="tab" data-mode="workspaces"><i data-i="layers"></i>工作区</button>
+  </nav>
   <span class="grow"></span>
-  <button class="btn" id="helpbtn" title="快捷键（?）">?</button>
-</div>
+  <span id="recbadge"></span>
+  <span id="aipill"><span class="dot"></span><span class="t">MaaLow</span></span>
+  <button class="btn icon ghost" id="themebtn"></button>
+  <button class="btn icon ghost" id="helpbtn" title="快捷键（?）"><i data-i="help"></i></button>
+</header>
+<div id="wsmenu" class="menu"></div>
 
+<!-- overview -->
+<div id="overview" class="mode"><div class="page"><div class="page-in">
+  <div id="ov-alerts"></div>
+  <div class="card" id="ov-hero"></div>
+  <div class="grid">
+    <div class="card" id="ov-device"></div>
+    <div class="card" id="ov-guards"></div>
+    <div class="card" id="ov-schedules"></div>
+    <div class="card" id="ov-runs"></div>
+    <div class="card" id="ov-share"></div>
+    <div class="card" id="ov-keepalive"></div>
+  </div>
+</div></div></div>
+
+<!-- live teaching -->
 <div id="live" class="mode">
-  <div id="left">
-    <div id="tools">
-      <button class="btn" id="shot" title="S">📷 截图</button>
-      <span class="sep"></span>
-      <button class="btn" data-tool="rect" title="1">▭ 框选</button>
-      <button class="btn" data-tool="circle" title="2">◯ 圈</button>
-      <button class="btn" data-tool="arrow" title="3">➔ 箭头</button>
-      <button class="btn" data-tool="click" title="4">✚ 点击点</button>
-      <button class="btn" data-tool="region" title="5">⬚ 区域</button>
-      <span class="sep"></span>
-      <button class="btn" id="undo" title="Ctrl+Z">撤销</button>
-      <button class="btn" id="clear">清空</button>
+  <div id="live-main">
+    <div class="toolbar">
+      <button class="btn primary" id="shot" title="S"><i data-i="camera"></i><span>截图</span></button>
+      <div class="seg">
+        <button class="btn" data-tool="rect" title="框选（1）"><i data-i="rect"></i>框选</button>
+        <button class="btn" data-tool="circle" title="圈（2）"><i data-i="circle"></i>圈</button>
+        <button class="btn" data-tool="arrow" title="箭头（3）"><i data-i="arrow"></i>箭头</button>
+        <button class="btn" data-tool="click" title="点击点（4）"><i data-i="click"></i>点击点</button>
+        <button class="btn" data-tool="region" title="区域（5）"><i data-i="region"></i>区域</button>
+      </div>
+      <button class="btn" id="undo" title="撤销（Ctrl+Z）"><i data-i="undo"></i>撤销</button>
+      <button class="btn" id="clear"><i data-i="trash"></i>清空</button>
       <span id="info"></span>
     </div>
-    <div id="stage"><canvas id="cv" width="1080" height="720"></canvas><div id="empty">点“截图”获取当前画面</div></div>
+    <div class="stage" id="stage">
+      <canvas id="cv" width="1080" height="720"></canvas>
+      <div id="empty" class="empty"><img src="web/mascot.png" alt=""><div>点 <b>截图</b> 获取平板当前画面，<br>在上面画框、圈、箭头告诉 MaaLow 做什么。</div></div>
+    </div>
   </div>
-  <div id="right">
-    <div id="head">
+  <div id="chat">
+    <div id="chat-head">
       <div id="taskbar">
         <select id="tasksel" title="切换任务：已有的任务接着原来的步骤继续"></select>
-        <button class="btn" id="newtask">＋ 新任务</button>
+        <button class="btn" id="newtask"><i data-i="plus"></i>新任务</button>
       </div>
       <div id="taskinfo">
-        <span class="txt"><span id="task"></span><span id="status"></span></span>
-        <button class="btn draft" id="savedraft" title="把草稿的对话、步骤和截图改名成一个任务，草稿变回空白">另存为任务</button>
-        <button class="btn draft danger" id="cleardraft" title="删除草稿的对话、步骤和截图">清空草稿</button>
-        <button class="btn named" id="endtask" title="保存并回到草稿">结束任务</button>
-        <button class="btn named danger" id="deltask" title="删除这个任务的对话、步骤和截图">删除任务</button>
+        <span class="txt" id="task"></span>
+        <button class="btn sm draft" id="savedraft" title="把草稿的对话、步骤和截图改名成一个任务，草稿变回空白">另存为任务</button>
+        <button class="btn sm draft danger" id="cleardraft" title="删除草稿的对话、步骤和截图">清空草稿</button>
+        <button class="btn sm named" id="endtask" title="保存并回到草稿">结束任务</button>
+        <button class="btn sm named danger" id="deltask" title="删除这个任务的对话、步骤和截图">删除任务</button>
       </div>
     </div>
     <div id="log"></div>
     <div id="compose">
-      <div id="thinking"><span>MaaLow 思考中…</span> <b id="elapsed"></b><a id="force">仍要发送</a></div>
+      <div id="thinking"><img src="web/mascot.png" alt=""><span>MaaLow 思考中… <b id="elapsed"></b></span><a id="force">仍要发送</a></div>
       <textarea id="text" placeholder="告诉 MaaLow 做什么，例如：点 1 号框里的按钮"></textarea>
-      <button id="send">发送（Ctrl+Enter）</button>
-      <div id="hint">先截图再标注；标注会编号，文字里可以直接说“1 号”“2 号”。快捷键 S 截图，1–5 切换工具。</div>
+      <div id="sendrow"><button class="btn primary" id="send"><i data-i="send"></i>发送 <span class="dim" style="font-weight:400">Ctrl+Enter</span></button></div>
+      <div id="hint">先截图再标注，标注会自动编号，文字里可以直接说“1 号”“2 号”。</div>
     </div>
   </div>
 </div>
 
+<!-- replay teaching -->
 <div id="replay" class="mode">
   <div id="rp-main">
-    <div id="rp-tools">
-      <button class="btn" id="rp-rec">● 开始录制</button>
+    <div class="toolbar">
+      <button class="btn" id="rp-rec"></button>
       <span id="rp-rectime"></span>
-      <span class="sep"></span>
-      <button class="btn" data-rtool="rect" title="1">▭ 框选</button>
-      <button class="btn" data-rtool="circle" title="2">◯ 圈</button>
-      <button class="btn" data-rtool="arrow" title="3">➔ 箭头</button>
-      <button class="btn" data-rtool="click" title="4">✚ 点击点</button>
-      <button class="btn" data-rtool="region" title="5">⬚ 区域</button>
-      <span class="sep"></span>
-      <button class="btn" id="rp-undo" title="Ctrl+Z">↶ 撤销</button>
-      <button class="btn" id="rp-redo" title="Ctrl+Shift+Z">↷ 重做</button>
+      <div class="seg">
+        <button class="btn" data-rtool="rect" title="框选（1）"><i data-i="rect"></i>框选</button>
+        <button class="btn" data-rtool="circle" title="圈（2）"><i data-i="circle"></i>圈</button>
+        <button class="btn" data-rtool="arrow" title="箭头（3）"><i data-i="arrow"></i>箭头</button>
+        <button class="btn" data-rtool="click" title="点击点（4）"><i data-i="click"></i>点击点</button>
+        <button class="btn" data-rtool="region" title="区域（5）"><i data-i="region"></i>区域</button>
+      </div>
+      <button class="btn icon" id="rp-undo" title="撤销（Ctrl+Z）"><i data-i="undo"></i></button>
+      <button class="btn icon" id="rp-redo" title="重做（Ctrl+Shift+Z）"><i data-i="redo"></i></button>
       <span id="rp-save"></span>
     </div>
-    <div id="rp-stage">
+    <div id="rp-stage" class="stage">
       <div id="rp-box">
         <canvas id="rp-cv" width="1080" height="720"></canvas>
         <video id="rp-video" muted playsinline preload="auto"></video>
         <div id="rp-badge"><span id="rp-badgetext">—</span> <span class="ld">· 加载中</span></div>
       </div>
-      <div id="rp-placeholder"></div>
+      <div id="rp-placeholder" class="empty"></div>
     </div>
     <div id="rp-scrubwrap">
       <canvas id="rp-scrub"></canvas>
       <div id="rp-pop"><div></div><span></span></div>
     </div>
     <div id="rp-transport">
-      <button class="btn" id="rp-prevlab" title="上一个已标注帧（[）">⏮</button>
-      <button class="btn" id="rp-back10" title="后退 10 帧（Shift+←）">«10</button>
-      <button class="btn" id="rp-prev" title="上一帧（←，按住连走）">◀</button>
-      <button class="btn" id="rp-play" title="播放 / 暂停（空格）">▶</button>
-      <button class="btn" id="rp-next" title="下一帧（→，按住连走）">▶|</button>
-      <button class="btn" id="rp-fwd10" title="前进 10 帧（Shift+→）">10»</button>
-      <button class="btn" id="rp-nextlab" title="下一个已标注帧（]）">⏭</button>
+      <button class="btn" id="rp-prevlab" title="上一个已标注帧（[）"><i data-i="first"></i></button>
+      <button class="btn" id="rp-back10" title="后退 10 帧（Shift+←）">−10</button>
+      <button class="btn" id="rp-prev" title="上一帧（←，按住连走）"><i data-i="prev"></i></button>
+      <button class="btn primary" id="rp-play" title="播放 / 暂停（空格）"></button>
+      <button class="btn" id="rp-next" title="下一帧（→，按住连走）"><i data-i="next"></i></button>
+      <button class="btn" id="rp-fwd10" title="前进 10 帧（Shift+→）">+10</button>
+      <button class="btn" id="rp-nextlab" title="下一个已标注帧（]）"><i data-i="last"></i></button>
       <span id="rp-pos">帧 <input id="rp-n" inputmode="numeric" title="输入帧号回车跳转（G）"> / <span id="rp-total">0</span></span>
       <span id="rp-time"></span>
     </div>
   </div>
   <div id="rp-side">
     <div class="sec">
-      <h3>录像 <select id="rp-ws" title="工作区"></select><span class="grow"></span><button class="btn" id="rp-refresh" title="刷新列表">↻</button></h3>
+      <h3><i data-i="film" class="sm"></i>录像<span class="grow"></span><button class="btn icon sm ghost" id="rp-refresh" title="刷新列表"><i data-i="refresh" class="sm"></i></button></h3>
       <div id="rp-recs"></div>
     </div>
     <div class="sec" style="flex:1">
@@ -266,8 +148,22 @@
   </div>
 </div>
 
-<div id="help"><div class="card">
-  <h2>快捷键</h2>
+<!-- workspaces -->
+<div id="workspaces" class="mode"><div class="page"><div class="page-in">
+  <div class="page-head">
+    <div class="grow">
+      <h1>工作区</h1>
+      <p>一个工作区对应一个游戏，规则、模板、技能、指导记录和录像都放在里面。实时指导、回放指导和守护规则都用当前工作区。</p>
+    </div>
+    <button class="btn" id="ws-import"><i data-i="upload"></i>导入 zip</button>
+    <button class="btn primary" id="ws-new"><i data-i="plus"></i>新建工作区</button>
+  </div>
+  <div class="grid" id="ws-grid"></div>
+  <div class="card" id="ws-trash"></div>
+</div></div></div>
+
+<template id="helptpl">
+  <div id="help">
   <h4>回放指导 · 定位</h4>
   <table>
     <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>上一帧 / 下一帧，按住连走</td></tr>
@@ -291,273 +187,18 @@
     <tr><td><kbd>?</kbd></td><td>打开 / 关闭本帮助</td></tr>
   </table>
   <p class="none">回放指导的标注按帧号保存，修改后自动保存；框统一用 1080×720 坐标。</p>
-</div></div>
+  </div>
+</template>
+<div id="dlg"></div>
 <div id="toast"></div>
 
 <script src="web/common.js"></script>
-<script>
-"use strict";
-// ---- mode switch (kept in the URL hash: #live, #replay/<recording>/<frame>)
-let mode = "";
-function setMode(m) {
-  if (m === mode) return;
-  mode = m;
-  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
-  document.querySelectorAll(".mode").forEach(d => d.classList.toggle("on", d.id === m));
-  if (m === "replay") window.replay?.enter(); else { window.replay?.leave(); history.replaceState(null, "", "#live"); }
-}
-document.querySelectorAll(".tab").forEach(b => b.onclick = () => setMode(b.dataset.mode));
-
-function toast(msg, ms = 3000) {
-  const t = $("toast");
-  t.textContent = msg; t.style.display = "block";
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", ms);
-}
-const help = () => $("help").classList.toggle("on");
-$("helpbtn").onclick = help;
-$("help").onclick = e => { if (e.target.id === "help") help(); };
-
-// ---- live teaching
-let workspace = "";
-const fileUrl = p => `${API}/files/${encodeURIComponent(workspace)}/${p}?token=${encodeURIComponent(TOKEN)}`;
-
-const cv = $("cv"), ctx = cv.getContext("2d");
-let tool = "rect", marks = [], draft = null, img = new Image(), shot = "", seen = 0;
-
-function setTool(t) {
-  tool = t;
-  document.querySelectorAll("[data-tool]").forEach(b => b.classList.toggle("on", b.dataset.tool === t));
-}
-document.querySelectorAll("[data-tool]").forEach(b => b.onclick = () => setTool(b.dataset.tool));
-setTool("rect");
-
-function render() {
-  ctx.clearRect(0, 0, cv.width, cv.height);
-  if (img.complete && img.naturalWidth) ctx.drawImage(img, 0, 0);
-  marks.forEach((m, i) => drawMark(ctx, m, i + 1));
-  if (draft) drawMark(ctx, draft, 0);
-  $("empty").style.display = shot ? "none" : "block";
-}
-
-// pointer events: mouse, pen and touch (the page may be opened on the tablet itself)
-let start = null;
-cv.onpointerdown = e => {
-  if (!shot) return;
-  cv.setPointerCapture(e.pointerId);
-  start = canvasPos(cv, e);
-  if (tool === "click") { marks.push(toMark("click", start, start)); start = null; render(); }
-};
-cv.onpointermove = e => {
-  const p = canvasPos(cv, e);
-  $("info").textContent = `(${p[0]}, ${p[1]})  ${cv.width}×${cv.height}`;
-  if (start) { draft = toMark(tool, start, p); render(); }
-};
-cv.onpointerup = e => {
-  if (!start) return;
-  const m = toMark(tool, start, canvasPos(cv, e));
-  start = null; draft = null;
-  if (!tinyMark(m)) marks.push(m);
-  render();
-};
-cv.onpointercancel = () => { start = null; draft = null; render(); };
-$("undo").onclick = () => { marks.pop(); render(); };
-$("clear").onclick = () => { marks = []; render(); };
-
-// A screenshot is a saved workspace file; marks are drawn on it and sent with its path.
-function show(path) {
-  const next = new Image();
-  next.onload = () => { img = next; shot = path; cv.width = next.naturalWidth; cv.height = next.naturalHeight; render(); };
-  next.src = fileUrl(path);
-}
-
-let shooting = false;
-async function takeShot() {
-  if (shooting) return;
-  shooting = true;
-  const b = $("shot");
-  b.textContent = "📷 截图中…";
-  try {
-    const s = await post("/shot");
-    workspace = s.workspace;
-    marks = [];
-    show(s.screenshot);
-  } catch (e) {
-    alert("截图失败：" + e.message);
-  } finally {
-    shooting = false;
-    b.textContent = "📷 截图";
-  }
-}
-$("shot").onclick = takeShot;
-
-// the AI acted: show its new screenshot, unless the teacher is in the middle of drawing
-function followShot(path) {
-  if (path && path !== shot && !marks.length && !start) show(path);
-}
-
-function addMsg(m) {
-  const d = document.createElement("div");
-  d.className = "msg " + m.role + (m.auto ? " auto" : "");
-  if (m.role === "system") d.textContent = `${m.time} · ${m.text}`;
-  else d.innerHTML = `<div class="meta">${m.role === "ai" ? "MaaLow" : "你"} · ${m.time}</div>`;
-  if (m.role !== "system") d.appendChild(document.createTextNode(m.text || ""));
-  if (m.note) {
-    const i = document.createElement("img");
-    i.src = fileUrl(m.note); i.onclick = () => window.open(i.src);
-    d.appendChild(i);
-  }
-  return d;
-}
-
-// The chat shows the latest PAGE messages; older ones load on demand (the log on disk keeps everything).
-const PAGE = 200;
-let first = 0; // id of the oldest message shown
-function showOlder(more) {
-  $("older")?.remove();
-  if (!more) return;
-  const a = document.createElement("a");
-  a.id = "older"; a.textContent = "加载更早的消息";
-  a.onclick = loadOlder;
-  $("log").prepend(a);
-}
-async function loadOlder() {
-  const log = $("log"), ms = await json(`/messages?before=${first}&limit=${PAGE}`);
-  if (!ms.length) return showOlder(false);
-  const h = log.scrollHeight, top = log.firstChild?.id === "older" ? log.firstChild.nextSibling : log.firstChild;
-  ms.forEach(m => log.insertBefore(addMsg(m), top));
-  first = ms[0].id;
-  showOlder(first > 1);
-  log.scrollTop += log.scrollHeight - h; // keep the view where it was
-}
-function appendMsgs(ms) {
-  const log = $("log");
-  ms.forEach(m => log.appendChild(addMsg(m)));
-  if (ms.length) { seen = ms[ms.length - 1].id; log.scrollTop = log.scrollHeight; }
-}
-
-let task = "", session = -1, steps = 0, polling = false;
-async function poll() {
-  if (polling) return;
-  polling = true;
-  try {
-    const s = await json("/state");
-    const draft = s.task === "explore";
-    if (s.session !== session || s.task !== task || s.workspace !== workspace) {  // another (or a cleared) session: reload its chat
-      task = s.task; workspace = s.workspace; session = s.session; seen = 0;
-      $("log").innerHTML = "";
-      const ms = await json(`/messages?limit=${PAGE}`);
-      appendMsgs(ms);
-      first = ms.length ? ms[0].id : 0;
-      showOlder(first > 1);
-      loadTasks();
-    } else if (s.steps !== steps) loadTasks(); // step counts in the list
-    steps = s.steps;
-    $("task").textContent = `${s.workspace} · ${draft ? "草稿" : "任务"} · 第 ${s.steps} 步`;
-    document.querySelectorAll("#taskinfo .draft").forEach(b => b.style.display = draft ? "" : "none");
-    document.querySelectorAll("#taskinfo .named").forEach(b => b.style.display = draft ? "none" : "");
-    followShot(s.screenshot);
-    setWaiting(s.waiting);
-    const st = $("status");
-    st.textContent = { listening: " · MaaLow 在线", busy: " · MaaLow 处理中", away: " · MaaLow 未在监听，消息会排队" }[s.ai] || "";
-    st.className = s.ai === "away" ? "away" : "";
-    appendMsgs(await json("/messages?since=" + seen));
-  } catch (e) { /* app restarting */ }
-  finally { polling = false; }
-}
-setInterval(poll, 1500); poll();
-
-// ---- tasks: one task is one case being taught; its steps and chat live in teaching/<task>.*
-async function loadTasks() {
-  const sel = $("tasksel");
-  try {
-    const ts = await json("/tasks?workspace=" + encodeURIComponent(workspace));
-    sel.innerHTML = ts.map(t => `<option value="${esc(t.name)}">${t.name === "explore" ? "草稿" : esc(t.name)}（${t.steps} 步）</option>`).join("");
-  } catch (e) {
-    sel.innerHTML = `<option>${esc(task)}</option>`;
-  }
-  sel.value = task;
-}
-async function taskOp(path, body, what) {
-  try {
-    await post(path, { ...body, by: "teacher" });
-    marks = []; render();
-  } catch (e) {
-    alert(what + "失败：" + e.message);
-  }
-  await poll();
-  loadTasks();
-}
-const switchTask = name => taskOp("/task", { name, workspace }, "切换任务");
-$("tasksel").onchange = e => { if (e.target.value !== task) switchTask(e.target.value); };
-$("newtask").onclick = () => {
-  const name = (prompt("新任务名（例如：每日签到）") || "").trim();
-  if (name) switchTask(name);
-};
-$("endtask").onclick = () => {
-  if (confirm(`结束任务 ${task}？已记录的步骤都已保存，之后可以在下拉框里选回来继续。`)) switchTask("explore");
-};
-$("deltask").onclick = () => {
-  if (confirm(`删除任务 ${task}？它的对话、${steps} 个步骤和截图都会删掉，不能恢复。`)) taskOp("/task/delete", {}, "删除任务");
-};
-$("savedraft").onclick = () => {
-  const name = (prompt("把草稿另存为任务，任务名：") || "").trim();
-  if (name) taskOp("/task/rename", { name }, "另存为任务");
-};
-$("cleardraft").onclick = () => {
-  if (confirm(`清空草稿？草稿里的对话、${steps} 个步骤和截图都会删掉，不能恢复。想保留就先“另存为任务”。`)) taskOp("/task/delete", {}, "清空草稿");
-};
-
-// lock the composer from sending until the AI answers, so instructions are not repeated
-let waitingSince = 0, forced = false;
-function setWaiting(w) {
-  if (w && !waitingSince) waitingSince = Date.now();
-  if (!w) { waitingSince = 0; forced = false; }
-  const locked = w && !forced;
-  $("compose").classList.toggle("locked", locked);
-  $("thinking").style.display = locked ? "block" : "none";
-  const secs = waitingSince ? Math.round((Date.now() - waitingSince) / 1000) : 0;
-  $("elapsed").textContent = secs + " 秒";
-  $("force").style.display = secs >= 60 ? "inline" : "none";
-}
-$("force").onclick = () => { forced = true; setWaiting(true); };
-setInterval(() => { if (waitingSince) setWaiting(true); }, 1000);
-
-let sending = false;
-async function send() {
-  const text = $("text").value.trim();
-  if (sending || (!text && !marks.length)) return;
-  if ($("compose").classList.contains("locked")) return;
-  sending = true;
-  try {
-    const labeled = marks.map((m, i) => ({ ...m, label: `${i + 1}号${NAMES[m.kind]}` }));
-    const image = marks.length ? cv.toDataURL("image/png") : "";
-    await post("/teach", { text, annotations: labeled, image, screenshot: shot });
-    $("text").value = ""; marks = []; render();
-    forced = false; setWaiting(true); poll();
-  } catch (e) {
-    alert("发送失败：" + e.message);
-  } finally {
-    sending = false;
-  }
-}
-$("send").onclick = send;
-$("text").onkeydown = e => {
-  if (e.key === "Enter" && e.ctrlKey && !e.repeat && !e.isComposing) { e.preventDefault(); send(); }
-};
-window.addEventListener("keydown", e => {
-  if (e.key === "Escape" && $("help").classList.contains("on")) { help(); return; }
-  if (e.target.tagName === "TEXTAREA" || e.target.tagName === "INPUT") return;
-  if (e.key === "?") { help(); return; }
-  if (mode !== "live") return;
-  const t = TOOLS[Number(e.key) - 1];
-  if (t) setTool(t);
-  if ((e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey) takeShot();
-  if (e.key === "z" && e.ctrlKey) { marks.pop(); render(); }
-  if (e.key === "Escape") { start = null; draft = null; render(); }
-});
-render();
-</script>
+<script src="web/live.js"></script>
 <script src="web/replay.js"></script>
-<script>setMode(location.hash.startsWith("#replay") ? "replay" : "live");</script>
+<script src="web/guards.js"></script>
+<script src="web/browse.js"></script>
+<script src="web/overview.js"></script>
+<script src="web/workspaces.js"></script>
+<script src="web/app.js"></script>
 </body>
 </html>

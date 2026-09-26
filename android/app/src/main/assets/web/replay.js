@@ -136,7 +136,7 @@ window.replay = (() => {
     videoFrame = n;
     playing = true; hideVideoOnLoad = false;
     box.classList.add("playing");
-    $("rp-play").textContent = "⏸";
+    $("rp-play").innerHTML = svg("pause");
     video.currentTime = (n + 0.5) / FPS;
     video.play().catch(e => { toast("无法播放：" + e.message); stopVideo(false); box.classList.remove("playing"); });
     track();
@@ -159,7 +159,7 @@ window.replay = (() => {
     if (!playing) return;
     playing = false;
     video.pause();
-    $("rp-play").textContent = "▶";
+    $("rp-play").innerHTML = svg("play");
     if (load) {
       hideVideoOnLoad = true;
       const n = videoFrame;
@@ -180,10 +180,11 @@ window.replay = (() => {
     if (cur >= 0) marksOf(cur).forEach((m, i) => drawMark(ctx, m, i + 1, i === selected));
     if (draft) drawMark(ctx, draft, 0);
     const ph = $("rp-placeholder");
-    ph.style.display = rec ? "none" : "block";
+    ph.style.display = rec ? "none" : "flex";
     box.style.visibility = rec ? "visible" : "hidden";
-    ph.innerHTML = recState.recording ? "录制中……在平板上正常操作。<br>结束录制后可以逐帧查看和标注。"
-      : "选择右侧的录像，或点“开始录制”录一段在平板上的真实操作（最长 3 分钟）。";
+    const say = recState.recording ? "录制中……在平板上正常操作。<br>结束录制后可以逐帧查看和标注。"
+      : ws ? "选择右侧的录像，或点 <b>开始录制</b> 录一段在平板上的真实操作（最长 3 分钟）。" : "还没有工作区，先到 <b>工作区</b> 页新建一个。";
+    if (!rec && ph.dataset.say !== say) { ph.dataset.say = say; ph.innerHTML = `<img src="web/mascot.png" alt=""><div>${say}</div>`; }
   }
   const requestRender = () => { if (!frameReq) frameReq = requestAnimationFrame(render); };
 
@@ -330,7 +331,11 @@ window.replay = (() => {
   }
 
   async function conflict(w, id, n, out, mine) {
-    const overwrite = confirm(`第 ${n} 帧的标注已被另一个页面修改。\n\n确定：用这个页面的标注覆盖\n取消：放弃这里的修改，载入另一个页面的`);
+    const overwrite = await ui.dialog({
+      title: `第 ${n} 帧的标注已被另一个页面修改`,
+      body: "用这个页面的标注覆盖，还是放弃这里的修改、载入另一个页面的？",
+      actions: [{ label: "载入另一个页面的", value: false }, { label: "用这里的覆盖", value: true, kind: "primary" }],
+    });
     if (overwrite) {
       const r = await putFrame(w, id, n, { ...mine, force: true });
       saved(n, r.body);
@@ -382,7 +387,7 @@ window.replay = (() => {
       <div class="mk${i === selected ? " sel" : ""}" data-i="${i}">
         <span class="chip" style="background:${COLORS[m.kind]}" title="选中">${i + 1} ${NAMES[m.kind]}</span>
         <input value="${esc(m.label)}" placeholder="说明：这是什么 / 为什么">
-        <button class="btn" data-del title="删除（Delete）">✕</button>
+        <button class="btn icon sm ghost" data-del title="删除（Delete）">${svg("x", "sm")}</button>
       </div>`).join("")
       : `<div class="none">在画面上拖动画框、圈、箭头、区域，或点一下标点击点；每个标注都可以写说明。</div>`;
   }
@@ -476,26 +481,29 @@ window.replay = (() => {
     drawScrub();
   }
   new ResizeObserver(sizeScrub).observe(cv);
+  window.addEventListener("themechange", drawScrub);
 
   function drawScrub() {
     const W = scrub.width / dpr(), H = 40;
     sctx.setTransform(dpr(), 0, 0, dpr(), 0, 0);
     sctx.clearRect(0, 0, W, H);
-    sctx.fillStyle = "#262a32";
-    sctx.beginPath(); sctx.roundRect(0, 0, W, H, 6); sctx.fill();
+    const accent = cssVar("--orange");
+    sctx.fillStyle = cssVar("--panel-2");
+    sctx.beginPath(); sctx.roundRect(0, 0, W, H, 10); sctx.fill();
     if (!rec || total < 1) return;
     const x = n => total > 1 ? 6 + n / (total - 1) * (W - 12) : 6;
     const at = playing ? videoFrame : want >= 0 ? want : cur;
-    sctx.fillStyle = "#3a3f4a"; sctx.fillRect(6, 17, W - 12, 6); // track
-    sctx.fillStyle = "rgba(224,179,74,.45)"; sctx.fillRect(6, 17, x(at) - 6, 6);
-    sctx.fillStyle = "#555b66"; // a tick every 10 s
+    sctx.fillStyle = cssVar("--line-2"); sctx.fillRect(6, 17, W - 12, 6); // track
+    sctx.fillStyle = accent; sctx.globalAlpha = .5; sctx.fillRect(6, 17, x(at) - 6, 6); sctx.globalAlpha = 1;
+    sctx.fillStyle = cssVar("--faint"); // a tick every 10 s
     for (let f = 0; f < total; f += FPS * 10) sctx.fillRect(Math.round(x(f)), 25, 1, 6);
-    sctx.fillStyle = "#e0b34a"; // labeled frames
+    sctx.fillStyle = accent; // labeled frames
     for (const n of labeledFrames()) sctx.fillRect(Math.round(x(n)) - 1, 3, 3, 11);
     const g = drag ?? hover;
-    if (g !== null) { sctx.fillStyle = "rgba(255,255,255,.5)"; sctx.fillRect(Math.round(x(g)), 2, 1, H - 4); }
-    sctx.fillStyle = "#fff"; sctx.fillRect(Math.round(x(at)) - 1, 2, 2, H - 4);
-    sctx.beginPath(); sctx.arc(x(at), 20, 7, 0, 2 * Math.PI); sctx.fillStyle = "#e0b34a"; sctx.fill();
+    if (g !== null) { sctx.fillStyle = cssVar("--dim"); sctx.fillRect(Math.round(x(g)), 2, 1, H - 4); }
+    sctx.fillStyle = cssVar("--text"); sctx.fillRect(Math.round(x(at)) - 1, 2, 2, H - 4);
+    sctx.beginPath(); sctx.arc(x(at), 20, 7, 0, 2 * Math.PI); sctx.fillStyle = accent; sctx.fill();
+    sctx.lineWidth = 2; sctx.strokeStyle = cssVar("--edge"); sctx.stroke();
   }
 
   function frameAt(clientX) {
@@ -608,7 +616,7 @@ window.replay = (() => {
   function renderRecButton() {
     const b = $("rp-rec");
     b.classList.toggle("live", !!recState.recording);
-    b.textContent = recState.recording ? "■ 结束录制" : recState.saving ? "保存中…" : "● 开始录制";
+    b.innerHTML = recState.recording ? `${svg("stop")}结束录制` : recState.saving ? "保存中…" : `${svg("rec")}开始录制`;
     b.disabled = !!recState.saving && !recState.recording;
   }
 
@@ -670,12 +678,12 @@ window.replay = (() => {
         : `${fmtClock(r.duration_ms || 0)} · ${r.frames} 帧 · ${(r.started_at || "").slice(5, 16)}${r.stopped_by === "recovered" ? " · 已修复" : ""}${r.stopped_by === "limit" ? " · 到达上限" : ""}`;
       const body = editing === r.id
         ? `<input data-f="name" value="${esc(r.name)}" placeholder="名称"><textarea data-f="note" placeholder="备注">${esc(r.note)}</textarea>
-           <button class="btn" data-act="save">保存</button> <button class="btn" data-act="cancel">取消</button>`
+           <button class="btn sm primary" data-act="save">保存</button> <button class="btn sm" data-act="cancel">取消</button>`
         : `<div class="nm">${esc(r.name)}</div><div class="sub">${sub}</div>${r.note ? `<div class="nt" title="${esc(r.note)}">${esc(r.note)}</div>` : ""}`;
       return `<div class="rec${rec && rec.id === r.id ? " cur" : ""}${live ? " live" : ""}" data-id="${esc(r.id)}">
         <div class="th" style="${thumbStyle(r, 96)}"></div>
         <div class="bd">${body}</div>
-        ${editing === r.id || live ? "" : `<div class="acts"><button class="btn" data-act="edit">改名</button><button class="btn" data-act="del">删除</button></div>`}
+        ${editing === r.id || live ? "" : `<div class="acts"><button class="btn sm" data-act="edit">改名</button><button class="btn sm danger" data-act="del">删除</button></div>`}
       </div>`;
     }).join("");
   }
@@ -697,7 +705,7 @@ window.replay = (() => {
       return;
     }
     if (act === "del") {
-      if (!confirm(`删除录像“${r.name}”？视频、缩略图和标注都会删除，不能恢复。`)) return;
+      if (!await ui.confirm("视频、缩略图和标注都会删除，不能恢复。", { title: `删除录像“${r.name}”？`, ok: "删除", danger: true })) return;
       try {
         await json(`/recordings/${enc(ws)}/${enc(id)}`, { method: "DELETE" });
         if (rec && rec.id === id) close();
@@ -736,29 +744,34 @@ window.replay = (() => {
   function close() {
     rec = null; total = 0; cur = -1; want = -1; image = null; labels = { version: 0, frames: {} };
     dirty.clear(); undoStack = []; redoStack = [];
-    history.replaceState(null, "", "#replay");
+    if (active) history.replaceState(null, "", "#replay");
     updatePos(); undoButtons(); saveStatus(); refreshFrame(); refreshLabeled(); render(); drawScrub();
   }
 
-  // ---- workspace
+  // ---- workspace: always the current one (switched in the top bar)
 
-  async function loadWorkspaces() {
-    const [list, st] = await Promise.all([json("/workspaces"), json("/status")]);
-    ws = ws || st.workspace || list[0] || "";
-    $("rp-ws").innerHTML = list.map(w => `<option${w === ws ? " selected" : ""}>${esc(w)}</option>`).join("");
+  /** Open the recording in the address (#replay/<id>/<frame>), else the newest ready one. */
+  async function openDefault(hash) {
+    const [, id, f] = (hash || "").split("/");
+    const pick = recs.find(r => r.id === id && r.state === "ready") || recs.find(r => r.state === "ready");
+    if (pick) await open(pick.id, pick.id === id ? Number(f) || 0 : 0);
   }
-  $("rp-ws").onchange = async () => {
+
+  async function setWorkspace(w) {
+    if (w === ws) return;
     await flush();
     close();
-    ws = $("rp-ws").value;
-    await loadList();
-  };
+    ws = w || "";
+    recs = [];
+    renderList();
+    if (started && active && ws) { await loadList(); await openDefault(); }
+  }
 
   // ---- keys
 
   const typing = t => t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT";
   window.addEventListener("keydown", e => {
-    if (mode !== "replay" || $("help").classList.contains("on")) return;
+    if (mode !== "replay" || ui.isOpen()) return;
     if (typing(e.target)) { if (e.key === "Escape") e.target.blur(); return; }
     const k = e.key, ctrl = e.ctrlKey || e.metaKey;
     if ((k === "ArrowLeft" || k === "ArrowRight") && !ctrl) {
@@ -791,16 +804,16 @@ window.replay = (() => {
     active = true;
     if (!started) {
       started = true;
+      ws = wsStore.current;
+      $("rp-play").innerHTML = svg("play");
       render(); updatePos(); undoButtons(); renderRecButton();
-      try { await loadWorkspaces(); } catch (e) { toast("连接 App 失败：" + e.message); return; }
       await loadList();
-      const [, id, f] = location.hash.split("/");
-      const pick = recs.find(r => r.id === id && r.state === "ready") || recs.find(r => r.state === "ready");
-      if (pick) await open(pick.id, pick.id === id ? Number(f) || 0 : 0);
+      await openDefault(location.hash);
     } else {
       requestAnimationFrame(() => { layout(); sizeScrub(); });
       if (rec) history.replaceState(null, "", `#replay/${rec.id}/${Math.max(cur, 0)}`); else history.replaceState(null, "", "#replay");
-      loadList();
+      await loadList();
+      if (!rec) await openDefault(); // e.g. the workspace was switched while away
     }
   }
 
@@ -811,5 +824,5 @@ window.replay = (() => {
     flush();
   }
 
-  return { enter, leave };
+  return { enter, leave, flush, setWorkspace };
 })();
