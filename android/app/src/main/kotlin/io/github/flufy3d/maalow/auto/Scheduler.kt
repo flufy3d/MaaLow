@@ -165,6 +165,25 @@ class Scheduler(private val app: App) {
         describe(ws, s, System.currentTimeMillis())
     }
 
+    /** A workspace was renamed: its handled marks move along, so nothing fires again or counts as missed. */
+    fun renamed(from: String, to: String) = synchronized(this) {
+        synchronized(stateFile) {
+            val h = handled()
+            val moved = h.filterKeys { it.startsWith("$from/") }
+            moved.keys.forEach { h.remove(it) }
+            moved.forEach { (k, v) -> h["$to/${k.removePrefix("$from/")}"] = v }
+            stateFile.writeJson(buildJsonObject { put("handled", JsonObject(h.mapValues { JsonPrimitive(it.value) })) })
+        }
+        reschedule()
+    }
+
+    /** A copied workspace starts with its schedules off, so the same game is not run twice at the same time. */
+    fun disableAll(ws: String) = synchronized(this) {
+        val list = load(ws)
+        if (list.any { it.enabled }) save(ws, list.map { it.copy(enabled = false) })
+        reschedule()
+    }
+
     fun delete(ws: String, id: String): Boolean = synchronized(this) {
         val list = load(ws)
         if (list.none { it.id == id }) return false

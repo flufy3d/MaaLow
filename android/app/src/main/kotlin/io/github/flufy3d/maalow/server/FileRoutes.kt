@@ -98,6 +98,7 @@ fun Route.fileRoutes(app: App) {
                 ws.import(call.ws(), tmp, replace = mode == "replace")
             }
             app.teaching.reload(call.ws())
+            app.scheduler.reschedule() // a new or replaced workspace may bring schedules
             call.respondJson(result)
         } finally {
             tmp.delete()

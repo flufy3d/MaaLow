@@ -86,6 +86,7 @@ class ApiServer(private val app: App) {
                 deviceRoutes()
                 teachRoutes(app)
                 fileRoutes(app)
+                workspaceRoutes(app)
                 autoRoutes(app)
                 skillRoutes(app)
                 recordRoutes(app)
@@ -166,10 +167,9 @@ class ApiServer(private val app: App) {
         // {workspace?, guards_enabled?, guard_interval_ms?, record_bitrate?}
         put("/api/v1/settings") {
             val body = call.body()
-            body.optStr("workspace")?.let { require(it.isEmpty() || app.workspaces.exists(it)) { "no workspace: $it" } }
+            body.optStr("workspace")?.let { if (it.isEmpty()) app.updateSettings { s -> s.copy(workspace = "") } else app.useWorkspace(it) }
             app.updateSettings { s ->
                 s.copy(
-                    workspace = body.optStr("workspace") ?: s.workspace,
                     guardsEnabled = body.optBool("guards_enabled") ?: s.guardsEnabled,
                     guardIntervalMs = body.optLong("guard_interval_ms") ?: s.guardIntervalMs,
                     recordBitrate = body.optInt("record_bitrate")?.also { require(it in 250_000..50_000_000) { "record_bitrate out of range" } }
@@ -177,6 +177,12 @@ class ApiServer(private val app: App) {
                 )
             }
             call.respondJson(settings())
+        }
+
+        // Same as the app's restart button; the supervisor reports the new state in /status a moment later.
+        post("/api/v1/engine/restart") {
+            MaaLowService.start(app, MaaLowService.ACTION_RESTART_ENGINE)
+            call.respondJson(buildJsonObject { put("restarting", true) })
         }
 
         get("/api/v1/keepalive") {

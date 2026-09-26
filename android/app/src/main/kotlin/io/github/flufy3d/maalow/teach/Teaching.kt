@@ -192,6 +192,7 @@ class Teaching(private val app: App) {
                 system(if (ending) "$who 结束了任务 $prev，共 $prevSteps 步" else "$who 切换到任务 $name", by)
             }
             start(target, name)
+            if (target != app.settings().workspace) app.updateSettings { it.copy(workspace = target) } // one current workspace
             system(
                 when {
                     !wasActive -> "$who 开始任务 $name"
@@ -291,6 +292,18 @@ class Teaching(private val app: App) {
     /** The workspace's files were replaced underneath (import): reopen the session from disk. */
     fun reload(ws: String) = synchronized(lock) {
         if (workspace == ws) start(ws, task)
+    }
+
+    /** The workspace was renamed (to) or deleted (null): follow it, or close the session. */
+    fun moved(from: String, to: String?) = synchronized(lock) {
+        if (workspace != from) return@synchronized
+        if (to != null) start(to, task)
+        else {
+            workspace = ""
+            task = ""
+            session++
+            changed.value++
+        }
     }
 
     // ---- chat between the human teacher and the AI

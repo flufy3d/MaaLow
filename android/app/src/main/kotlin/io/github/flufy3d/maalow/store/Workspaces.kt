@@ -59,6 +59,59 @@ class Workspaces(val root: File) {
         File(dir(ws), CONFIG).writeJson(cfg.with("guards" to JsonArray(guards.map { JsonPrimitive(it) })))
     }
 
+    /**
+     * Guard state kept for the web UI in extra (the PC tools keep extra): guards_off, switched off so they can be
+     * switched back on; guards_order, the order shown, off ones included. Only [guards] are checked.
+     */
+    fun guardsOff(ws: String): List<String> = extraList(ws, GUARDS_OFF)
+
+    fun guardsOrder(ws: String): List<String> = extraList(ws, GUARDS_ORDER)
+
+    /** Per guard check interval (ms), extra.guard_intervals; guards without one use the global interval. */
+    fun guardIntervals(ws: String): Map<String, Long> =
+        ((config(ws)["extra"] as? JsonObject)?.get(GUARD_INTERVALS) as? JsonObject)?.mapNotNull { (k, v) ->
+            (v as? JsonPrimitive)?.longOrNull?.let { k to it }
+        }?.toMap() ?: emptyMap()
+
+    fun setGuardIntervals(ws: String, intervals: Map<String, Long>) = synchronized(this) {
+        val cfg = config(ws)
+        val extra = cfg["extra"] as? JsonObject ?: JsonObject(emptyMap())
+        val next = if (intervals.isEmpty()) JsonObject(extra - GUARD_INTERVALS)
+        else extra.with(GUARD_INTERVALS to JsonObject(intervals.mapValues { JsonPrimitive(it.value) }))
+        File(dir(ws), CONFIG).writeJson(cfg.with("extra" to next))
+    }
+
+    private fun extraList(ws: String, key: String): List<String> =
+        (config(ws)["extra"] as? JsonObject)?.optArray(key)?.map { it.jsonPrimitive.content } ?: emptyList()
+
+    /** Set lists in extra; an empty list removes the key. */
+    fun setExtraLists(ws: String, lists: Map<String, List<String>>) = synchronized(this) {
+        val cfg = config(ws)
+        var extra = cfg["extra"] as? JsonObject ?: JsonObject(emptyMap())
+        for ((k, v) in lists) extra = if (v.isEmpty()) JsonObject(extra - k) else extra.with(k to JsonArray(v.map { JsonPrimitive(it) }))
+        File(dir(ws), CONFIG).writeJson(cfg.with("extra" to extra))
+    }
+
+    /**
+     * Pipeline nodes of a workspace: name, the file it is in, its desc, and whether it offers itself as a guard
+     * ("guard_candidate": true). Files that do not parse are skipped.
+     */
+    fun nodes(ws: String): JsonArray = buildJsonArray {
+        val base = File(existing(ws), "pipeline")
+        base.walkTopDown().filter { it.isFile && it.name.endsWith(".json") && !it.name.startsWith(".") }.sortedBy { it.path }.forEach { f ->
+            val obj = runCatching { readJsonObject(f) }.getOrNull() ?: return@forEach
+            for ((name, v) in obj) {
+                if (name.startsWith("$") || v !is JsonObject) continue
+                add(buildJsonObject {
+                    put("name", name)
+                    put("file", f.relativeTo(base).invariantSeparatorsPath)
+                    put("desc", v.optStr("desc").orEmpty())
+                    put("candidate", v.optBool(GUARD_CANDIDATE) == true)
+                })
+            }
+        }
+    }
+
     fun packageOf(ws: String): String = config(ws).optStr("package").orEmpty()
 
     // ---- files
@@ -205,9 +258,146 @@ class Workspaces(val root: File) {
         }
     }
 
+    // ---- management (web UI); callers make sure the workspace is not in use
+
+    /** Summary for the workspace list: config plus what it holds. */
+    fun info(ws: String): JsonObject {
+        val d = existing(ws)
+        val cfg = config(ws)
+        fun count(sub: String, match: (File) -> Boolean) = File(d, sub).listFiles()?.count(match) ?: 0
+        var size = 0L
+        var mtime = 0L
+        for (f in d.walkTopDown().filter { it.isFile }) {
+            size += f.length()
+            mtime = maxOf(mtime, f.lastModified())
+        }
+        val tasks = File(d, "teaching").listFiles().orEmpty().mapNotNull { f ->
+            f.name.removeSuffix(".chat.jsonl").takeIf { it != f.name } ?: f.name.removeSuffix(".json").takeIf { it != f.name }
+        }.toSet() - "explore"
+        return buildJsonObject {
+            put("name", ws)
+            put("package", cfg.optStr("package").orEmpty())
+            put("guards", cfg.optArray("guards")?.size ?: 0)
+            put("pipelines", count("pipeline") { it.isFile && it.name.endsWith(".json") })
+            put("templates", File(d, "templates").walkTopDown().count { it.isFile && it.name.endsWith(".png") })
+            put("skills", count("skills") { it.isFile && it.name.endsWith(".js") })
+            put("tasks", tasks.size)
+            put("recordings", count("recordings") { File(it, "meta.json").isFile })
+            put("size", size)
+            put("mtime", mtime)
+        }
+    }
+
+    /** A new workspace laid out like `maalow ws create`. */
+    fun create(ws: String, pkg: String): JsonObject = synchronized(this) {
+        val d = dir(ws)
+        require(!d.exists()) { "工作区已存在：$ws" }
+        for (sub in SUBDIRS) File(d, sub).mkdirs()
+        File(d, CONFIG).writeJson(buildJsonObject {
+            put("name", ws)
+            put("package", pkg)
+            put("guards", JsonArray(emptyList()))
+            put("extra", JsonObject(emptyMap()))
+        })
+        info(ws)
+    }
+
+    fun setPackage(ws: String, pkg: String) = synchronized(this) {
+        File(existing(ws), CONFIG).writeJson(config(ws).with("package" to JsonPrimitive(pkg)))
+    }
+
+    private fun setName(ws: String) = File(dir(ws), CONFIG).writeJson(config(ws).with("name" to JsonPrimitive(ws)))
+
+    private fun forget(d: File) = hashes.keys.removeAll { it.startsWith(d.path + File.separator) }
+
+    fun rename(from: String, to: String) = synchronized(this) {
+        val src = existing(from)
+        val dst = dir(to)
+        require(!dst.exists()) { "工作区已存在：$to" }
+        check(src.renameTo(dst)) { "无法改名 $from" }
+        forget(src)
+        setName(to)
+    }
+
+    /** Copy a workspace (through a temp dir, so a half copy never shows up in the list). */
+    fun copy(from: String, to: String) = synchronized(this) {
+        val src = existing(from)
+        val dst = dir(to)
+        require(!dst.exists()) { "工作区已存在：$to" }
+        val stage = File(root, ".copy-$to-${System.currentTimeMillis()}")
+        try {
+            src.copyRecursively(stage)
+            check(stage.renameTo(dst)) { "无法复制到 $to" }
+        } finally {
+            if (stage.exists()) stage.deleteRecursively()
+        }
+        setName(to)
+    }
+
+    private val trash get() = File(root, TRASH)
+
+    /** Move a workspace to the trash; returns the trash entry id "<name>@<epoch ms>". */
+    fun trash(ws: String): String = synchronized(this) {
+        val src = existing(ws)
+        val id = "$ws@${System.currentTimeMillis()}"
+        trash.mkdirs()
+        check(src.renameTo(File(trash, id))) { "无法删除 $ws" }
+        forget(src)
+        id
+    }
+
+    /** Trash entries, newest first; entries older than [TRASH_DAYS] are purged on the way. */
+    fun trashList(): JsonArray = synchronized(this) {
+        val now = System.currentTimeMillis()
+        val entries = trash.listFiles().orEmpty().mapNotNull { d ->
+            val at = d.name.substringAfterLast('@', "").toLongOrNull() ?: return@mapNotNull null
+            if (now - at > TRASH_DAYS * 86_400_000L) {
+                d.deleteRecursively()
+                return@mapNotNull null
+            }
+            Triple(d, d.name.substringBeforeLast('@'), at)
+        }.sortedByDescending { it.third }
+        buildJsonArray {
+            for ((d, name, at) in entries) add(buildJsonObject {
+                put("id", d.name)
+                put("name", name)
+                put("deleted", at)
+                put("expires", at + TRASH_DAYS * 86_400_000L)
+                put("size", d.walkTopDown().filter { it.isFile }.sumOf { it.length() })
+                put("package", readJsonObject(File(d, CONFIG))?.optStr("package").orEmpty())
+            })
+        }
+    }
+
+    private fun trashEntry(id: String): File {
+        val d = File(trash, id)
+        require(!id.contains('/') && !id.contains('\\') && !id.startsWith(".") && d.isDirectory) { "回收站里没有 $id" }
+        return d
+    }
+
+    /** Put a trashed workspace back, under its old name or [name]; returns the name. */
+    fun restore(id: String, name: String?): String = synchronized(this) {
+        val d = trashEntry(id)
+        val ws = name ?: id.substringBeforeLast('@')
+        val dst = dir(ws)
+        require(!dst.exists()) { "工作区已存在：$ws（恢复时换个名字）" }
+        check(d.renameTo(dst)) { "无法恢复 $ws" }
+        setName(ws)
+        ws
+    }
+
+    fun purge(id: String): Boolean = synchronized(this) { trashEntry(id).deleteRecursively() }
+
     companion object {
         const val BATCH = ".batch.json"
         const val CONFIG = "workspace.json"
+        const val TRASH = ".trash"
+        const val GUARDS_OFF = "guards_off"
+        const val GUARDS_ORDER = "guards_order"
+        const val GUARD_INTERVALS = "guard_intervals"
+        const val GUARD_CANDIDATE = "guard_candidate"
+        const val TRASH_DAYS = 7
         val NAME = Regex("^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+        val SUBDIRS = listOf("tasks", "templates", "pipeline", "skills", "teaching", "memory")
     }
 }
