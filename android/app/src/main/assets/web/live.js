@@ -145,7 +145,7 @@ function setAiStatus(ai) {
   p.title = tip;
 }
 
-let task = "", session = -1, steps = 0, polling = false;
+let task = "", session = -1, steps = 0, talk = 0, polling = false;
 async function poll() {
   if (polling) return;
   polling = true;
@@ -161,8 +161,9 @@ async function poll() {
       first = ms.length ? ms[0].id : 0;
       showOlder(first > 1);
       loadTasks();
-    } else if (s.steps !== steps) loadTasks(); // step counts in the list
+    } else if (s.steps !== steps || s.talk !== talk) loadTasks(); // counts in the list
     steps = s.steps;
+    talk = s.talk;
     $("task").textContent = `${draft ? "草稿" : "任务"} · 第 ${s.steps} 步`;
     document.querySelectorAll("#taskinfo .draft").forEach(b => b.style.display = draft ? "" : "none");
     document.querySelectorAll("#taskinfo .named").forEach(b => b.style.display = draft ? "none" : "");
@@ -180,7 +181,7 @@ async function loadTasks() {
   const sel = $("tasksel");
   try {
     const ts = await json("/tasks?workspace=" + encodeURIComponent(workspace));
-    sel.innerHTML = ts.map(t => `<option value="${esc(t.name)}">${t.name === "explore" ? "草稿" : esc(t.name)}（${t.steps} 步）</option>`).join("");
+    sel.innerHTML = ts.map(t => `<option value="${esc(t.name)}">${t.name === "explore" ? "草稿" : esc(t.name)}（${t.steps} 步 · ${t.talk} 条对话）</option>`).join("");
   } catch (e) {
     sel.innerHTML = `<option>${esc(task)}</option>`;
   }

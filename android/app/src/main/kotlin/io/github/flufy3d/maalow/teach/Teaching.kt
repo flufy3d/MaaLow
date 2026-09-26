@@ -107,7 +107,7 @@ class Teaching(private val app: App) {
 
     fun state(): JsonObject = synchronized(lock) {
         ensure()
-        val talk = messages.filter { it["auto"] == null }
+        val talk = talk()
         val waiting = talk.isNotEmpty() && talk.last().optStr("role") == "teacher" // teacher spoke, AI has not replied
         buildJsonObject {
             put("workspace", workspace)
@@ -115,6 +115,7 @@ class Teaching(private val app: App) {
             put("session", session)
             put("steps", steps.size)
             put("messages", messages.size)
+            put("talk", talk.size)
             put("screenshot", last)
             put("waiting", waiting)
             val online = listeners > 0 || System.currentTimeMillis() - lastPoll < POLL_GAP_MS
@@ -266,6 +267,10 @@ class Teaching(private val app: App) {
     }
 
     /** Tasks of a workspace: the scratch task first, then the most recently used. name, steps, mtime (ms). */
+    private fun talk() = messages.filter { it["auto"] == null }
+
+    private data class TaskInfo(val name: String, val steps: Int, val talk: Int, val mtime: Long)
+
     fun tasks(ws: String?): JsonArray {
         val w = ws ?: synchronized(lock) { ensure(); workspace }
         val files = dir(w).listFiles().orEmpty()
@@ -282,11 +287,13 @@ class Teaching(private val app: App) {
             names.map { n ->
                 val json = File(dir(w), "$n.json")
                 val chat = File(dir(w), "$n.chat.jsonl")
-                val steps = synchronized(lock) { if (w == workspace && n == task) steps.size else null }
-                    ?: readJsonObject(json)?.optArray("steps")?.size ?: 0
-                Triple(n, steps, maxOf(json.lastModified(), chat.lastModified()))
-            }.sortedWith(compareBy<Triple<String, Int, Long>> { it.first != DEFAULT_TASK }.thenByDescending { it.third }).forEach { (n, s, t) ->
-                add(buildJsonObject { put("name", n); put("steps", s); put("mtime", t) })
+                val open = synchronized(lock) { if (w == workspace && n == task) steps.size to talk().size else null }
+                val steps = open?.first ?: readJsonObject(json)?.optArray("steps")?.size ?: 0
+                // chat lines without "auto" (system lines, rule notices) are what the teacher and AI said
+                val talk = open?.second ?: chat.takeIf { it.isFile }?.useLines { ls -> ls.count { it.isNotBlank() && "\"auto\":true" !in it } } ?: 0
+                TaskInfo(n, steps, talk, maxOf(json.lastModified(), chat.lastModified()))
+            }.sortedWith(compareBy<TaskInfo> { it.name != DEFAULT_TASK }.thenByDescending { it.mtime }).forEach { t ->
+                add(buildJsonObject { put("name", t.name); put("steps", t.steps); put("talk", t.talk); put("mtime", t.mtime) })
             }
         }
     }
