@@ -1,0 +1,110 @@
+{
+    "LaunchAndLogin": {
+        "desc": "启动游戏并登录：等更新检查 → 关公告 → 继续游戏（楚行云）→ 关商城等弹窗 → 回到大世界（教学 初探 第 1–6 步）",
+        "recognition": "DirectHit",
+        "action": "StartApp",
+        "package": "com.netease.yysls",
+        "post_delay": 3000,
+        "timeout": 300000,
+        "next": [
+            "Login_InWorld",
+            "Login_AlreadyOnline",
+            "Login_ContinueGame",
+            "Login_CloseAnnouncement",
+            "[JumpBack]CloseShopPopup",
+            "[JumpBack]CloseRewardPopup",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "Login_CloseAnnouncement": {
+        "desc": "启动后的公告页：点右上角返回箭头",
+        "recognition": "TemplateMatch",
+        "template": "login_announcement_back.png",
+        "roi": [
+            990,
+            0,
+            89,
+            70
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "post_delay": 2000,
+        "timeout": 60000,
+        "next": [
+            "Login_InWorld",
+            "Login_AlreadyOnline",
+            "Login_ContinueGame",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "Login_ContinueGame": {
+        "desc": "登录界面右侧「继续游戏」（上次的角色楚行云）",
+        "recognition": "TemplateMatch",
+        "template": "login_continue_game.png",
+        "roi": [
+            860,
+            320,
+            219,
+            90
+        ],
+        "threshold": 0.7,
+        "action": "Click",
+        "post_delay": 5000,
+        "timeout": 120000,
+        "next": [
+            "Login_InWorld",
+            "Login_AlreadyOnline",
+            "[JumpBack]CloseShopPopup",
+            "[JumpBack]CloseRewardPopup",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "Login_AlreadyOnline": {
+        "desc": "短时间内关掉重开会弹「账号已在线，是否继续登录？」，点「确认」（老师说明）",
+        "recognition": "TemplateMatch",
+        "template": "login_already_online.png",
+        "roi": [
+            300,
+            300,
+            480,
+            110
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "target": [
+            950,
+            459,
+            1,
+            1
+        ],
+        "post_delay": 5000,
+        "timeout": 120000,
+        "next": [
+            "Login_InWorld",
+            "[JumpBack]CloseShopPopup",
+            "[JumpBack]CloseRewardPopup",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "Login_InWorld": {
+        "desc": "看到大世界右上角菜单按钮 = 进了游戏；再把随后冒出来的弹窗清干净",
+        "recognition": "TemplateMatch",
+        "template": "world_menu_button.png",
+        "green_mask": true,
+        "roi": [
+            990,
+            0,
+            89,
+            60
+        ],
+        "threshold": 0.6,
+        "action": "Custom",
+        "custom_action": "clear_popups",
+        "custom_action_param": {
+            "clear_frames": 5
+        }
+    }
+}
