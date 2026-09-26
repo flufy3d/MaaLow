@@ -26,6 +26,7 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.plugins.partialcontent.PartialContent
 import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.request.path
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.header
 import io.ktor.server.response.respondBytes
@@ -48,8 +49,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
 /**
- * The HTTP API shared by the web UI and the AI, under /api/v1. Every request needs the token (Bearer header or
- * ?token=). Route groups: device (here), teaching, files, automation (guards, schedules, events), web.
+ * The HTTP API shared by the web UI and the AI, under /api/v1. Every request except the web page itself needs the
+ * token (Bearer header or ?token=). Route groups: device (here), teaching, files, automation (guards, schedules, events), web.
  */
 class ApiServer(private val app: App) {
     private var server: EmbeddedServer<*, *>? = null
@@ -61,7 +62,9 @@ class ApiServer(private val app: App) {
         server = embeddedServer(CIO, port = App.PORT, host = "0.0.0.0") {
             install(createApplicationPlugin("Token") {
                 onCall { call ->
-                    if (call.request.local.uri.startsWith("/web/")) return@onCall // the UI's static scripts
+                    val path = call.request.path()
+                    // the UI's page and scripts: no data in them, the page calls the API with the token it remembered
+                    if (path == "/" || path.startsWith("/web/")) return@onCall
                     val auth = call.request.headers["Authorization"]?.removePrefix("Bearer ")?.trim()
                     val token = auth ?: call.request.queryParameters["token"]
                     if (token != app.token) call.respondJson(HttpStatusCode.Unauthorized, errorBody("bad or missing token"))

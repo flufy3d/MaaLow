@@ -10,7 +10,21 @@ async function errorText(r) {
   const t = await r.text();
   try { return JSON.parse(t).error || t; } catch (e) { return t || ("HTTP " + r.status); }
 }
-const json = async (path, opts) => { const r = await api(path, opts); if (!r.ok) throw new Error(await errorText(r)); return r.json(); };
+// The page itself opens without a token; say so once when the API refuses the remembered one (or there is none).
+function tokenMissing() {
+  if (document.getElementById("tokenbar")) return;
+  const d = document.createElement("div");
+  d.id = "tokenbar";
+  d.style.cssText = "background:#5c2023;color:#fff;padding:8px 12px;text-align:center;flex:none";
+  d.textContent = TOKEN ? "token 不对（可能已更换）：请用 App 里的地址 /?token=... 重新打开一次" : "缺少 token：请用 App 里的地址 /?token=... 打开一次，之后浏览器会记住";
+  document.body.prepend(d);
+}
+const json = async (path, opts) => {
+  const r = await api(path, opts);
+  if (r.status === 401) tokenMissing();
+  if (!r.ok) throw new Error(await errorText(r));
+  return r.json();
+};
 const post = (path, body) => json(path, { method: "POST", body: JSON.stringify(body || {}) });
 const withToken = url => url + (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN);
 const $ = id => document.getElementById(id);

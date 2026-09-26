@@ -11,7 +11,7 @@ import java.io.FileNotFoundException
 
 /**
  * The teaching web UI, from the APK's assets/web, overridden file by file by files/web/ in the external files dir
- * so the page can be changed with `adb push` without reinstalling. Open it as /?token=...
+ * so the page can be changed with `adb push` without reinstalling. Open it once as /?token=...; the browser remembers it.
  */
 fun Route.webRoutes(app: App) {
     val overlay = File(app.storeDir, "web")
