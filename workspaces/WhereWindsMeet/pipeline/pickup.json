@@ -1,0 +1,10 @@
+{
+    "AutoPickup": {
+        "desc": "快速拾取：大世界右侧出现名字横条时点横条上方空处（不点横条本身，烹饪、开启、路牌、NPC 这类场景交互不会被打开）；点两下横条没变就停手，直到横条变了。识别在 skills/auto_pickup.js，教学 explore 消息 4–99",
+        "guard_candidate": true,
+        "recognition": "Custom",
+        "custom_recognition": "auto_pickup.recognize",
+        "action": "Click",
+        "post_delay": 500
+    }
+}
