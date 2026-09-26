@@ -1,8 +1,10 @@
 package io.github.flufy3d.maalow.server
 
 import io.github.flufy3d.maalow.App
+import io.github.flufy3d.maalow.auto.Guards
 import io.github.flufy3d.maalow.auto.Schedule
 import io.github.flufy3d.maalow.store.LenientJson
+import io.github.flufy3d.maalow.store.Workspaces
 import io.github.flufy3d.maalow.store.optArray
 import io.github.flufy3d.maalow.store.optBool
 import io.github.flufy3d.maalow.store.optLong
@@ -24,8 +26,10 @@ import kotlinx.serialization.json.put
 /**
  * Guards, schedules, runs and events:
  *
- *     GET  /api/v1/guards?workspace=W        {workspace, guards, enabled, interval_ms, last}
- *     PUT  /api/v1/guards {workspace?, guards?, enabled?, interval_ms?}
+ *     GET  /api/v1/guards?workspace=W        {workspace, guards, off, order, intervals: {node: ms}, stats: {node: {checked, hit}},
+ *                                            nodes: [{name, file, desc, candidate}], enabled, interval_ms, last}
+ *     PUT  /api/v1/guards {workspace?, guards?, off?, order?, intervals?, enabled?, interval_ms?}
+ *                                            off: switched off, kept; order: as shown; intervals: per guard, else interval_ms
  *     GET  /api/v1/schedules[?workspace=W]   all schedules with their next occurrence
  *     GET|PUT|DELETE /api/v1/schedules/{ws}/{id}
  *     POST /api/v1/schedules/{ws}/{id}/trigger[?wait=false]   run now (same checks as an alarm)
@@ -39,6 +43,11 @@ fun Route.autoRoutes(app: App) {
         val s = app.settings()
         put("workspace", w)
         put("guards", JsonArray(app.workspaces.guards(w).map { JsonPrimitive(it) }))
+        put("off", JsonArray(app.workspaces.guardsOff(w).map { JsonPrimitive(it) }))
+        put("order", JsonArray(app.workspaces.guardsOrder(w).map { JsonPrimitive(it) }))
+        put("intervals", JsonObject(app.workspaces.guardIntervals(w).mapValues { JsonPrimitive(it.value) }))
+        put("stats", app.guards.stats(w))
+        put("nodes", app.workspaces.nodes(w))
         put("enabled", s.guardsEnabled)
         put("interval_ms", s.guardIntervalMs)
         put("last", app.guards.last)
@@ -50,6 +59,16 @@ fun Route.autoRoutes(app: App) {
         val b = call.body()
         val w = workspaceOf(b.optStr("workspace"))
         b.optArray("guards")?.let { list -> app.workspaces.setGuards(w, list.map { it.jsonPrimitive.content }) }
+        val extra = listOf(Workspaces.GUARDS_OFF to "off", Workspaces.GUARDS_ORDER to "order")
+            .mapNotNull { (key, field) -> b.optArray(field)?.let { list -> key to list.map { it.jsonPrimitive.content } } }.toMap()
+        if (extra.isNotEmpty()) app.workspaces.setExtraLists(w, extra)
+        (b["intervals"] as? JsonObject)?.let { obj ->
+            app.workspaces.setGuardIntervals(w, obj.mapValues { (k, v) ->
+                val ms = (v as? JsonPrimitive)?.content?.toLongOrNull() ?: throw IllegalArgumentException("bad interval for $k")
+                require(ms in Guards.MIN_INTERVAL_MS..3_600_000) { "interval out of range: $k" }
+                ms
+            })
+        }
         if (b.optBool("enabled") != null || b.optLong("interval_ms") != null) {
             app.updateSettings { s ->
                 s.copy(guardsEnabled = b.optBool("enabled") ?: s.guardsEnabled, guardIntervalMs = b.optLong("interval_ms") ?: s.guardIntervalMs)

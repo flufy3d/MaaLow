@@ -2,9 +2,7 @@
   "name": "WhereWindsMeet",
   "package": "com.netease.yysls",
   "guards": [
-    "CloseShopPopup",
     "DismissIdleSlideshow",
-    "CloseRewardPopup",
     "CloseItemTip"
   ],
   "extra": {}
