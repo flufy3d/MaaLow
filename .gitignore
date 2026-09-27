@@ -5,4 +5,8 @@ dist/
 build/
 *.egg-info/
 .pytest_cache/
-workspaces/*/teaching/**/*.png
+# workspace process records and runtime state (kept on the tablet, pulled by `maalow sync`);
+# the results (pipeline/, skills/, templates/, workspace.json, schedules.json) are committed
+workspaces/*/teaching/
+workspaces/*/recordings/
+workspaces/*/memory/

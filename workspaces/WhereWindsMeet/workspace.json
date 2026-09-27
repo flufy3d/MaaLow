@@ -2,8 +2,20 @@
   "name": "WhereWindsMeet",
   "package": "com.netease.yysls",
   "guards": [
+    "AutoPickup",
     "DismissIdleSlideshow",
     "CloseItemTip"
   ],
-  "extra": {}
+  "extra": {
+    "guards_order": [
+      "AutoPickup",
+      "DismissIdleSlideshow",
+      "CloseItemTip"
+    ],
+    "guard_intervals": {
+      "DismissIdleSlideshow": 1000,
+      "CloseItemTip": 1000,
+      "AutoPickup": 500
+    }
+  }
 }
