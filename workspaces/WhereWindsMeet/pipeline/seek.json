@@ -1,0 +1,22 @@
+{
+    "SeekEnemy": {
+        "desc": "索敌：在大世界（右上菜单按钮）时，朝小地图上最近的红点疾跑，镜头转向它、靠近后点锁定，锁定按钮变金就算找到，跑到身边停下；卡住会跳、左右绕、后退绕，路上顺带拾取。找不到敌人则失败。技能 skills/move.js，教学 explore 消息 4–53",
+        "recognition": "TemplateMatch",
+        "template": "world_menu_button.png",
+        "green_mask": true,
+        "roi": [
+            990,
+            0,
+            89,
+            60
+        ],
+        "threshold": 0.6,
+        "action": "Custom",
+        "custom_action": "move",
+        "custom_action_param": {
+            "enemy": true,
+            "sprint": true,
+            "ms": 60000
+        }
+    }
+}
