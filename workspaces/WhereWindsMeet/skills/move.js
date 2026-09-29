@@ -8,7 +8,7 @@
 //   {enemy: true}            run to the nearest red mark on the minimap, turning the camera toward it; within
 //                            `lockAt` (25) minimap px tap lock-on until the lock button turns gold (a white dot marks
 //                            the enemy, however far); stop `near` (6) minimap px away (sprinting carries it a bit further). Not getting
-//                            closer for 1.5 s is stuck: jump, edge around left / right, back off and go wide
+//                            closer for 1.5 s is stuck (unless locked and within 12 px: arrived): jump, edge around left / right, back off and go wide
 //   sprint: true             hold dodge until its icon turns gold (sprinting), then let go; again if it drops;
 //                            given up after two presses that did not start one (dungeons may not allow it)
 //   {turn: 150}              drag the camera by this many px (right: positive), report the heading before and after
@@ -203,6 +203,10 @@ export default function (args, ctx) {
                         since = now;
                         level = 0;
                     } else if (now - since > STUCK_MS && cam != null) {
+                        if (lock && foe.dist <= GONE_PX) {
+                            why = "near"; // up against the locked enemy: not stuck (teaching message 2)
+                            break;
+                        }
                         if (level >= UNSTICK.length) {
                             why = "stuck";
                             break;

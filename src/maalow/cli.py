@@ -218,7 +218,7 @@ def _do(args, client: Client):
             if got or left <= 25:
                 return _with_views(client, args.root, got)
     if op == "run":
-        return _with_views(client, args.root, client.post("/run", {"node": args.node, "once": not args.full}, timeout=900))
+        return _with_views(client, args.root, client.post("/run", {"node": args.node, "once": not args.full}, timeout=3600))
     if op == "skill":
         body = {"name": args.name, "args": args.args, "wait": not args.no_wait}
         body |= {k: v for k, v in (("workspace", args.workspace), ("timeout", args.timeout)) if v}

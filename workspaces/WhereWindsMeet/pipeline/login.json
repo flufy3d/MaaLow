@@ -5,7 +5,7 @@
         "action": "StartApp",
         "package": "com.netease.yysls",
         "post_delay": 3000,
-        "timeout": 300000,
+        "timeout": 1800000,
         "next": [
             "Login_InWorld",
             "Login_AlreadyOnline",

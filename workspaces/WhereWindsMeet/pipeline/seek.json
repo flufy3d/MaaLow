@@ -18,5 +18,38 @@
             "sprint": true,
             "ms": 60000
         }
+    },
+    "SeekAndFight": {
+        "desc": "找怪并开打：同 SeekEnemy，找到后接 Combat（教学 回放 战斗技能，消息 2）",
+        "recognition": "TemplateMatch",
+        "template": "world_menu_button.png",
+        "green_mask": true,
+        "roi": [
+            990,
+            0,
+            89,
+            60
+        ],
+        "threshold": 0.6,
+        "action": "Custom",
+        "custom_action": "move",
+        "custom_action_param": {
+            "enemy": true,
+            "sprint": true,
+            "ms": 60000
+        },
+        "next": [
+            "Combat"
+        ]
+    },
+    "Combat": {
+        "desc": "战斗：陌刀奇术+卸势、增益 → 横刀突进、爆发、伤害 → 陌刀蓄力 3 次、轻击到 20 秒，循环；血低于 50% 喝药；小地图没红点也没锁定 4 秒算打完。技能 skills/combat.js，回放 战斗技能",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "combat",
+        "custom_action_param": {
+            "hp": 0.5,
+            "ms": 300000
+        }
     }
 }

@@ -770,10 +770,17 @@ window.replay = (() => {
   // ---- keys
 
   const typing = t => t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT";
+  // a freshly drawn mark focuses its empty label input; Ctrl+Z there has nothing to undo natively, so undo the mark
+  const focusValue = new WeakMap();
+  window.addEventListener("focusin", e => { if (typing(e.target)) focusValue.set(e.target, e.target.value); });
   window.addEventListener("keydown", e => {
     if (mode !== "replay" || ui.isOpen()) return;
-    if (typing(e.target)) { if (e.key === "Escape") e.target.blur(); return; }
     const k = e.key, ctrl = e.ctrlKey || e.metaKey;
+    if (typing(e.target)) {
+      if (k === "Escape") { e.target.blur(); return; }
+      if (!(ctrl && "zZyY".includes(k)) || e.target.value !== focusValue.get(e.target)) return;
+      e.target.blur();
+    }
     if ((k === "ArrowLeft" || k === "ArrowRight") && !ctrl) {
       e.preventDefault();
       if (e.repeat) return;
