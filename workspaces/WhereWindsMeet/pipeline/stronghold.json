@@ -194,9 +194,15 @@
         }
     },
     "CixinTeleport": {
-        "desc": "传送到慈心山院的传送石碑：菜单 → 江湖行 → 挑战 → 据点挑战「慈心山院」卡片 → 大地图（放到最大、据点居中）上点石碑（相对据点图标 (-108,115)）→ 传送 → 回到大世界。卡在据点里（大殿）或路线跑乱了用它回起点，路线 CixinRoute 从这里开始",
+        "desc": "传送到慈心山院的传送石碑：菜单 → 江湖行 → 挑战 → 据点挑战「慈心山院」卡片 → 大地图（放到最大、据点居中）上点石碑（相对据点图标 (-108,115)）→ 传送 → 回到大世界；从中间哪一页开始都能接着走（每步没反应就再点）。卡在据点里（大殿）或路线跑乱了用它回起点，路线 CixinRoute 从这里开始",
         "recognition": "DirectHit",
         "next": [
+            "Teleport_Go",
+            "Teleport_Stone",
+            "Teleport_ClosePanel",
+            "Teleport_CixinCard",
+            "Teleport_Challenge",
+            "Teleport_Jianghu",
             "Teleport_OpenMenu",
             "[JumpBack]CloseItemTip",
             "[JumpBack]DismissIdleSlideshow"
@@ -234,7 +240,8 @@
         "action": "Click",
         "post_delay": 2000,
         "next": [
-            "Teleport_Challenge"
+            "Teleport_Challenge",
+            "Teleport_Jianghu"
         ]
     },
     "Teleport_Challenge": {
@@ -251,7 +258,8 @@
         "action": "Click",
         "post_delay": 2000,
         "next": [
-            "Teleport_CixinCard"
+            "Teleport_CixinCard",
+            "Teleport_Challenge"
         ],
         "target": [
             262,
@@ -274,8 +282,10 @@
         "action": "Click",
         "post_delay": 3000,
         "next": [
+            "Teleport_Go",
             "Teleport_Stone",
-            "Teleport_ClosePanel"
+            "Teleport_ClosePanel",
+            "Teleport_CixinCard"
         ],
         "target": [
             195,
@@ -285,7 +295,7 @@
         ]
     },
     "Teleport_ClosePanel": {
-        "desc": "大地图开着据点说明面板（底部「识途」），石碑图标还没显示：点一下石碑的位置把面板收起",
+        "desc": "大地图开着据点说明面板（底部「识途」），石碑图标还没显示：点一下石碑的位置把面板收起（点中了石碑就直接是「传送」面板）",
         "recognition": "TemplateMatch",
         "template": "stronghold_panel_route.png",
         "roi": [
@@ -298,6 +308,7 @@
         "action": "Click",
         "post_delay": 1500,
         "next": [
+            "Teleport_Go",
             "Teleport_Stone",
             "Teleport_ClosePanel"
         ],
@@ -322,7 +333,8 @@
         "action": "Click",
         "post_delay": 1500,
         "next": [
-            "Teleport_Go"
+            "Teleport_Go",
+            "Teleport_Stone"
         ]
     },
     "Teleport_Go": {
@@ -339,11 +351,13 @@
         "action": "Click",
         "post_delay": 5000,
         "next": [
-            "Teleport_Arrived"
+            "Teleport_Arrived",
+            "[JumpBack]CloseShopPopup",
+            "Teleport_Go"
         ]
     },
     "Teleport_Arrived": {
-        "desc": "传送读条结束，回到大世界（右上角菜单按钮）",
+        "desc": "传送读条结束，回到大世界（右上角菜单按钮）；落地可能弹商城上新，关掉",
         "recognition": "TemplateMatch",
         "template": "world_menu_button.png",
         "green_mask": true,
@@ -354,7 +368,15 @@
             60
         ],
         "threshold": 0.6,
-        "post_delay": 1500,
-        "timeout": 60000
+        "post_delay": 2500,
+        "timeout": 60000,
+        "next": [
+            "[JumpBack]CloseShopPopup",
+            "Teleport_Done"
+        ]
+    },
+    "Teleport_Done": {
+        "desc": "落地后的弹窗关完了",
+        "recognition": "DirectHit"
     }
 }
