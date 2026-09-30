@@ -21,15 +21,6 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
     <button class="tab" data-mode="teach"><i data-i="chat"></i>指导</button>
     <button class="tab" data-mode="workspaces"><i data-i="layers"></i>工作区</button>
   </nav>
-  <div id="taskbar">
-    <select id="tasksel" title="切换任务：已有的任务接着原来的步骤继续"></select>
-    <button class="btn sm" id="newtask"><i data-i="plus" class="sm"></i>新任务</button>
-    <button class="btn sm draft" id="savedraft" title="把草稿的对话、步骤和截图改名成一个任务，草稿变回空白">另存为任务</button>
-    <button class="btn sm draft danger" id="cleardraft" title="删除草稿的对话、步骤和截图">清空草稿</button>
-    <button class="btn sm named" id="endtask" title="保存并回到草稿">结束任务</button>
-    <button class="btn sm named danger" id="deltask" title="删除这个任务的对话、步骤和截图">删除任务</button>
-    <span class="txt" id="task"></span>
-  </div>
   <span class="grow"></span>
   <span id="recbadge"></span>
   <button class="btn icon ghost" id="chattoggle" title="对话"><i data-i="chat"></i></button>
@@ -144,6 +135,12 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
   </div>
   <div id="split" title="拖动调整宽度；双击恢复"></div>
   <div id="chat">
+    <div id="chathead">
+      <button class="btn ghost" id="taskbtn" title="切换任务、新建任务"><span class="nm"></span><i data-i="down" class="sm"></i></button>
+      <span class="grow"></span>
+      <span id="taskmeta" title="已记录的步骤 · 对话条数"></span>
+      <button class="btn icon ghost" id="taskmore" title="任务操作"><i data-i="more"></i></button>
+    </div>
     <div id="log"></div>
     <div id="compose">
       <div id="tray"></div>
@@ -157,6 +154,8 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
   </div>
 </div>
 <div id="recmenu" class="menu"></div>
+<div id="taskmenu" class="menu"></div>
+<div id="moremenu" class="menu"></div>
 <div id="labmenu" class="menu"></div>
 <div id="rp-pop"><div></div><span></span></div>
 

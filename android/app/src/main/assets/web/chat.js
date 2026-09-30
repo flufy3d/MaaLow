@@ -220,9 +220,7 @@ window.teach = (() => {
       if (s.waiting && !st.waiting) waitingSince = Date.now();
       st = s;
       const draft = s.task === "explore";
-      $("task").textContent = `${draft ? "草稿" : "任务"} · 第 ${s.steps} 步`;
-      document.querySelectorAll("#taskbar .draft").forEach(b => b.style.display = draft ? "" : "none");
-      document.querySelectorAll("#taskbar .named").forEach(b => b.style.display = draft ? "none" : "");
+      renderHead(draft);
       if (s.tray_rev !== trayRev) await loadTray(s.tray_rev);
       live.follow(s.screenshot);
       await appendMsgs(await json("/messages?since=" + Math.max(0, seen - 1)));
@@ -268,16 +266,99 @@ window.teach = (() => {
   }
 
   // ---- tasks: one task is one case being taught; its steps and chat live in teaching/<task>.*
-  async function loadTasks() {
-    const sel = $("tasksel");
-    try {
-      const ts = await json("/tasks?workspace=" + enc(workspace));
-      sel.innerHTML = ts.map(t => `<option value="${esc(t.name)}">${t.name === "explore" ? "草稿" : esc(t.name)}（${t.steps} 步 · ${t.talk} 条对话）</option>`).join("");
-    } catch (e) {
-      sel.innerHTML = `<option>${esc(task)}</option>`;
-    }
-    sel.value = task;
+  // The chat's head: the task (a menu to switch or start one), its counts, and a ⋯ menu for what is done to it.
+
+  let tasks = [], taskQuery = "";
+  const taskName = n => n === "explore" ? "草稿" : n;
+  function renderHead(draft) {
+    const b = $("taskbtn");
+    b.querySelector(".nm").textContent = taskName(task);
+    b.classList.toggle("draft", draft);
+    b.title = draft ? "草稿：随便试、随便问。点这里切换任务或新建任务" : `任务 ${task}。点这里切换任务或新建任务`;
+    $("taskmeta").textContent = `${steps} 步 · ${talk} 条`;
   }
+  async function loadTasks() {
+    try { tasks = await json("/tasks?workspace=" + enc(workspace)); } catch (e) { tasks = [{ name: task, steps, talk, mtime: 0 }]; }
+    if ($("taskmenu").classList.contains("on")) renderTaskList();
+  }
+
+  function openMenu(menu, anchor, html, alignRight) {
+    closeMenus();
+    menu.innerHTML = html;
+    menu.classList.add("on");
+    const r = anchor.getBoundingClientRect(), w = menu.offsetWidth;
+    menu.style.left = Math.max(8, Math.min(innerWidth - w - 8, alignRight ? r.right - w : r.left)) + "px";
+    menu.style.top = r.bottom + 6 + "px";
+  }
+  function closeMenus() { $("taskmenu").classList.remove("on"); $("moremenu").classList.remove("on"); }
+  document.addEventListener("pointerdown", e => {
+    for (const [m, b] of [["taskmenu", "taskbtn"], ["moremenu", "taskmore"]]) {
+      if (!$(m).contains(e.target) && !$(b).contains(e.target)) $(m).classList.remove("on");
+    }
+  });
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && ($("taskmenu").classList.contains("on") || $("moremenu").classList.contains("on"))) { e.stopPropagation(); closeMenus(); } }, true);
+
+  // the task menu: search, a new task, then the draft and the tasks (most recently used first)
+  function renderTaskList() {
+    const q = taskQuery.trim().toLowerCase();
+    const list = tasks.filter(t => !q || taskName(t.name).toLowerCase().includes(q) || t.name.toLowerCase().includes(q));
+    $("taskmenu").querySelector(".list").innerHTML = list.map(t => `<div class="it${t.name === task ? " cur" : ""}" data-task="${esc(t.name)}">
+        <div class="bd"><div class="nm">${esc(taskName(t.name))}</div><div class="sub">${t.steps} 步 · ${t.talk} 条对话${t.mtime ? " · " + fmtAgo(t.mtime) : ""}</div></div>
+        ${t.name === task ? svg("check") : ""}</div>`).join("") || `<div class="none" style="padding:6px 10px">没有匹配的任务</div>`;
+  }
+  $("taskbtn").onclick = () => {
+    if ($("taskmenu").classList.contains("on")) return closeMenus();
+    taskQuery = "";
+    openMenu($("taskmenu"), $("taskbtn"), `<div class="row0">${svg("search", "sm")}<input class="search" placeholder="搜索任务">
+      <button class="btn sm" data-act="new">${svg("plus", "sm")}新任务</button></div><div class="list"></div>`);
+    renderTaskList();
+    $("taskmenu").querySelector(".search").focus();
+    loadTasks();
+  };
+  $("taskmenu").oninput = e => { if (e.target.classList.contains("search")) { taskQuery = e.target.value; renderTaskList(); } };
+  $("taskmenu").onkeydown = e => {
+    if (e.key !== "Enter" || !e.target.classList.contains("search")) return;
+    const first = $("taskmenu").querySelector(".it[data-task]");
+    if (first) first.click();
+  };
+  $("taskmenu").onclick = async e => {
+    if (e.target.closest("[data-act=new]")) {
+      closeMenus();
+      const name = await ui.prompt("任务名", { title: "新任务", placeholder: "例如：每日签到", ok: "开始" });
+      if (name) switchTask(name);
+      return;
+    }
+    const it = e.target.closest("[data-task]");
+    if (!it) return;
+    closeMenus();
+    if (it.dataset.task !== task) switchTask(it.dataset.task);
+  };
+
+  // the ⋯ menu: keep the draft as a task / end the task; below a line, emptying or deleting it
+  $("taskmore").onclick = () => {
+    if ($("moremenu").classList.contains("on")) return closeMenus();
+    const draft = task === "explore";
+    const item = (act, icon, label, sub, cls = "") => `<div class="it ${cls}" data-act="${act}">${svg(icon)}<div class="bd"><div class="nm">${label}</div><div class="sub">${sub}</div></div></div>`;
+    openMenu($("moremenu"), $("taskmore"), draft
+      ? item("save", "download", "另存为任务", "对话、步骤和截图改名成一个任务，草稿变回空白") + `<div class="ft">` + item("clear", "trash", "清空草稿", "删掉草稿的对话、步骤、截图和托盘", "danger") + `</div>`
+      : item("end", "check", "结束任务", "保存并回到草稿，之后可以在任务列表里选回来") + `<div class="ft">` + item("delete", "trash", "删除任务", "删掉它的对话、步骤、截图和托盘", "danger") + `</div>`, true);
+  };
+  $("moremenu").onclick = async e => {
+    const act = e.target.closest("[data-act]")?.dataset.act;
+    if (!act) return;
+    closeMenus();
+    if (act === "save") {
+      const name = await ui.prompt("任务名", { title: "把草稿另存为任务", placeholder: "例如：每日签到", ok: "保存" });
+      if (name) taskOp("/task/rename", { name }, "另存为任务");
+    } else if (act === "clear") {
+      if (await ui.confirm(`草稿里的对话、${steps} 个步骤、截图和待发托盘都会删掉，不能恢复。想保留就先“另存为任务”。`, { title: "清空草稿？", ok: "清空", danger: true })) taskOp("/task/delete", {}, "清空草稿");
+    } else if (act === "end") {
+      if (await ui.confirm(`已记录的步骤都已保存，之后可以在任务列表里选回来继续。`, { title: `结束任务 ${task}？`, ok: "结束任务" })) switchTask("explore");
+    } else if (act === "delete") {
+      if (await ui.confirm(`它的对话、${steps} 个步骤、截图和待发托盘都会删掉，不能恢复。`, { title: `删除任务 ${task}？`, ok: "删除", danger: true })) taskOp("/task/delete", {}, "删除任务");
+    }
+  };
+
   async function taskOp(path, body, what) {
     await live.flush();
     try {
@@ -289,26 +370,6 @@ window.teach = (() => {
     loadTasks();
   }
   const switchTask = name => taskOp("/task", { name, workspace }, "切换任务");
-  $("tasksel").onchange = e => { if (e.target.value !== task) switchTask(e.target.value); };
-  $("newtask").onclick = async () => {
-    const name = await ui.prompt("任务名", { title: "新任务", placeholder: "例如：每日签到", ok: "开始" });
-    if (name) switchTask(name);
-  };
-  $("endtask").onclick = async () => {
-    if (await ui.confirm(`已记录的步骤都已保存，之后可以在下拉框里选回来继续。`, { title: `结束任务 ${task}？`, ok: "结束任务" })) switchTask("explore");
-  };
-  $("deltask").onclick = async () => {
-    if (await ui.confirm(`它的对话、${steps} 个步骤、截图和待发托盘都会删掉，不能恢复。`, { title: `删除任务 ${task}？`, ok: "删除", danger: true })) taskOp("/task/delete", {}, "删除任务");
-  };
-  $("savedraft").onclick = async () => {
-    const name = await ui.prompt("任务名", { title: "把草稿另存为任务", placeholder: "例如：每日签到", ok: "保存" });
-    if (name) taskOp("/task/rename", { name }, "另存为任务");
-  };
-  $("cleardraft").onclick = async () => {
-    if (await ui.confirm(`草稿里的对话、${steps} 个步骤、截图和待发托盘都会删掉，不能恢复。想保留就先“另存为任务”。`, { title: "清空草稿？", ok: "清空", danger: true })) {
-      taskOp("/task/delete", {}, "清空草稿");
-    }
-  };
 
   // ---- the tray: attachments waiting to be sent, kept in the app per task (a reload or another page sees them)
 
