@@ -624,6 +624,26 @@ def save_mosaic(root: Path, zoom: str, runs, k: float, name: str = "mosaic") -> 
     imwrite(root / name / f"{zoom}.png", img)
     imwrite(root / name / f"{zoom}_valid.png", (valid * 255).astype(np.uint8))
     json.dump({"origin": origin, "k": k, "runs": list(runs), "spread": spread}, open(root / name / f"{zoom}.json", "w"))
+    overlay(root, zoom, name)
+
+
+def overlay(root: Path, zoom: str, name: str = "mosaic") -> None:
+    """<name>/overlay_<zoom>.png: the mosaic scaled up onto the big map composite, half and half, its edges in red,
+    to see that the two line up."""
+    comp = imread(root / "bigmap" / "composite.png")
+    org = json.load(open(root / "bigmap" / "composite.json"))["origin"]
+    r = mosaic_ref(root, zoom, name)
+    up = cv2.resize(r.img, None, fx=r.k, fy=r.k, interpolation=cv2.INTER_LINEAR)
+    vm = cv2.resize(r.valid.astype(np.uint8), (up.shape[1], up.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+    x0, y0 = int(round(org[0] - r.origin[0] * r.k)), int(round(org[1] - r.origin[1] * r.k))
+    ov = comp.astype(np.float32)
+    h, w = up.shape[:2]
+    reg = ov[y0 : y0 + h, x0 : x0 + w]
+    reg[vm] = 0.5 * reg[vm] + 0.5 * up[vm]
+    edges = cv2.Canny(cv2.cvtColor(up, cv2.COLOR_BGR2GRAY), 30, 80) > 0
+    reg[edges & vm] = (0, 0, 255)
+    crop = ov[org[1] - 160 : org[1] + 180, org[0] - 200 : org[0] + 140].astype(np.uint8)
+    imwrite(root / name / f"overlay_{zoom}.png", cv2.resize(crop, None, fx=2, fy=2))
 
 
 # ---- evaluation
