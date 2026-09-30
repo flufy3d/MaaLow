@@ -24,6 +24,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.File
+import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
 import java.util.Base64
 import java.util.Date
@@ -393,11 +394,13 @@ class Teaching(private val app: App) {
 
     // ---- chat between the human teacher and the AI
 
+    private fun now() = SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date())
+
     private fun post(msg: Map<String, JsonElement>): JsonObject = synchronized(lock) {
         val m = JsonObject(
             mapOf(
                 "id" to JsonPrimitive(messages.size + 1),
-                "time" to JsonPrimitive(SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date())),
+                "time" to JsonPrimitive(now()),
             ) + msg,
         )
         messages.add(m)
@@ -687,7 +690,34 @@ class Teaching(private val app: App) {
      */
     fun onGuard(ws: String, node: String) {
         if (!active || ws != workspace || System.currentTimeMillis() - used > NOTICE_WINDOW_MS) return
-        post(mapOf("role" to JsonPrimitive("ai"), "text" to JsonPrimitive("[自动] 规则 $node 已触发"), "auto" to JsonPrimitive(true)))
+        synchronized(lock) {
+            val last = messages.lastOrNull()
+            if (last != null && last.optStr("guard") == node && bump(last)) return
+            post(mapOf("role" to JsonPrimitive("ai"), "text" to JsonPrimitive("[自动] 规则 $node 已触发"), "auto" to JsonPrimitive(true), "guard" to JsonPrimitive(node)))
+        }
+    }
+
+    /**
+     * The same rule fired again with nothing said since: count it on the last notice (count, last time) instead of a
+     * new line each time. The last line of the log is rewritten, if it is that notice as expected.
+     */
+    private fun bump(old: JsonObject): Boolean {
+        val f = File(dir(), "$task.chat.jsonl")
+        val was = (old.toString() + "\n").toByteArray()
+        val m = JsonObject(old + mapOf("count" to JsonPrimitive((old.optInt("count") ?: 1) + 1), "last" to JsonPrimitive(now())))
+        RandomAccessFile(f, "rw").use { r ->
+            val at = r.length() - was.size
+            if (at < 0) return false
+            val tail = ByteArray(was.size)
+            r.seek(at)
+            r.readFully(tail)
+            if (!tail.contentEquals(was)) return false
+            r.setLength(at)
+            r.write((m.toString() + "\n").toByteArray())
+        }
+        messages[messages.size - 1] = m
+        changed.value++
+        return true
     }
 
     companion object {

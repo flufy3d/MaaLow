@@ -112,6 +112,22 @@ window.teach = (() => {
     return box;
   }
 
+  // Repeated notices (a guard rule firing again and again) show as one line: "×N · first–last". The app already
+  // counts repeats on the last notice (count, last); older logs have one line each, folded here.
+  const part = m => ({ count: m.count || 1, first: m.time, last: m.last || m.time });
+  function autoLine(d) {
+    const ps = Object.values(d._parts), n = ps.reduce((a, p) => a + p.count, 0), t0 = ps[0].first, t1 = ps[ps.length - 1].last;
+    d.querySelector(".bub").textContent = d._text + (n > 1 ? ` ×${n}` : "") + ` · ${t0}${n > 1 && t1 !== t0 ? "–" + t1 : ""}`;
+  }
+  const foldable = m => m.role === "ai" && m.auto;
+  /** Fold m into d when d is a notice line with the same text; true if it did. */
+  function fold(d, m) {
+    if (!d?._parts || !foldable(m) || d._text !== m.text) return false;
+    d._parts[m.id] = part(m);
+    autoLine(d);
+    return true;
+  }
+
   function addMsg(m) {
     const d = document.createElement("div");
     if (m.role === "system") {
@@ -131,6 +147,7 @@ window.teach = (() => {
     if (m.text || m.auto) b.appendChild(document.createTextNode((m.text || "") + (m.auto ? ` · ${m.time}` : "")));
     if (m.attachments?.length) b.appendChild(attsEl(m.attachments));
     d.appendChild(b);
+    if (foldable(m)) { d._text = m.text || ""; d._parts = { [m.id]: part(m) }; autoLine(d); }
     return d;
   }
 
@@ -150,8 +167,14 @@ window.teach = (() => {
     const log = $("log"), ms = await json(`/messages?before=${first}&limit=${PAGE}`);
     if (!ms.length) return showOlder(false);
     if (needsRecs(ms)) await loadRecs(true);
-    const h = log.scrollHeight, top = log.firstChild?.id === "older" ? log.firstChild.nextSibling : log.firstChild;
-    ms.forEach(m => log.insertBefore(addMsg(m), top));
+    const h = log.scrollHeight;
+    let top = log.firstChild?.id === "older" ? log.firstChild.nextSibling : log.firstChild;
+    for (const m of [...ms].reverse()) { // newest first, each before the one shown above it
+      if (fold(top, m)) continue;
+      const d = addMsg(m);
+      log.insertBefore(d, top);
+      top = d;
+    }
     first = ms[0].id;
     showOlder(first > 1);
     log.scrollTop += log.scrollHeight - h; // keep the view where it was
@@ -164,7 +187,10 @@ window.teach = (() => {
     if (!ms.length) return;
     if (needsRecs(ms)) await loadRecs(true);
     const log = $("log");
-    ms.filter(m => m.id > seen).forEach(m => log.appendChild(addMsg(m)));
+    for (const m of ms) { // the last one seen comes again: the app may have counted another repeat on it
+      if (fold(log.lastElementChild, m) || m.id <= seen) continue;
+      log.appendChild(addMsg(m));
+    }
     seen = Math.max(seen, ms[ms.length - 1].id);
     if (stick || ms.some(m => m.role === "teacher")) { log.scrollTop = log.scrollHeight; stick = true; }
   }
@@ -199,7 +225,7 @@ window.teach = (() => {
       document.querySelectorAll("#taskbar .named").forEach(b => b.style.display = draft ? "none" : "");
       if (s.tray_rev !== trayRev) await loadTray(s.tray_rev);
       live.follow(s.screenshot);
-      await appendMsgs(await json("/messages?since=" + seen));
+      await appendMsgs(await json("/messages?since=" + Math.max(0, seen - 1)));
       renderStatus();
     } catch (e) { /* app restarting */ }
     finally { polling = false; }
