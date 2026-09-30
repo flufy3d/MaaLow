@@ -1,0 +1,82 @@
+{
+    "StrongholdFight": {
+        "desc": "据点清怪：只追小地图橙色区域（据点范围）里的红点，区域外的零散敌人不管；区域里没看到红点时朝区域中间跑，还没看到区域时按大地图算出的方位跑（用时覆盖 bearing）。锁定到敌人接 StrongholdCombat，走到区域中间且没红点接 StrongholdCleared。技能 skills/move.js zone 模式，教学 explore 消息 46–58",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "move",
+        "custom_action_param": {
+            "zone": true,
+            "sprint": true,
+            "ms": 90000
+        },
+        "next": [
+            "StrongholdCleared",
+            "StrongholdCombat"
+        ]
+    },
+    "StrongholdCombat": {
+        "desc": "据点里开打：Combat，只看 20 小地图像素内的红点，身边打完就回 StrongholdFight 找下一波",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "combat",
+        "custom_action_param": {
+            "hp": 0.5,
+            "within": 20,
+            "ms": 300000
+        },
+        "next": [
+            "StrongholdFight"
+        ]
+    },
+    "StrongholdCleared": {
+        "desc": "据点清完：站在橙色区域中间，区域里没有红点（skills/stronghold.js）",
+        "recognition": "Custom",
+        "custom_recognition": "stronghold.recognize"
+    },
+    "CixinRoute": {
+        "desc": "慈心山院：从传送石碑沿录好的路线走到大门口（路点坐标是大地图放到最大时相对据点图标的像素，snap 是那个点的小地图快照，templates/route/cixin/）。技能 skills/route.js，教学 explore 消息 92–132",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "route",
+        "custom_action_param": {
+            "points": [
+                {
+                    "at": [
+                        -108,
+                        115
+                    ],
+                    "cam": 53,
+                    "snap": "route/cixin/00.png",
+                    "name": "传送石碑"
+                },
+                {
+                    "at": [
+                        -80,
+                        110
+                    ],
+                    "cam": 62,
+                    "snap": "route/cixin/01.png",
+                    "name": "过了第一个台阶"
+                },
+                {
+                    "at": [
+                        -72,
+                        84
+                    ],
+                    "cam": 42,
+                    "snap": "route/cixin/03.png",
+                    "name": "石像旁"
+                },
+                {
+                    "at": [
+                        -42,
+                        54
+                    ],
+                    "cam": 45,
+                    "snap": "route/cixin/04.png",
+                    "name": "大门口"
+                }
+            ]
+        }
+    }
+}

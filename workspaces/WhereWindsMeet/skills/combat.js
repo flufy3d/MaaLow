@@ -6,7 +6,11 @@
 // 奇术 goes whenever it is lit (grey without 精力, a countdown while cooling), always followed by 卸势. A skill pressed
 // while being hit may not come out: a press counts once its button changes (a countdown shows, or the icon becomes
 // the next one), otherwise it is pressed again. Below `hp` health the potion next to the bar is tapped.
-// The fight is over when no red mark has been on the minimap and nothing locked for `idleMs`.
+// The fight is over when no red mark has been on the minimap (within `within` minimap px, if given) and nothing
+// locked for `idleMs`; at a stronghold the rest of its enemies may be in sight but too far to be part of this fight.
+// Sooner: in a fight the game hides the icons at the top right; once they have been hidden, their coming back for
+// `calmMs` ends it (teacher, explore message after 85: stuck fighting in an empty room with red marks around).
+import { calm as hudCalm } from "./lib/hud.js";
 import { enemies } from "./lib/minimap.js";
 
 /** @type {SkillMeta} */
@@ -63,14 +67,17 @@ function tap(p, ms = 50) {
 
 class Over extends Error {}
 
+
 /**
- * @param {{hp?: number, idleMs?: number, ms?: number, probe?: boolean}} [args]  probe: only report what is seen
+ * @param {{hp?: number, idleMs?: number, calmMs?: number, ms?: number, within?: number, probe?: boolean}} [args]  probe: only report what is seen
  */
 export default function (args = {}) {
     const hpMin = args.hp ?? 0.5;
     const idleMs = args.idleMs ?? 4000;
     const until = Date.now() + (args.ms ?? 300_000);
     let lastFoe = Date.now();
+    let fought = false; // the top right icons have been hidden
+    let calmSince = 0; // since when they are back
     let lastPotion = 0;
     let lastLock = 0;
     let lows = 0;
@@ -95,9 +102,17 @@ export default function (args = {}) {
         img = screenshot();
         const now = Date.now();
         const locked = color({ ...GOLD, image: img, roi: LOCK_ROI, count: 150 }).hit;
-        const foes = enemies(img).length;
+        const foes = enemies(img).filter((e) => e.dist <= (args.within ?? Infinity)).length;
         if (foes || locked) lastFoe = now;
         if (now - lastFoe > idleMs) throw new Over("no enemies");
+        const calm = hudCalm(img);
+        if (!calm) {
+            fought = true;
+            calmSince = 0;
+        } else if (fought) {
+            calmSince ||= now;
+            if (now - calmSince > (args.calmMs ?? 1500)) throw new Over("out of combat");
+        }
         if (now > until) throw new Over("time");
         if (foes && !locked && now - lastLock > LOCK_MS) {
             tap(LOCK);

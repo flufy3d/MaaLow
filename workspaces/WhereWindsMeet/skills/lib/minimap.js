@@ -48,9 +48,34 @@ export function enemies(image) {
         } else pins.push({ x: cx, y: cy, n: 1 });
     }
     return pins
-        .map(({ x, y }) => ({ bearing: bearingOf([x, y]), dist: Math.hypot(x - CENTER[0], y - CENTER[1]) }))
+        .map(({ x, y }) => ({ x, y, bearing: bearingOf([x, y]), dist: Math.hypot(x - CENTER[0], y - CENTER[1]) }))
         .filter((e) => e.dist <= RADIUS)
         .sort((a, b) => a.dist - b.dist);
+}
+
+// A stronghold (据点) shows as an orange patch, its enemies are the red marks on it; those around it are strays
+// (teaching explore message 58). The patch ~(187,170,131) is H 20–21 S 69–76 over open ground, darker over the
+// buildings inside (H 13–19 S 59–84 V 124–157); the map around it H 27 S 41, dark blue-gray H 70+.
+const ZONE = { lower: [12, 55, 110], upper: [23, 110, 225], method: 40 };
+const ZONE_PX = 150; // smallest patch; the gold arrow gives stray bits of ~50
+const ON_ZONE = 20; // orange px in the 13 px box around a mark on the patch (~150 on it, 0 off it)
+
+/**
+ * The stronghold patch on the minimap: its box, the bearing and distance (minimap px) of its middle; null if not in
+ * sight. Only the part within the disc shows, so the middle is only right once all of it is in sight.
+ */
+export function zone(image) {
+    const hit = color({ ...ZONE, image, roi: MAP_ROI, count: ZONE_PX, connected: true });
+    if (!hit.hit) return null;
+    const [x, y, w, h] = hit.results.reduce((a, b) => ((b.count ?? 0) > (a.count ?? 0) ? b : a)).box;
+    const mid = /** @type {Point} */ ([x + w / 2, y + h / 2]);
+    return { box: /** @type {Box} */ ([x, y, w, h]), x: mid[0], y: mid[1], bearing: bearingOf(mid), dist: Math.hypot(mid[0] - CENTER[0], mid[1] - CENTER[1]) };
+}
+
+/** Whether an enemy mark (from enemies()) sits on the stronghold patch. */
+export function onZone(image, e) {
+    const roi = /** @type {Box} */ ([Math.round(e.x) - 6, Math.round(e.y) - 6, 13, 13]);
+    return color({ ...ZONE, image, roi, count: ON_ZONE }).hit;
 }
 
 /** Score of the fan template at `deg` (a multiple of 10). */

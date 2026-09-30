@@ -18,6 +18,7 @@ const WORLD = "SignIn_InWorld"; // world menu button, top right
 const ABOVE = 50; // tap this far above the top row's center: clear of the list, where the teacher tapped
 const TRIES = 2; // taps on an unchanged list before giving up on it
 const SAME_MS = 3000; // a list seen again within this long counts as unchanged
+const GAP = 20; // widest gap between the strokes of a name (names: ≤ 14 px; roof tiles behind the column: 32)
 
 /** Centers (y) of the rows showing a white name, top first. */
 function rows(image) {
@@ -28,19 +29,34 @@ function rows(image) {
     if (!hit.hit) return [];
     const blobs = hit.results.map((m) => m.box).filter(([, , w, h]) => h <= 16 && w <= 40).sort((a, b) => a[1] - b[1]);
     const out = [];
-    for (const [x, y, , h] of blobs) {
+    for (const [x, y, w, h] of blobs) {
         const last = out[out.length - 1];
         if (last && y <= last.bottom + 3) {
             last.top = Math.min(last.top, y);
             last.bottom = Math.max(last.bottom, y + h);
             last.left = Math.min(last.left, x);
             last.blobs++;
-        } else out.push({ top: y, bottom: y + h, left: x, blobs: 1 });
+            last.spans.push([x, x + w]);
+        } else out.push({ top: y, bottom: y + h, left: x, blobs: 1, spans: [[x, x + w]] });
     }
     return out
         // names start at x ≈ 704–708; white bits of scenery rarely line up there
         .filter((r) => r.blobs >= 2 && r.bottom - r.top >= 8 && r.bottom - r.top <= 18 && r.left >= 702 && r.left <= 712)
+        // a name's strokes sit close together; a row of tiles on a roof behind the column is evenly spaced out
+        .filter((r) => widestGap(r.spans) <= GAP)
         .map((r) => Math.round((r.top + r.bottom) / 2));
+}
+
+/** The widest horizontal gap between [left, right] spans. */
+function widestGap(spans) {
+    spans.sort((a, b) => a[0] - b[0]);
+    let end = spans[0][1];
+    let gap = 0;
+    for (const [l, r] of spans.slice(1)) {
+        gap = Math.max(gap, l - end);
+        end = Math.max(end, r);
+    }
+    return gap;
 }
 
 /** Where to tap: above the list, unless the list has stayed the same through TRIES taps; else null. */
