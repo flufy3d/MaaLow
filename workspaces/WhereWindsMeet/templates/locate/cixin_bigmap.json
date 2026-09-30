@@ -1,5 +1,5 @@
 {
-    "desc": "cixin: minimap reference (the big map, scaled), made by scripts/minimap_locate.py export",
+    "desc": "cixin: minimap reference (the big map, scaled), made by tools/wwm_locate.py export",
     "levels": [
         {
             "zoom": "out",
@@ -28,6 +28,75 @@
             ]
         }
     ],
+    "crop": {
+        "center": [
+            144,
+            70
+        ],
+        "size": 110
+    },
+    "mask": {
+        "circle": [
+            9,
+            44
+        ],
+        "wedge": {
+            "r": 34,
+            "half": 38
+        },
+        "drop": [
+            {
+                "h": [
+                    0,
+                    8
+                ],
+                "s": [
+                    45,
+                    255
+                ],
+                "v": [
+                    150,
+                    255
+                ]
+            },
+            {
+                "h": [
+                    170,
+                    180
+                ],
+                "s": [
+                    45,
+                    255
+                ],
+                "v": [
+                    150,
+                    255
+                ]
+            }
+        ],
+        "grow": 5,
+        "sat_max": 0
+    },
+    "regions": {
+        "h": [
+            10,
+            24
+        ],
+        "s": [
+            25,
+            85
+        ],
+        "v": [
+            100,
+            235
+        ],
+        "mode": "flat",
+        "gain": 1.0,
+        "open": 3,
+        "min_px": 60,
+        "close": 5,
+        "edge": 5
+    },
     "prep": {
         "kind": "canny",
         "pre": 1.0,

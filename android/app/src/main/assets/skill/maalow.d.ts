@@ -106,21 +106,28 @@ interface DetectOptions extends RecoOptions {
 }
 
 interface LocateOptions {
-    /** Screenshot to read the minimap from; default: the latest screenshot (one is taken if there is none). */
+    /** Screenshot to cut the crop from; default: the latest screenshot (one is taken if there is none). */
     image?: Image;
-    /** Where the character should be, in the reference's units (e.g. big map px from a stronghold icon): only
-     * within `radius` of it is searched. Without it, the whole reference. */
+    /** Where the crop's middle should be, in the reference's units (e.g. big map px from a map icon): only within
+     * `radius` of it is searched. Without it, the whole reference. */
     prior?: Point;
     /** Default 30. */
     radius?: number;
-    /** Camera heading (compass degrees) to leave the minimap's fan out; without it, all it could cover is left out. */
+    /** Heading (compass degrees) of the reference's mask.wedge, left out around it (e.g. a minimap's camera fan);
+     * without it, all the wedge could cover is left out. */
+    wedge?: number | null;
+    /** @deprecated the old name of `wedge`. */
     cam?: number | null;
     /** Only this zoom level of the reference. */
     zoom?: string;
-    /** The minimap's center on screen, default [144, 70]. */
-    center?: Point;
-    /** Preprocessing, over the reference's: kind (raw | hp | dog | grad | canny), pre, sigma, r_use, r_arrow, fan_r,
-     * fan_half, sat_max, zone (flat | mask | none), zone_gain. */
+    /** Over the reference's, key by key: center (on screen), size (px, square). */
+    crop?: { center?: Point; size?: number };
+    /** Over the reference's, key by key: circle [inner, outer], wedge {r, half}, drop (HSV ranges {h, s, v: [lo, hi]},
+     * OpenCV's H 0-180), grow, sat_max. */
+    mask?: Record<string, any>;
+    /** Over the reference's, key by key: h, s, v, mode (flat | mask | none), gain, open, min_px, close, edge. */
+    regions?: Record<string, any>;
+    /** Preprocessing, over the reference's: kind (raw | hp | dog | grad | canny), pre, sigma. */
     prep?: Record<string, number | string>;
 }
 
@@ -133,7 +140,7 @@ interface Located {
     second: number;
     /** The zoom level that matched best. */
     zoom: string;
-    /** Minimap pixels compared. */
+    /** Crop pixels compared. */
     used: number;
     ms: number;
     /** Score per zoom level tried. */
@@ -191,9 +198,10 @@ declare function ocr(opts?: OcrOptions): Hit;
 /** Neural network detection (NeuralNetworkDetect), e.g. a YOLO model. */
 declare function detect(opts: DetectOptions): Hit;
 /**
- * Where the character is, from the minimap matched inside a reference image drawn at its scale:
- * templates/<ref>.json (zoom levels, each an image with its position scale and origin; made by
- * scripts/minimap_locate.py export). Every zoom level is tried, the best one wins; null if none could be matched.
+ * Where a screen region (e.g. the minimap, for where the character is) is, matched inside a reference image drawn
+ * at its scale: templates/<ref>.json (zoom levels, each an image with its position scale and origin; the crop, what
+ * of it is left out (mask, regions) and the preprocessing; made offline, see scripts/map_locate.py). Every zoom
+ * level is tried, the best one wins; null if none could be matched.
  */
 declare function locate(ref: string, opts?: LocateOptions): Located | null;
 /** Any Maa recognition type with its pipeline parameters, e.g. reco("FeatureMatch", { template: "a.png" }). */

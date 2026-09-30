@@ -1,7 +1,7 @@
-// Minimap locating (locate_core.h). The steps follow scripts/minimap_locate.py, where they were checked on survey
-// frames: disc mask (arrow, fan, red marks, rim, the zone's edge), a band-pass over the masked-in pixels only
-// (normalized convolution), the zone's inside filtered apart from the rest, then masked ZNCC over a search window,
-// coarse (every other position, half the template) and then fine around the best.
+// Locating a crop in a reference (locate_core.h). The steps follow scripts/map_locate.py, where they were checked
+// on survey frames: crop mask (circle, wedge, dropped colors, saturated pixels, the region's edge), a band-pass over
+// the masked-in pixels only (normalized convolution), the region's inside filtered apart from the rest, then masked
+// ZNCC over a search window, coarse (every other position, half the template) and then fine around the best.
 
 #include "locate_core.h"
 
@@ -13,8 +13,6 @@
 namespace
 {
 
-constexpr int D = 110; // disc crop size
-constexpr int C = 54; // the character within it
 constexpr double DEG = 57.29577951308232;
 
 using Img = std::vector<float>;
@@ -150,14 +148,9 @@ Hsv hsv(int b, int g, int r)
     return { uint8_t(std::min(h, 255)), uint8_t(std::min(s, 255)), uint8_t(v) };
 }
 
-bool in_zone_fill(const Hsv& c) // ZONE_FILL: H 10-24, S 25-85, V 100-235
+bool in_range(const Hsv& c, const LocRange& r)
 {
-    return c.h >= 10 && c.h <= 24 && c.s >= 25 && c.s <= 85 && c.v >= 100 && c.v <= 235;
-}
-
-bool is_red(const Hsv& c) // RED: H 0-8 or 170-180, S >= 45, V >= 150
-{
-    return (c.h <= 8 || (c.h >= 170 && c.h <= 180)) && c.s >= 45 && c.v >= 150;
+    return c.h >= r.lo[0] && c.h <= r.hi[0] && c.s >= r.lo[1] && c.s <= r.hi[1] && c.v >= r.lo[2] && c.v <= r.hi[2];
 }
 
 struct Pix
@@ -183,21 +176,22 @@ Pix pixels(const uint8_t* bgr, int stride, int w, int h)
     return p;
 }
 
-Mask zone_region(const Pix& px, int w, int h)
+// the region's area (opened, holes closed), empty when it has fewer than region_min px
+Mask region(const Pix& px, int w, int h, const LocParams& p)
 {
     Mask z(size_t(w) * h);
     for (size_t i = 0; i < z.size(); ++i) {
-        z[i] = in_zone_fill(px.hsv[i]);
+        z[i] = in_range(px.hsv[i], p.region);
     }
-    z = morph(morph(z, w, h, 3, true), w, h, 3, false); // open
+    z = morph(morph(z, w, h, p.region_open, true), w, h, p.region_open, false); // open
     size_t n = 0;
     for (auto v : z) {
         n += v;
     }
-    if (n < 60) {
+    if (n == 0 || n < size_t(std::max(p.region_min, 0))) {
         return Mask(z.size(), 0);
     }
-    return morph(morph(z, w, h, 5, false), w, h, 5, true); // close
+    return morph(morph(z, w, h, p.region_close, false), w, h, p.region_close, true); // close
 }
 
 // Canny as cv::Canny(img, 20, 50) with a 3x3 Sobel and the L1 gradient, edges 255
@@ -277,7 +271,7 @@ Img canny(const Img& b8, int w, int h, float lo, float hi)
     return out;
 }
 
-Img filter(const Img& g, const Mask& m, int w, int h, const LocPrep& p)
+Img filter(const Img& g, const Mask& m, int w, int h, const LocParams& p)
 {
     switch (p.kind) {
     case 0:
@@ -319,13 +313,13 @@ Img filter(const Img& g, const Mask& m, int w, int h, const LocPrep& p)
 }
 
 // the image to match: filtered, 0 outside the mask (eroded by one, since pixels next to a masked one see its fill)
-Img prep(const Pix& px, const Mask& m, int w, int h, const LocPrep& p, Mask& used)
+Img prep(const Pix& px, const Mask& m, int w, int h, const LocParams& p, Mask& used)
 {
     Img out;
     Mask z;
     bool split = false;
-    if (p.zone == 0) {
-        z = zone_region(px, w, h);
+    if (p.region_mode == 0) {
+        z = region(px, w, h, p);
         for (size_t i = 0; i < z.size() && !split; ++i) {
             split = z[i] && m[i];
         }
@@ -339,7 +333,7 @@ Img prep(const Pix& px, const Mask& m, int w, int h, const LocPrep& p, Mask& use
         Img a = filter(px.gray, in, w, h, p), b = filter(px.gray, rest, w, h, p);
         out.resize(a.size());
         for (size_t i = 0; i < a.size(); ++i) {
-            out[i] = z[i] ? a[i] * p.zone_gain : b[i];
+            out[i] = z[i] ? a[i] * p.region_gain : b[i];
         }
     }
     else {
@@ -354,22 +348,24 @@ Img prep(const Pix& px, const Mask& m, int w, int h, const LocPrep& p, Mask& use
     return out;
 }
 
-Mask disc_mask(const Pix& px, const LocPrep& p, float cam)
+// the crop's pixels that show the map: in the circle, not the wedge, dropped colors, the region's edge (or all of it)
+Mask crop_mask(const Pix& px, const LocParams& p, float wedge)
 {
+    const int D = p.size, C = (D - 1) / 2;
     Mask m(size_t(D) * D);
     for (int y = 0; y < D; ++y) {
         for (int x = 0; x < D; ++x) {
             float r = std::hypot(float(x - C), float(y - C));
-            bool ok = r <= p.r_use && r > p.r_arrow;
-            if (ok && r <= p.fan_r) {
-                if (std::isnan(cam)) {
+            bool ok = p.r_out < 0 || (r <= p.r_out && r > p.r_in);
+            if (ok && p.wedge_r > 0 && r <= p.wedge_r) {
+                if (std::isnan(wedge)) {
                     ok = false;
                 }
                 else {
                     float a = float(std::atan2(double(x - C), double(C - y)) * DEG);
                     a = std::fmod(a + 360.f, 360.f);
-                    float da = std::fabs(std::fmod(std::fmod(a - cam + 180.f, 360.f) + 360.f, 360.f) - 180.f);
-                    ok = da > p.fan_half;
+                    float da = std::fabs(std::fmod(std::fmod(a - wedge + 180.f, 360.f) + 360.f, 360.f) - 180.f);
+                    ok = da > p.wedge_half;
                 }
             }
             m[size_t(y) * D + x] = ok;
@@ -377,23 +373,28 @@ Mask disc_mask(const Pix& px, const LocPrep& p, float cam)
     }
     Mask bad(m.size(), 0);
     bool any = false;
+    const int n_drop = std::clamp(p.n_drop, 0, LOC_MAX_DROP);
     for (size_t i = 0; i < m.size(); ++i) {
         const Hsv& c = px.hsv[i];
-        bad[i] = is_red(c) || (p.sat_max > 0 && c.s > p.sat_max && !in_zone_fill(c));
-        any |= bad[i] != 0;
+        bool b = p.sat_max > 0 && c.s > p.sat_max && !in_range(c, p.region);
+        for (int k = 0; k < n_drop && !b; ++k) {
+            b = in_range(c, p.drop[k]);
+        }
+        bad[i] = b;
+        any |= b;
     }
     if (any) {
-        bad = morph(bad, D, D, 5, false);
+        bad = morph(bad, D, D, p.grow, false);
         for (size_t i = 0; i < m.size(); ++i) {
             m[i] &= !bad[i];
         }
     }
-    if (p.zone != 2) {
-        Mask z = zone_region(px, D, D);
+    if (p.region_mode != 2) {
+        Mask z = region(px, D, D, p);
         if (std::find(z.begin(), z.end(), 1) != z.end()) {
             Mask cut = z;
-            if (p.zone == 0) {
-                Mask dil = morph(z, D, D, 5, false), ero = morph(z, D, D, 5, true);
+            if (p.region_mode == 0) {
+                Mask dil = morph(z, D, D, p.region_edge, false), ero = morph(z, D, D, p.region_edge, true);
                 for (size_t i = 0; i < cut.size(); ++i) {
                     cut[i] = dil[i] && !ero[i];
                 }
@@ -413,7 +414,7 @@ struct Tmpl
     double tt = 0; // sum of t^2
 };
 
-Tmpl make_tmpl(const Img& t, const Mask& used, int ref_w, int parity)
+Tmpl make_tmpl(const Img& t, const Mask& used, int D, int ref_w, int parity)
 {
     Tmpl out;
     double mean = 0;
@@ -480,7 +481,7 @@ struct LocRef
 
 extern "C" {
 
-LocRef* loc_ref_create(const uint8_t* bgr, int stride, const uint8_t* valid, int w, int h, const LocPrep* p)
+LocRef* loc_ref_create(const uint8_t* bgr, int stride, const uint8_t* valid, int w, int h, const LocParams* p)
 {
     auto* r = new LocRef;
     r->w = w;
@@ -492,7 +493,7 @@ LocRef* loc_ref_create(const uint8_t* bgr, int stride, const uint8_t* valid, int
             m[i] = valid[i] ? 1 : 0;
         }
     }
-    LocPrep q = *p;
+    LocParams q = *p;
     q.sat_max = 0;
     Mask used;
     r->img = prep(px, m, w, h, q, used);
@@ -514,11 +515,15 @@ int loc_ref_height(const LocRef* r)
     return r->h;
 }
 
-int loc_run(const LocRef* r, const uint8_t* disc, int stride, float cam, float pu, float pv, float radius,
-            const LocPrep* p, float out[5])
+int loc_run(const LocRef* r, const uint8_t* crop, int stride, float wedge, float pu, float pv, float radius,
+            const LocParams* p, float out[5])
 {
-    Pix px = pixels(disc, stride, D, D);
-    Mask m = disc_mask(px, *p, cam);
+    const int D = p->size, C = (D - 1) / 2;
+    if (D < 3) {
+        return 0;
+    }
+    Pix px = pixels(crop, stride, D, D);
+    Mask m = crop_mask(px, *p, wedge);
     Mask used;
     Img t = prep(px, m, D, D, *p, used);
     // top left positions of the window
@@ -532,7 +537,7 @@ int loc_run(const LocRef* r, const uint8_t* disc, int stride, float cam, float p
     if (x1 < x0 || y1 < y0) {
         return 0;
     }
-    Tmpl full = make_tmpl(t, used, r->w, -1);
+    Tmpl full = make_tmpl(t, used, D, r->w, -1);
     if (full.off.size() < 200) {
         return 0;
     }
@@ -540,7 +545,7 @@ int loc_run(const LocRef* r, const uint8_t* disc, int stride, float cam, float p
     const int nw = x1 - x0 + 1, nh = y1 - y0 + 1;
     const bool coarse = size_t(nw) * nh > 400;
     // coarse pass: every other position, half the template (a checkerboard of it)
-    Tmpl half = coarse ? make_tmpl(t, used, r->w, 0) : Tmpl{};
+    Tmpl half = coarse ? make_tmpl(t, used, D, r->w, 0) : Tmpl{};
     const Tmpl& T0 = coarse ? half : full;
     const int step = coarse ? 2 : 1;
     std::vector<float> sc;

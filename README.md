@@ -209,7 +209,31 @@ export default function (args, ctx) {
 * 运行：`maalow do skill <name> --args '{...}'`、定时任务的 `"skill"` 字段，或 Pipeline 节点 `"action": "Custom", "custom_action": "<name>"`（识别用 `"custom_recognition": "<name>.recognize"`）
 * 改完 `maalow sync` 即生效，不用重装 App；报错带文件名和行号
 * 检查：`npx -p typescript tsc -p workspaces/<ws>/skills`
-* 小地图定位 `locate(ref, {prior, radius, cam})`：把小地图圆盘放进一张同比例的参考图里找（带掩膜的归一化互相关，App 原生实现，每次约 10 ms），不用开大地图。参考图是 `templates/<ref>.json` 加每档缩放一张 PNG，由 `scripts/minimap_locate.py export` 生成：可以是大地图截图缩小拼成的，也可以是沿路线抓的小地图帧拼成的（`scripts/grab_frames.py` 抓帧、`minimap_locate.py track/stitch` 拼图、`eval` 离线评测，要 `uv sync --extra cv`）
+* 区域定位 `locate()`：屏幕上的一块区域在一张参考图里的位置，见下一节
+
+### 区域定位 locate()
+
+把屏幕上截下的一块区域放进一张同比例的参考图里找位置：两边做同样的预处理，再做带掩膜的归一化互相关（ZNCC），先隔点粗搜、再在最好的附近细搜。App 原生实现（`android/app/src/main/cpp/locate_core.cpp`，不依赖 OpenCV），110×110 的区域在 ±30 单位里找一次约 10 ms。典型用法是把游戏的小地图放进整张地图里，每帧知道人在哪，不用开大地图（燕云见 [`workspaces/WhereWindsMeet/README.md`](workspaces/WhereWindsMeet/README.md)）。
+
+```js
+const r = locate("locate/cixin_mosaic", { image, prior: [x, y], radius: 30, wedge: cam });
+if (r && r.score >= 0.4 && r.score - r.second >= 0.1) pos = [r.x, r.y]; // 可信
+```
+
+* 选项：`image`（默认最新截图）、`prior` + `radius`（只在先验位置附近搜；不给就搜整张图）、`wedge`（扇形遮罩的朝向，旧名 `cam`）、`zoom`（只试某一档），`crop` / `mask` / `regions` / `prep` 按键覆盖参考图里的设置
+* 返回 `{x, y, score, second, zoom, used, ms, levels}`：`second` 是离最好位置 4 像素以外的最高分，`score` 比它高得多才说明没有歧义；一档都匹配不上返回 `null`
+* 参考图是 `templates/<ref>.json` 加每档一张 PNG（alpha 标出参考图里哪些地方是已知的）。一个参考图可以有好几档（`levels`：比如小地图在某些地方会放大），每档都试，取分数最高的；每档有自己的换算：`位置 = (像素 - origin) × k + off`
+* JSON 里还写着截哪块、丢掉哪些像素、怎么预处理，这些都随游戏而定：
+  * `crop`：`center`（屏幕坐标）、`size`（正方形边长），要找的点是它的正中
+  * `mask`：`circle`（只用内外半径之间的环）、`wedge`（按每次传入的朝向挖掉一个扇形，比如镜头视野）、`drop`（丢掉的 HSV 颜色范围，OpenCV 的 H 0–180，再向外扩 `grow` 像素）、`sat_max`（丢掉饱和度更高的像素，比如透出来的背景）
+  * `regions`：某种颜色的半透明覆盖层（比如据点范围）。`flat` 是区内区外分开滤波，去掉色差，只丢掉边线；`mask` 是整块丢掉
+  * `prep`：`kind` 取 raw / hp（减去模糊）/ dog（两次模糊相减，带通）/ grad / canny，加上 `pre` / `sigma`
+* 参考图在 PC 上离线做，通用部分在 `scripts/map_locate.py`（预处理、定位、逐帧配准、拼图、评测、写参考图，要 `uv sync --extra cv`），各游戏的工具放在自己工作区的 `tools/` 下，配上自己的参数：
+  1. 两种来源：地图截图按比例缩小，或者沿路线抓区域的连续帧拼成全图。后者和实时画面的画法一模一样，通常更准
+  2. 抓帧：`uv run python scripts/grab_frames.py data/<ws>/survey1`，App 的实时帧（JPEG，约 8 帧/秒，带帧号）存到 PC 上；同时让技能在停稳的地方记锚点（已知位置、帧号）
+  3. 用锚点加逐帧配准给每帧定位，拼图，导出参考图，再用留出的帧离线评测：每张图、每种预处理的误差、分数、第二高峰差距
+  4. C++ 可以在 PC 上编成 DLL（`g++ -O2 -shared -static -std=c++20 -o data/build/locate.dll android/app/src/main/cpp/locate_core.cpp`），评测时用 `--native` 跑 App 的实现，和 OpenCV 版对拍
+* `scripts/` 里的通用工具：`grab_frames.py`（抓 App 实时帧）、`map_locate.py`（上面的离线定位）
 
 ## 目标
 

@@ -62,12 +62,11 @@ object Maa {
     /** PNG bytes. */
     external fun imageEncoded(h: Long): ByteArray
 
-    // Minimap locating (locate_jni.cpp, skill/Locate.kt); prep: [kind, pre, sigma, rUse, rArrow, fanR, fanHalf,
-    // satMax, zone, zoneGain]
+    // Locating a screen crop in a reference (locate_jni.cpp, skill/Locate.kt); params: Locator.paramsOf
     /** A preprocessed reference from ARGB pixels (alpha < 128: not known); 0 on bad input. */
-    external fun locateRefCreate(argb: IntArray, w: Int, h: Int, prep: FloatArray): Long
+    external fun locateRefCreate(argb: IntArray, w: Int, h: Int, params: FloatArray): Long
     external fun locateRefDestroy(h: Long)
-    /** args: [minimap x, y, camera heading or NaN, prior u, v, radius (ref px, < 0: all), prep...]; [u, v, score, second, used] or null. */
+    /** args: [crop center x, y, wedge heading or NaN, prior u, v, radius (ref px, < 0: all), params...]; [u, v, score, second, used] or null. */
     external fun locateRun(image: Long, ref: Long, args: FloatArray): FloatArray?
 
     // Inside a custom action / recognition (on the tasker's thread):

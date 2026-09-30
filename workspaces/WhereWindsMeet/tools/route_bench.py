@@ -1,6 +1,6 @@
 """Try a route's continuous mode (route.js `locate`) several rounds with each reference, from the teleport stone.
 
-    uv run python scripts/route_bench.py data/wwm/bench --refs locate/cixin_mosaic,locate/cixin_bigmap --rounds 5
+    uv run python workspaces/WhereWindsMeet/tools/route_bench.py data/wwm/bench --refs locate/cixin_mosaic,locate/cixin_bigmap --rounds 5
 
 --refs: comma separated, one set of rounds each; a+b tries b where a cannot tell.
 
@@ -18,8 +18,8 @@ from pathlib import Path
 
 from maalow.client import Client
 
-REPO = Path(__file__).resolve().parents[1]
-PIPELINE = REPO / "workspaces" / "WhereWindsMeet" / "pipeline" / "stronghold.json"
+WS = Path(__file__).resolve().parents[1]
+PIPELINE = WS / "pipeline" / "stronghold.json"
 
 
 def teleport(c: Client) -> bool:

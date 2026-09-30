@@ -158,7 +158,7 @@ function locked(image) {
     return color({ ...GOLD, image, roi: LOCK_ROI, count: LOCK_PX }).hit;
 }
 
-// goto: where it is, frame by frame (route.js locate mode; measured on the 2026-09-30 survey, scripts/minimap_locate.py)
+// goto: where it is, frame by frame (route.js locate mode; measured on the 2026-09-30 survey, tools/wwm_locate.py)
 const V_SPRINT = 8; // big map px per second sprinting (steady ~8)
 const V_RUN = 4.6; // running, not sprinting (12 px in 2.6 s)
 const COAST_MS = 500; // a sprint carries on ~3 px after the joystick is let go (up to ~7 outside)
@@ -188,7 +188,7 @@ const distTo = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
  */
 function fix(ref, image, cam, prior, radius) {
     for (const one of Array.isArray(ref) ? ref : [ref]) {
-        const r = locate(one, { image, cam, prior: prior ?? undefined, radius });
+        const r = locate(one, { image, wedge: cam, prior: prior ?? undefined, radius });
         if (r && r.score >= FIX_MIN && r.score - r.second >= FIX_MARGIN) return r;
     }
     return null;

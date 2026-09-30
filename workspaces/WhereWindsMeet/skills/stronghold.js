@@ -83,7 +83,7 @@ function compare(refs, n) {
             const image = screenshot();
             const cam = cameraHeading(image);
             const t0 = Date.now();
-            const r = locate(ref, { image, cam, prior: out.where ? [out.where.x, out.where.y] : undefined, radius: 30 });
+            const r = locate(ref, { image, wedge: cam, prior: out.where ? [out.where.x, out.where.y] : undefined, radius: 30 });
             reads.push(r ? { x: r.x, y: r.y, score: r.score, second: r.second, zoom: r.zoom, ms: r.ms, call: Date.now() - t0 } : null);
         }
         out.refs[ref] = reads;
