@@ -10,18 +10,21 @@ window.teach = (() => {
 
   // ---- stages
 
+  /** Show a stage in the shared frame (its toolbar group and bottom slot come with it); the frame stays put. */
   function setStage(s, rest = "") {
     if (!["live", "replay"].includes(s)) s = "live";
     const was = stage;
     stage = s;
-    document.querySelectorAll("[data-stage]").forEach(b => b.classList.toggle("on", b.dataset.stage === s));
-    document.querySelectorAll(".stagepane").forEach(d => d.classList.toggle("on", d.id === s));
+    $("teach").dataset.stage = s;
+    document.querySelectorAll("#modes [data-stage]").forEach(b => b.classList.toggle("on", b.dataset.stage === s));
     if (!active) return;
     if (was === "replay" && s !== "replay") replay.leave();
+    if (was === "live" && s !== "live") live.leave();
     if (s === "replay") replay.enter(rest);
     else { live.enter(); history.replaceState(null, "", "#teach/live"); }
+    renderTray();
   }
-  document.querySelectorAll("[data-stage]").forEach(b => b.onclick = () => { if (!b.disabled && b.dataset.stage !== stage) setStage(b.dataset.stage); });
+  document.querySelectorAll("#modes [data-stage]").forEach(b => b.onclick = () => { if (!b.disabled && b.dataset.stage !== stage) setStage(b.dataset.stage); });
 
   /** Page entered; rest: "live", "replay/<id>/<frame>" (from the address). */
   function enter(rest = "") {
@@ -34,8 +37,7 @@ window.teach = (() => {
   }
   function leave() {
     active = false;
-    if (stage === "replay") replay.leave();
-    live.flush();
+    if (stage === "replay") replay.leave(); else live.leave();
   }
 
   // ---- recordings the messages refer to (names, lengths, thumbnails)
@@ -50,7 +52,7 @@ window.teach = (() => {
   function setRecs(list, ws) {
     if (ws !== workspace) return;
     recs = list; recsFor = ws;
-    document.querySelectorAll(".att.rec[data-rec]").forEach(d => d.replaceWith(recCard(JSON.parse(d.dataset.att))));
+    document.querySelectorAll("#log .att.rec[data-rec]").forEach(d => d.replaceWith(recCard(JSON.parse(d.dataset.att))));
     renderTray();
   }
   const recOf = id => recs?.find(r => r.id === id);
@@ -67,7 +69,15 @@ window.teach = (() => {
   function bigShot(a) {
     const d = shotEl(a, "big");
     const list = (a.annotations || []).map((m, i) => `<div class="mkline"><span class="chip" style="background:${COLORS[m.kind]}">${i + 1} ${NAMES[m.kind]}</span>${esc(m.label || "")}</div>`).join("");
-    ui.dialog({ title: "截图", wide: true, body: d.outerHTML + list, actions: [{ label: "关闭", value: true, kind: "primary" }] });
+    ui.dialog({ title: "截图", wide: true, body: d.outerHTML + (a.text ? `<div class="msgtext">${esc(a.text)}</div>` : "") + list, actions: [{ label: "关闭", value: true, kind: "primary" }] });
+  }
+  /** The attachment's own text, under it. */
+  function caption(a) {
+    if (!a.text) return null;
+    const c = document.createElement("div");
+    c.className = "cap";
+    c.textContent = a.text;
+    return c;
   }
   function recCard(a) {
     const r = recOf(a.rec), d = document.createElement("div");
@@ -89,8 +99,13 @@ window.teach = (() => {
     const box = document.createElement("div");
     box.className = "atts";
     for (const a of list) {
-      if (a.type === "shot") { const d = shotEl(a); d.onclick = () => bigShot(a); box.appendChild(d); }
-      else if (a.type === "recording") box.appendChild(recCard(a));
+      const one = document.createElement("div");
+      one.className = "att1";
+      if (a.type === "shot") { const d = shotEl(a); d.onclick = () => bigShot(a); one.appendChild(d); }
+      else if (a.type === "recording") one.appendChild(recCard(a));
+      const c = caption(a);
+      if (c) one.appendChild(c);
+      box.appendChild(one);
     }
     return box;
   }
@@ -178,8 +193,8 @@ window.teach = (() => {
       st = s;
       const draft = s.task === "explore";
       $("task").textContent = `${draft ? "草稿" : "任务"} · 第 ${s.steps} 步`;
-      document.querySelectorAll("#taskrow .draft").forEach(b => b.style.display = draft ? "" : "none");
-      document.querySelectorAll("#taskrow .named").forEach(b => b.style.display = draft ? "none" : "");
+      document.querySelectorAll("#taskbar .draft").forEach(b => b.style.display = draft ? "" : "none");
+      document.querySelectorAll("#taskbar .named").forEach(b => b.style.display = draft ? "none" : "");
       if (s.tray_rev !== trayRev) await loadTray(s.tray_rev);
       live.follow(s.screenshot);
       await appendMsgs(await json("/messages?since=" + seen));
@@ -273,7 +288,7 @@ window.teach = (() => {
       tray = t.items; trayRev = rev ?? t.rev;
     } catch (e) { return; }
     renderTray();
-    live.trayChanged(tray);
+    live.trayChanged(tray); replay.trayChanged(tray);
   }
   const trayGot = (item, rev) => {
     const i = tray.findIndex(t => t.id === item.id);
@@ -294,7 +309,7 @@ window.teach = (() => {
     const t = await json(`/tray/${id}`, { method: "DELETE" });
     tray = t.items;
     renderTray();
-    live.trayChanged(tray);
+    live.trayChanged(tray); replay.trayChanged(tray);
   }
   /** A fresh screenshot into the tray, opened on the live stage. */
   async function takeShot() {
@@ -304,18 +319,22 @@ window.teach = (() => {
     return item;
   }
 
+  /** Each item: a thumbnail, how many marks, the start of its text; the one being edited on a stage stands out. */
   function renderTray() {
-    const el = $("tray"), editing = live.editing();
+    const el = $("tray"), edited = [live.editing(), replay.editing()];
+    const snippet = t => t ? esc(t.length > 14 ? t.slice(0, 13) + "…" : t) : "";
     el.innerHTML = tray.map(it => {
-      const btns = `<button data-act="edit" title="${it.type === "shot" ? "回到实时截图改标注" : "回到录像回放改 focus"}">${svg("edit", "sm")}</button>
+      const btns = `<button data-act="edit" title="${it.type === "shot" ? "载入实时截图舞台，继续改标注和说明" : "载入录像回放，继续改范围和说明"}">${svg("edit", "sm")}</button>
         <button data-act="del" title="从托盘里删掉">${svg("x", "sm")}</button>`;
+      const on = edited.includes(it.id) ? " on" : "";
       if (it.type === "shot") {
         const n = it.annotations.length;
-        return `<div class="ti${it.id === editing ? " on" : ""}" data-id="${it.id}"><div class="att shot mini"><img src="${fileUrl(it.file)}" alt="">${marksSvg(it.annotations)}</div>
-          <span class="n">${n ? n + " 个标注" : "截图"}</span>${btns}</div>`;
+        return `<div class="ti${on}" data-id="${it.id}"><div class="att shot mini"><img src="${fileUrl(it.file)}" alt="">${marksSvg(it.annotations)}</div>
+          <div class="tx"><span class="n">${n ? n + " 个标注" : "截图"}</span><span class="s">${snippet(it.text) || '<span class="none">没写说明</span>'}</span></div>${btns}</div>`;
       }
       const r = recOf(it.rec);
-      return `<div class="ti rec" data-id="${it.id}">${svg("film", "sm")}<span class="n">${esc(r ? r.name : recs ? "录像已删除" : it.rec)} · ${focusText(it.focus)}</span>${btns}</div>`;
+      return `<div class="ti rec${on}" data-id="${it.id}"><div class="th" style="${r ? thumbStyle(workspace, r, 64) : ""}"></div>
+        <div class="tx"><span class="n">${esc(r ? r.name : recs ? "录像已删除" : it.rec)} · ${focusText(it.focus)}</span><span class="s">${snippet(it.text) || '<span class="none">没写说明</span>'}</span></div>${btns}</div>`;
     }).join("");
     el.style.display = tray.length ? "" : "none";
     renderCompose();

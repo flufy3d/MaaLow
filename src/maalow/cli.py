@@ -216,7 +216,8 @@ def _expand(client: Client, root: Path, ws: str, a: dict) -> dict:
     try:
         if a.get("type") == "shot":
             got = client.fetch(ws, a["file"], root, annotations=a.get("annotations"))
-            return {**a, "image": got["image"], "view": got["view"]}
+            marks = [rec.describe(m, i) for i, m in enumerate(a.get("annotations") or [], 1)]
+            return {**a, "image": got["image"], "view": got["view"], **({"marks": marks} if marks else {})}
         if a.get("type") == "recording":
             digest = rec.labels(client, ws, a["rec"])
             info = digest["recording"]

@@ -3,6 +3,7 @@ package io.github.flufy3d.maalow.teach
 import io.github.flufy3d.maalow.App
 import io.github.flufy3d.maalow.store.PrettyJson
 import io.github.flufy3d.maalow.store.optArray
+import io.github.flufy3d.maalow.store.optBool
 import io.github.flufy3d.maalow.store.optInt
 import io.github.flufy3d.maalow.store.optLong
 import io.github.flufy3d.maalow.store.optStr
@@ -396,11 +397,24 @@ class Teaching(private val app: App) {
         return JsonObject(m - setOf("annotations", "note", "screenshot", "view") + ("attachments" to JsonArray(list)))
     }
 
-    private fun shotAttachment(file: String, annotations: JsonArray, note: String = "") = buildJsonObject {
+    /** text: what the teacher (or the AI) says about this one attachment; note: the old web UI's drawing of it. */
+    private fun shotAttachment(file: String, annotations: JsonArray, note: String = "", text: String = "") = buildJsonObject {
         put("type", "shot")
         put("file", file)
         put("annotations", annotations)
+        if (text.isNotEmpty()) put("text", text)
         if (note.isNotEmpty()) put("note", note)
+    }
+
+    /**
+     * A screenshot of its own for a tray item, copied from the one shown (so removing either leaves the other). When
+     * that one is gone meanwhile, the screen as it is now.
+     */
+    private fun copyShot(name: String): String {
+        val src = runCatching { shotPath(name) }.getOrNull() ?: return capture().optStr("screenshot")!!
+        val f = File(shots(), "%04d.png".format(synchronized(lock) { ++counter }))
+        f.writeAtomic(app.workspaces.file(workspace, src).readBytes())
+        return f.relativeTo(app.workspaces.dir(workspace)).invariantSeparatorsPath
     }
 
     /** Workspace-relative path of a screenshot named in an attachment: as given, under teaching/, or in this task. */
@@ -411,8 +425,9 @@ class Teaching(private val app: App) {
     }
 
     /**
-     * Check an attachment and bring it to its stored shape. shot {file, annotations}: file "now" (the AI only) takes a
-     * fresh screenshot. recording {rec, focus?: {from, to}}: a saved recording of this workspace, focus within its frames.
+     * Check an attachment and bring it to its stored shape. shot {file, annotations, text?, copy?}: file "now" takes a
+     * fresh screenshot, copy: true a copy of the file (see copyShot). recording {rec, focus?: {from, to}, text?}: a saved
+     * recording of this workspace, focus within its frames.
      */
     private fun attachment(e: JsonElement, now: Boolean): JsonObject {
         val a = e as? JsonObject ?: throw IllegalArgumentException("attachment is not an object: $e")
@@ -420,8 +435,12 @@ class Teaching(private val app: App) {
             "shot" -> {
                 val name = (a["file"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw IllegalArgumentException("shot needs file")
                 val marks = annotations(a.optArray("annotations")) // checked before a screenshot is taken for nothing
-                val file = if (name == "now" && now) capture().optStr("screenshot")!! else shotPath(name)
-                shotAttachment(file, marks, a.optStr("note").orEmpty())
+                val file = when {
+                    name == "now" && now -> capture().optStr("screenshot")!!
+                    a.optBool("copy") == true && now -> copyShot(name)
+                    else -> shotPath(name)
+                }
+                shotAttachment(file, marks, a.optStr("note").orEmpty(), a.optStr("text").orEmpty())
             }
             "recording" -> {
                 val rec = a.optStr("rec") ?: throw IllegalArgumentException("recording needs rec")
@@ -430,6 +449,7 @@ class Teaching(private val app: App) {
                 buildJsonObject {
                     put("type", "recording")
                     put("rec", rec)
+                    a.optStr("text")?.takeIf { it.isNotEmpty() }?.let { put("text", it) }
                     (a["focus"] as? JsonObject)?.let { f ->
                         val from = f.optInt("from") ?: throw IllegalArgumentException("focus needs from")
                         val to = f.optInt("to") ?: from
@@ -545,13 +565,13 @@ class Teaching(private val app: App) {
         }
     }
 
-    /** Change a tray item: a shot's annotations, a recording's focus (null: none). */
+    /** Change a tray item: a shot's annotations, a recording's focus (null: none), either one's text. */
     fun trayEdit(id: Long, change: JsonObject): JsonObject {
         ensure()
         val i = synchronized(lock) { tray.indexOfFirst { it.optLong("id") == id } }
         if (i < 0) throw NoSuchElementException("托盘里没有这一项：$id")
         val old = tray[i]
-        val a = attachment(JsonObject(old + change.filterKeys { it == "annotations" || it == "focus" }), now = false)
+        val a = attachment(JsonObject(old + change.filterKeys { it in setOf("annotations", "focus", "text") }), now = false)
         return synchronized(lock) {
             val item = JsonObject(mapOf("id" to JsonPrimitive(id)) + a)
             val j = tray.indexOfFirst { it.optLong("id") == id }

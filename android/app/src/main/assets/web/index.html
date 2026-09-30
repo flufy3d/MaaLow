@@ -21,8 +21,18 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
     <button class="tab" data-mode="teach"><i data-i="chat"></i>指导</button>
     <button class="tab" data-mode="workspaces"><i data-i="layers"></i>工作区</button>
   </nav>
+  <div id="taskbar">
+    <select id="tasksel" title="切换任务：已有的任务接着原来的步骤继续"></select>
+    <button class="btn sm" id="newtask"><i data-i="plus" class="sm"></i>新任务</button>
+    <button class="btn sm draft" id="savedraft" title="把草稿的对话、步骤和截图改名成一个任务，草稿变回空白">另存为任务</button>
+    <button class="btn sm draft danger" id="cleardraft" title="删除草稿的对话、步骤和截图">清空草稿</button>
+    <button class="btn sm named" id="endtask" title="保存并回到草稿">结束任务</button>
+    <button class="btn sm named danger" id="deltask" title="删除这个任务的对话、步骤和截图">删除任务</button>
+    <span class="txt" id="task"></span>
+  </div>
   <span class="grow"></span>
   <span id="recbadge"></span>
+  <button class="btn icon ghost" id="chattoggle" title="对话"><i data-i="chat"></i></button>
   <button class="btn icon ghost" id="themebtn"></button>
   <button class="btn icon ghost" id="helpbtn" title="快捷键（?）"><i data-i="help"></i></button>
 </header>
@@ -42,126 +52,96 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
   </div>
 </div></div></div>
 
-<!-- teaching: a task's conversation with MaaLow; stages to look at the screen and pick attachments from -->
-<div id="teach" class="mode">
-  <div id="taskrow">
-    <select id="tasksel" title="切换任务：已有的任务接着原来的步骤继续"></select>
-    <button class="btn sm" id="newtask"><i data-i="plus"></i>新任务</button>
-    <button class="btn sm draft" id="savedraft" title="把草稿的对话、步骤和截图改名成一个任务，草稿变回空白">另存为任务</button>
-    <button class="btn sm draft danger" id="cleardraft" title="删除草稿的对话、步骤和截图">清空草稿</button>
-    <button class="btn sm named" id="endtask" title="保存并回到草稿">结束任务</button>
-    <button class="btn sm named danger" id="deltask" title="删除这个任务的对话、步骤和截图">删除任务</button>
-    <span class="txt" id="task"></span>
-  </div>
-  <div id="teach-body">
-    <div id="stagewrap">
-      <div id="stagetabs" class="seg">
-        <button class="btn" data-stage="live"><i data-i="camera"></i>实时截图</button>
-        <button class="btn" data-stage="replay"><i data-i="film"></i>录像回放</button>
-        <button class="btn" data-stage="remote" disabled title="远程看画面、随手操作，即将推出"><i data-i="eye"></i>远程操控 · 即将推出</button>
+<!-- teaching: a task's conversation with MaaLow; the stages to look at the screen and pick attachments from -->
+<div id="teach" class="mode" data-stage="live">
+  <div id="stagecol">
+    <div id="tbar">
+      <div class="seg" id="modes">
+        <button class="btn icon" data-stage="live" title="实时截图"><i data-i="camera"></i></button>
+        <button class="btn icon" data-stage="replay" title="录像回放"><i data-i="film"></i></button>
+        <button class="btn icon" data-stage="remote" disabled title="远程操控 · 即将推出"><i data-i="eye"></i></button>
       </div>
-
-      <!-- stage: live screenshots -->
-      <div id="live" class="stagepane">
-        <div class="toolbar">
-          <button class="btn primary" id="shot" title="S"><i data-i="camera"></i><span>截一张</span></button>
-          <div class="seg">
-            <button class="btn" data-tool="rect" title="框选（1）"><i data-i="rect"></i>框选</button>
-            <button class="btn" data-tool="circle" title="圈（2）"><i data-i="circle"></i>圈</button>
-            <button class="btn" data-tool="arrow" title="箭头（3）"><i data-i="arrow"></i>箭头</button>
-            <button class="btn" data-tool="click" title="点击点（4）"><i data-i="click"></i>点击点</button>
-            <button class="btn" data-tool="region" title="区域（5）"><i data-i="region"></i>区域</button>
-          </div>
-          <button class="btn" id="undo" title="撤销（Ctrl+Z）"><i data-i="undo"></i>撤销</button>
-          <button class="btn" id="clear"><i data-i="trash"></i>清空</button>
-          <span id="info"></span>
-        </div>
-        <div class="stage" id="stage">
-          <canvas id="cv" width="1080" height="720"></canvas>
-          <div id="shotbadge"></div>
-          <div id="empty" class="empty"><img src="web/mascot.png" alt=""><div>点 <b>截一张</b> 获取平板当前画面，<br>在上面画框、圈、箭头，截图会放进右边的待发托盘。</div></div>
-        </div>
+      <span class="sep"></span>
+      <div id="tb-main">
+        <button class="btn solid orange for-live" id="shot" title="截一张（S）"><i data-i="camera"></i><span class="tl">截一张</span></button>
+        <button class="btn for-replay" id="rp-pick" title="选择录像"><i data-i="film"></i><span class="nm">选择录像</span><i data-i="down" class="sm"></i></button>
+        <button class="btn solid red for-replay" id="rp-rec"></button>
       </div>
-
-      <!-- stage: recordings -->
-      <div id="replay" class="stagepane">
-        <div id="rp-side">
-          <div class="sec">
-            <h3><i data-i="film" class="sm"></i>录像<span class="grow"></span><button class="btn icon sm ghost" id="rp-refresh" title="刷新列表"><i data-i="refresh" class="sm"></i></button></h3>
-            <div id="rp-recs"></div>
-          </div>
-          <div class="sec" style="flex:1">
-            <h3 id="rp-framehead">当前帧</h3>
-            <div id="rp-frame">
-              <textarea id="rp-note" placeholder="这一帧的整体说明：看到了什么、为什么这样操作（N）"></textarea>
-              <div id="rp-marks"></div>
-            </div>
-          </div>
-          <div class="sec" style="border-bottom:0">
-            <h3>已标注帧 <span id="rp-labcount" class="none"></span></h3>
-            <div id="rp-labeled"></div>
-          </div>
-        </div>
-        <div id="rp-main">
-          <div class="toolbar">
-            <button class="btn" id="rp-rec"></button>
-            <span id="rp-rectime"></span>
-            <div class="seg">
-              <button class="btn" data-rtool="rect" title="框选（1）"><i data-i="rect"></i></button>
-              <button class="btn" data-rtool="circle" title="圈（2）"><i data-i="circle"></i></button>
-              <button class="btn" data-rtool="arrow" title="箭头（3）"><i data-i="arrow"></i></button>
-              <button class="btn" data-rtool="click" title="点击点（4）"><i data-i="click"></i></button>
-              <button class="btn" data-rtool="region" title="区域（5）"><i data-i="region"></i></button>
-            </div>
-            <button class="btn icon" id="rp-undo" title="撤销（Ctrl+Z）"><i data-i="undo"></i></button>
-            <button class="btn icon" id="rp-redo" title="重做（Ctrl+Shift+Z）"><i data-i="redo"></i></button>
-            <span id="rp-save"></span>
-            <button class="btn primary" id="rp-toai" title="把这段录像放进待发托盘（A）"><i data-i="send"></i><span>发给 AI</span></button>
-          </div>
-          <div id="rp-stage" class="stage">
-            <div id="rp-box">
-              <canvas id="rp-cv" width="1080" height="720"></canvas>
-              <video id="rp-video" muted playsinline preload="auto"></video>
-              <div id="rp-badge"><span id="rp-badgetext">—</span> <span class="ld">· 加载中</span></div>
-            </div>
-            <div id="rp-placeholder" class="empty"></div>
-          </div>
-          <div id="rp-scrubwrap">
-            <canvas id="rp-scrub"></canvas>
-            <div id="rp-pop"><div></div><span></span></div>
-          </div>
-          <div id="rp-transport">
-            <button class="btn" id="rp-prevlab" title="上一个已标注帧（[）"><i data-i="first"></i></button>
-            <button class="btn" id="rp-back10" title="后退 10 帧（Shift+←）">−10</button>
-            <button class="btn" id="rp-prev" title="上一帧（←，按住连走）"><i data-i="prev"></i></button>
-            <button class="btn primary" id="rp-play" title="播放 / 暂停（空格）"></button>
-            <button class="btn" id="rp-next" title="下一帧（→，按住连走）"><i data-i="next"></i></button>
-            <button class="btn" id="rp-fwd10" title="前进 10 帧（Shift+→）">+10</button>
-            <button class="btn" id="rp-nextlab" title="下一个已标注帧（]）"><i data-i="last"></i></button>
-            <span id="rp-pos">帧 <input id="rp-n" inputmode="numeric" title="输入帧号回车跳转（G）"> / <span id="rp-total">0</span></span>
-            <span id="rp-time"></span>
-            <button class="btn sm" id="rp-in" title="入点：发给 AI 时的起始帧（I）">入点</button>
-            <button class="btn sm" id="rp-out" title="出点：发给 AI 时的结束帧（O）">出点</button>
-            <span id="rp-range"></span>
-          </div>
-        </div>
+      <span class="sep"></span>
+      <div class="seg" id="tools">
+        <button class="btn" data-tool="rect" title="框选（1）"><i data-i="rect"></i><span class="tl">框选</span></button>
+        <button class="btn" data-tool="circle" title="圈（2）"><i data-i="circle"></i><span class="tl">圈</span></button>
+        <button class="btn" data-tool="arrow" title="箭头（3）"><i data-i="arrow"></i><span class="tl">箭头</span></button>
+        <button class="btn" data-tool="click" title="点击点（4）"><i data-i="click"></i><span class="tl">点击点</span></button>
+        <button class="btn" data-tool="region" title="区域（5）"><i data-i="region"></i><span class="tl">区域</span></button>
       </div>
+      <span class="sep"></span>
+      <div class="grp">
+        <button class="btn icon" id="undo" title="撤销（Ctrl+Z）"><i data-i="undo"></i></button>
+        <button class="btn icon" id="redo" title="重做（Ctrl+Shift+Z）"><i data-i="redo"></i></button>
+        <button class="btn icon" id="clear" title="清空这张的标注"><i data-i="trash"></i></button>
+      </div>
+      <span class="grow"></span>
+      <span id="savestate"></span>
+      <button class="btn primary" id="toai" title="放进待发托盘（A）"><i data-i="send"></i><span class="tl">发给 AI</span></button>
     </div>
-
-    <div id="chat">
-      <div id="log"></div>
-      <div id="compose">
-        <div id="tray"></div>
-        <textarea id="text" placeholder="告诉 MaaLow 做什么，例如：点 1 号框里的按钮"></textarea>
-        <div id="sendrow">
-          <button class="btn danger" id="stopai" title="叫停 MaaLow：正在跑的停下，它之后的操作都会被拒绝，直到它说明做到哪一步"><i data-i="stop"></i>停止</button>
-          <button class="btn primary" id="send"><i data-i="send"></i>发送 <span class="dim" style="font-weight:400">Ctrl+Enter</span></button>
-        </div>
-        <div id="status"><span class="dot"></span><span class="t"></span><a id="force"></a></div>
+    <div id="screenwrap"><div id="screen">
+      <canvas id="scr-img" width="1080" height="720"></canvas>
+      <video id="scr-video" muted playsinline preload="auto"></video>
+      <canvas id="scr-cv" width="1080" height="720"></canvas>
+      <div id="scr-badge"></div>
+      <div id="scr-over" class="empty"></div>
+      <input id="scr-label" autocomplete="off">
+    </div></div>
+    <div id="bottom">
+      <div class="bslot for-live">
+        <div class="brow dim"><span id="lv-where"></span><span class="grow"></span><span id="lv-info" class="mono"></span></div>
+        <textarea id="lv-text" placeholder="这张截图的整体说明：画面是什么、要 MaaLow 注意什么（写了就会放进托盘）"></textarea>
       </div>
+      <div class="bslot for-replay">
+        <div id="rp-scrubwrap"><canvas id="rp-scrub"></canvas></div>
+        <div class="brow" id="rp-transport">
+          <button class="btn icon" id="rp-prevlab" title="上一个已标注帧（[）"><i data-i="first"></i></button>
+          <button class="btn" id="rp-back10" title="后退 10 帧（Shift+←）">−10</button>
+          <button class="btn icon" id="rp-prev" title="上一帧（←，按住连走）"><i data-i="prev"></i></button>
+          <button class="btn primary icon" id="rp-play" title="播放 / 暂停（空格）"></button>
+          <button class="btn icon" id="rp-next" title="下一帧（→，按住连走）"><i data-i="next"></i></button>
+          <button class="btn" id="rp-fwd10" title="前进 10 帧（Shift+→）">+10</button>
+          <button class="btn icon" id="rp-nextlab" title="下一个已标注帧（]）"><i data-i="last"></i></button>
+          <span id="rp-pos">帧 <input id="rp-n" inputmode="numeric" title="输入帧号回车跳转（G）"> / <span id="rp-total">0</span></span>
+          <span id="rp-time" class="dim"></span>
+          <span class="sep"></span>
+          <button class="btn sm" id="rp-in" title="入点：发给 AI 时的起始帧（I）">入点</button>
+          <button class="btn sm" id="rp-out" title="出点：发给 AI 时的结束帧（O）">出点</button>
+          <span id="rp-range"><span class="t"></span><button class="btn icon sm ghost" id="rp-rangex" title="清除范围（Esc）"><i data-i="x" class="sm"></i></button></span>
+          <span class="grow"></span>
+          <button class="btn sm" id="rp-labbtn" title="已标注的帧"></button>
+        </div>
+        <div class="brow">
+          <input id="rp-note" placeholder="帧说明（存进这一帧的标注）：看到了什么、为什么这样操作（N）">
+          <input id="rp-text" placeholder="给 MaaLow 的说明：这段录像要它看什么">
+        </div>
+      </div>
+      <div class="bslot for-remote"><div class="brow dim">延迟 — · 未连接（远程操控即将推出）</div></div>
+    </div>
+  </div>
+  <div id="split" title="拖动调整宽度；双击恢复"></div>
+  <div id="chat">
+    <div id="log"></div>
+    <div id="compose">
+      <div id="tray"></div>
+      <textarea id="text" placeholder="这条消息的总体说明，例如：点 1 号框里的按钮"></textarea>
+      <div id="sendrow">
+        <button class="btn danger" id="stopai" title="叫停 MaaLow：正在跑的停下，它之后的操作都会被拒绝，直到它说明做到哪一步"><i data-i="stop"></i>停止</button>
+        <button class="btn primary" id="send"><i data-i="send"></i>发送 <span class="dim" style="font-weight:400">Ctrl+Enter</span></button>
+      </div>
+      <div id="status"><span class="dot"></span><span class="t"></span><a id="force"></a></div>
     </div>
   </div>
 </div>
+<div id="recmenu" class="menu"></div>
+<div id="labmenu" class="menu"></div>
+<div id="rp-pop"><div></div><span></span></div>
 
 <!-- workspaces -->
 <div id="workspaces" class="mode"><div class="page"><div class="page-in">
@@ -188,15 +168,17 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
     <tr><td><kbd>空格</kbd></td><td>播放 / 暂停（暂停后显示 App 解码的精确帧）</td></tr>
     <tr><td><kbd>G</kbd></td><td>输入帧号跳转</td></tr>
     <tr><td><kbd>I</kbd> <kbd>O</kbd></td><td>设入点 / 出点（发给 AI 时的帧范围）</td></tr>
-    <tr><td><kbd>A</kbd></td><td>把这段录像发给 AI（放进待发托盘）</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>清除入点、出点（没有选中的标注时）</td></tr>
     <tr><td>拖动进度条</td><td>粗定位，显示缩略图；松手加载精确帧</td></tr>
   </table>
   <h4>标注（两种舞台通用）</h4>
   <table>
     <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>框选 / 圈 / 箭头 / 点击点 / 区域</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>撤销</td></tr>
-    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>重做（录像回放）</td></tr>
-    <tr><td><kbd>Delete</kbd></td><td>删除选中的标注（录像回放）</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>重做</td></tr>
+    <tr><td>点一下标注</td><td>选中它，写说明（画完新标注也会弹出，回车跳过）</td></tr>
+    <tr><td><kbd>Delete</kbd></td><td>删除选中的标注</td></tr>
+    <tr><td><kbd>A</kbd></td><td>发给 AI：放进待发托盘</td></tr>
     <tr><td><kbd>N</kbd></td><td>编辑这一帧的整体说明（录像回放）</td></tr>
     <tr><td><kbd>Esc</kbd></td><td>取消正在画的形状、取消选中、离开输入框</td></tr>
     <tr><td><kbd>S</kbd></td><td>截一张（实时截图）</td></tr>
@@ -211,6 +193,7 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
 
 <script src="web/common.js"></script>
 <script src="web/chat.js"></script>
+<script src="web/stage.js"></script>
 <script src="web/live.js"></script>
 <script src="web/replay.js"></script>
 <script src="web/guards.js"></script>

@@ -1,35 +1,35 @@
-// The recording stage: record the tablet, find the exact frame, annotate it, send the recording (with a focus on some
-// frames) to the chat. Frames shown while paused are decoded by the app by frame number (never the browser's video
-// seek); the <video> is only for quick playback.
+// The recording stage: record the tablet, find the exact frame, annotate it (labels.json, for the data set), and send
+// the recording to the chat with the in-out range as its focus. Frames shown while paused are decoded by the app by
+// frame number (never the browser's video seek); the <video> is only for quick playback.
 "use strict";
 window.replay = (() => {
   const FPS = 30;
-  const cv = $("rp-cv"), ctx = cv.getContext("2d"), box = $("rp-box"), video = $("rp-video");
+  const video = $("scr-video"), screen = $("screen");
   const scrub = $("rp-scrub"), sctx = scrub.getContext("2d"), pop = $("rp-pop");
-  const enc = encodeURIComponent;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const timeMs = n => Math.round(n * 1000 / FPS);
   const fmtTime = ms => `${fmtClock(ms)}.${String(ms % 1000).padStart(3, "0")}`;
 
   let started = false, active = false;
   let ws = "", recs = [], rec = null, total = 0;
-  let cur = -1, want = -1, image = null, loading = false, lastDir = 0;
+  let cur = -1, want = -1, image = null, loading = false, lastDir = 0, frameError = "";
   const bitmaps = new Map(); // "id:n" -> Promise<ImageBitmap>, most recent last
   let labels = { version: 0, frames: {} };
   const dirty = new Set();
   let saving = false, saveTimer = 0, saveError = "";
   let undoStack = [], redoStack = [];
-  let tool = "rect", start = null, draft = null, selected = -1;
   let recState = { recording: false }, recPolled = 0;
   let playing = false, videoFrame = 0, hideVideoOnLoad = false;
   let drag = null, hover = null, hold = null, editing = null;
-  let inPt = -1, outPt = -1, trayItem = null; // the range to send, and the tray item being changed (from its edit button)
+  let inPt = -1, outPt = -1; // the range sent as the attachment's focus (-1: open end)
+  let trayItem = null; // the tray item this recording is (edits go back into it)
 
   const base = () => `/recordings/${enc(ws)}/${enc(rec.id)}`;
   const entry = n => labels.frames[n];
   const marksOf = n => entry(n)?.annotations || [];
-  const labeledFrames = () => Object.keys(labels.frames).map(Number).sort((a, b) => a - b);
-  const sheetUrl = (r, k) => withToken(`${API}/recordings/${enc(ws)}/${enc(r.id)}/thumbs/${k}`);
+  const labeledFrames = () => Object.keys(labels.frames).map(Number).filter(n => entry(n)?.annotations?.length || entry(n)?.note).sort((a, b) => a - b);
+  const localSheet = (r, k) => sheetUrl(ws, r, k);
+  const here = () => want >= 0 ? want : cur;
 
   // ---- frames
 
@@ -47,13 +47,12 @@ window.replay = (() => {
     return p;
   }
 
-  /** Show frame n (exact, from the app). Numbers update at once; the image follows. */
+  /** Show frame n (exact, from the app). Numbers update at once; the image follows (the old one stays meanwhile). */
   function goto(n) {
     if (!rec || !total) return;
     n = clamp(Math.round(n), 0, total - 1);
     if (playing) stopVideo(false);
-    const from = want >= 0 ? want : cur;
-    lastDir = Math.sign(n - from);
+    lastDir = Math.sign(n - here());
     want = n;
     updatePos();
     pump();
@@ -62,15 +61,16 @@ window.replay = (() => {
   async function pump() {
     if (loading) return;
     loading = true;
-    $("rp-badge").classList.add("loading");
+    if (active) stage.busy(true);
     try {
       while (rec && want !== cur) {
         const n = want, id = rec.id;
         let bmp;
         try {
           bmp = await fetchFrame(n);
+          frameError = "";
         } catch (e) {
-          toast("取帧失败：" + e.message);
+          frameError = "取帧失败：" + e.message;
           want = cur; updatePos();
           break;
         }
@@ -82,36 +82,47 @@ window.replay = (() => {
       }
     } finally {
       loading = false;
-      $("rp-badge").classList.remove("loading");
+      if (active) stage.busy(false);
+      badge();
     }
   }
 
   function show(n, bmp) {
     const changed = n !== cur;
     cur = n; image = bmp;
-    if (changed) { selected = -1; start = null; draft = null; }
-    if (hideVideoOnLoad) { hideVideoOnLoad = false; box.classList.remove("playing"); }
-    render(); drawScrub(); refreshFrame(); refreshLabeled();
+    if (hideVideoOnLoad) { hideVideoOnLoad = false; screen.classList.remove("playing"); }
+    if (active) {
+      stage.show(bmp);
+      if (changed) stage.reset(); else stage.render();
+      stage.buttons();
+    }
+    drawScrub(); refreshFrame();
     if (active) history.replaceState(null, "", `#teach/replay/${rec.id}/${cur}`);
   }
 
-  function updatePos(n = want >= 0 ? want : cur) {
+  function badge() {
+    if (!active) return;
+    const n = here();
+    stage.badge(rec && n >= 0 ? `#${n} · ${timeMs(n)} ms${loading ? ' <span class="ld">· 加载中</span>' : ""}${frameError ? ` <span class="err">· ${esc(frameError)}</span>` : ""}` : "", "frame");
+  }
+
+  function updatePos(n = here()) {
     const has = rec && n >= 0;
     const ms = has ? timeMs(n) : 0;
     if (document.activeElement !== $("rp-n")) $("rp-n").value = has ? n : "";
     $("rp-total").textContent = has ? total - 1 : 0;
-    $("rp-time").textContent = has ? `${fmtTime(ms)} · ${ms} ms` : "";
-    $("rp-badgetext").textContent = has ? `#${n} · ${ms} ms` : "—";
-    $("rp-framehead").textContent = has ? `第 ${n} 帧 · ${ms} ms` : "当前帧";
+    $("rp-time").textContent = has ? fmtTime(ms) : "";
+    badge();
+    rangeUi();
   }
 
   // hold ← / → (or a step button) to keep stepping, as fast as frames arrive (at most 30 per second)
   function startHold(d) {
     stopHold();
-    goto((want >= 0 ? want : cur) + d);
+    goto(here() + d);
     hold = { d, t: setTimeout(function tick() {
       if (!hold) return;
-      const at = want >= 0 ? want : cur;
+      const at = here();
       if (!loading && at + hold.d >= 0 && at + hold.d < total) goto(at + hold.d);
       hold.t = setTimeout(tick, 33);
     }, 320) };
@@ -119,7 +130,7 @@ window.replay = (() => {
   function stopHold() { if (hold) { clearTimeout(hold.t); hold = null; } }
 
   function labeledStep(d) {
-    const at = want >= 0 ? want : cur, all = labeledFrames();
+    const at = here(), all = labeledFrames();
     const n = d > 0 ? all.find(f => f > at) : all.reverse().find(f => f < at);
     if (n === undefined) toast(d > 0 ? "后面没有已标注的帧了" : "前面没有已标注的帧了", 1500);
     else goto(n);
@@ -130,16 +141,17 @@ window.replay = (() => {
   function play() {
     if (!rec || playing) return;
     stopHold();
+    stage.reset();
     const src = withToken(`${API}${base()}/video.mp4`);
     if (video.dataset.src !== src) { video.src = src; video.dataset.src = src; }
-    let n = want >= 0 ? want : cur;
+    let n = here();
     if (n >= total - 1) n = 0;
     videoFrame = n;
     playing = true; hideVideoOnLoad = false;
-    box.classList.add("playing");
+    screen.classList.add("playing");
     $("rp-play").innerHTML = svg("pause");
     video.currentTime = (n + 0.5) / FPS;
-    video.play().catch(e => { toast("无法播放：" + e.message); stopVideo(false); box.classList.remove("playing"); });
+    video.play().catch(e => { toast("无法播放：" + e.message); stopVideo(false); screen.classList.remove("playing"); });
     track();
   }
 
@@ -166,66 +178,22 @@ window.replay = (() => {
       const n = videoFrame;
       cur = -1; // force a fresh show even if it is the frame shown before playing
       goto(n);
-    } else box.classList.remove("playing");
+    } else screen.classList.remove("playing");
+    if (active) stage.render();
   }
   video.onended = () => stopVideo(true);
   const togglePlay = () => playing ? stopVideo(true) : play();
 
-  // ---- drawing
-
-  let frameReq = 0;
-  function render() {
-    frameReq = 0;
-    ctx.clearRect(0, 0, cv.width, cv.height);
-    if (image) ctx.drawImage(image, 0, 0, cv.width, cv.height);
-    if (cur >= 0) marksOf(cur).forEach((m, i) => drawMark(ctx, m, i + 1, i === selected));
-    if (draft) drawMark(ctx, draft, 0);
-    const ph = $("rp-placeholder");
-    ph.style.display = rec ? "none" : "flex";
-    box.style.visibility = rec ? "visible" : "hidden";
-    const say = recState.recording ? "录制中……在平板上正常操作。<br>结束录制后可以逐帧查看和标注。"
-      : ws ? "选择右侧的录像，或点 <b>开始录制</b> 录一段在平板上的真实操作（最长 3 分钟）。" : "还没有工作区，先到 <b>工作区</b> 页新建一个。";
-    if (!rec && ph.dataset.say !== say) { ph.dataset.say = say; ph.innerHTML = `<img src="web/mascot.png" alt=""><div>${say}</div>`; }
-  }
-  const requestRender = () => { if (!frameReq) frameReq = requestAnimationFrame(render); };
-
-  function setTool(t) {
-    tool = t;
-    document.querySelectorAll("[data-rtool]").forEach(b => b.classList.toggle("on", b.dataset.rtool === t));
-  }
-  document.querySelectorAll("[data-rtool]").forEach(b => b.onclick = () => setTool(b.dataset.rtool));
-  setTool("rect");
+  // ---- annotations: the shared layer edits this frame's labels
 
   const canDraw = () => rec && cur >= 0 && !playing && cur === want;
-  cv.onpointerdown = e => {
-    if (!canDraw() || e.button > 0) return;
-    cv.setPointerCapture(e.pointerId);
-    start = canvasPos(cv, e);
-    if (tool === "click") { addMark(toMark("click", start, start), e.pointerType); start = null; }
+  const doc = {
+    marks: () => canDraw() ? marksOf(cur) : [],
+    editable: canDraw,
+    change(fn) { mutate(cur, e => fn(e.annotations)); },
   };
-  cv.onpointermove = e => {
-    if (!start) return;
-    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
-    draft = toMark(tool, start, canvasPos(cv, evs.length ? evs[evs.length - 1] : e));
-    requestRender();
-  };
-  cv.onpointerup = e => {
-    if (!start) return;
-    const m = toMark(tool, start, canvasPos(cv, e));
-    start = null; draft = null;
-    if (!tinyMark(m)) addMark(m, e.pointerType); else render();
-  };
-  cv.onpointercancel = () => { start = null; draft = null; render(); };
 
-  function addMark(m, pointer) {
-    const n = cur;
-    mutate(n, e => e.annotations.push({ ...m, label: "" }));
-    selected = marksOf(n).length - 1;
-    refreshFrame(); render();
-    if (pointer === "mouse") $("rp-marks").querySelector(`.mk[data-i="${selected}"] input`)?.focus(); // type its note right away
-  }
-
-  // ---- label edits, undo, autosave
+  // ---- label edits, undo (frames and the range), autosave
 
   const snapshot = n => {
     const e = entry(n);
@@ -239,26 +207,26 @@ window.replay = (() => {
     fn(ensure(n));
     const after = snapshot(n);
     if (same(before, after)) return;
-    pushUndo(n, before, after);
+    pushUndo({ n, before, after });
     touched(n);
   }
-  function pushUndo(n, before, after) {
-    undoStack.push({ n, before, after });
+  function pushUndo(u) {
+    undoStack.push(u);
     if (undoStack.length > 300) undoStack.shift();
     redoStack = [];
-    undoButtons();
+    if (active) stage.buttons();
   }
   function touched(n, quiet) {
     dirty.add(n);
     scheduleSave();
-    drawScrub(); refreshLabeled();
-    if (!quiet) { refreshFrame(); render(); }
+    drawScrub(); labCount();
+    if (!quiet) { refreshFrame(); if (active) stage.render(); }
   }
   function apply(n, s) {
     const e = ensure(n);
     e.note = s.note;
     e.annotations = s.annotations.map(a => ({ ...a, coords: [...a.coords] }));
-    selected = -1;
+    stage.reset();
     touched(n);
   }
   function undo(redo) {
@@ -266,17 +234,14 @@ window.replay = (() => {
     const u = from.pop();
     if (!u) return;
     to.push(u);
-    if (u.n !== cur) goto(u.n);
-    apply(u.n, redo ? u.after : u.before);
-    undoButtons();
-    toast(`${redo ? "重做" : "撤销"}：第 ${u.n} 帧`, 1200);
+    if (u.range) { setRange(...(redo ? u.after : u.before), false); toast(`${redo ? "重做" : "撤销"}：范围`, 1200); }
+    else {
+      if (u.n !== cur) goto(u.n);
+      apply(u.n, redo ? u.after : u.before);
+      toast(`${redo ? "重做" : "撤销"}：第 ${u.n} 帧`, 1200);
+    }
+    if (active) stage.buttons();
   }
-  function undoButtons() {
-    $("rp-undo").disabled = !undoStack.length;
-    $("rp-redo").disabled = !redoStack.length;
-  }
-  $("rp-undo").onclick = () => undo(false);
-  $("rp-redo").onclick = () => undo(true);
 
   function scheduleSave() {
     clearTimeout(saveTimer);
@@ -343,18 +308,18 @@ window.replay = (() => {
     } else {
       labels.version = Math.max(labels.version, out.version);
       if (out.current?.rev) labels.frames[n] = out.current; else delete labels.frames[n];
-      if (n === cur) { selected = -1; refreshFrame(); render(); }
-      refreshLabeled(); drawScrub();
+      if (n === cur) { stage.reset(); refreshFrame(); }
+      labCount(); drawScrub();
     }
   }
 
   function saveStatus() {
-    const s = $("rp-save");
-    if (!rec) { s.textContent = ""; s.className = ""; return; }
-    if (saving) { s.textContent = "保存中…"; s.className = "dirty"; }
-    else if (saveError) { s.textContent = "⚠ 保存失败，稍后重试"; s.title = saveError; s.className = "bad"; }
-    else if (dirty.size) { s.textContent = "● 未保存"; s.className = "dirty"; }
-    else { s.textContent = "✓ 已保存"; s.title = ""; s.className = "ok"; }
+    if (!active) return;
+    if (!rec) stage.status("");
+    else if (saving) stage.status("保存中…", "dirty");
+    else if (saveError) stage.status("⚠ 保存失败，稍后重试", "bad");
+    else if (dirty.size) stage.status("● 未保存", "dirty");
+    else stage.status("✓ 标注已保存", "ok");
   }
   window.addEventListener("beforeunload", e => {
     if (dirty.size || saving) { flush(); e.preventDefault(); e.returnValue = ""; }
@@ -362,75 +327,25 @@ window.replay = (() => {
 
   // labels changed elsewhere (another page, or `maalow sync`): take them for every frame not being edited here
   async function pollLabels() {
-    if (!active || !rec || saving || dirty.size || document.hidden) return;
+    if (!active || !rec || saving || dirty.size || document.hidden || stage.selected >= 0) return;
     try {
       const id = rec.id;
       const l = await json(`${base()}/labels`);
       if (!rec || rec.id !== id || saving || dirty.size || l.version <= labels.version) return;
       labels = l;
-      if (selected >= marksOf(cur).length) selected = -1;
-      refreshFrame(); refreshLabeled(); render(); drawScrub();
+      refreshFrame(); labCount(); stage.render(); drawScrub();
     } catch (e) { /* app restarting */ }
   }
   setInterval(pollLabels, 4000);
 
-  // ---- side panel: this frame's note and marks, labeled frames
+  // ---- this frame's note (bottom slot), labeled frames (a menu)
 
   function refreshFrame() {
-    const has = rec && cur >= 0;
-    const note = $("rp-note");
+    const has = rec && cur >= 0, note = $("rp-note");
     note.disabled = !has;
     if (document.activeElement !== note) note.value = has ? entry(cur)?.note || "" : "";
-    const el = $("rp-marks");
-    if (!has) { el.innerHTML = ""; return; }
-    const ms = marksOf(cur);
-    el.innerHTML = ms.length ? ms.map((m, i) => `
-      <div class="mk${i === selected ? " sel" : ""}" data-i="${i}">
-        <span class="chip" style="background:${COLORS[m.kind]}" title="选中">${i + 1} ${NAMES[m.kind]}</span>
-        <input value="${esc(m.label)}" placeholder="说明：这是什么 / 为什么">
-        <button class="btn icon sm ghost" data-del title="删除（Delete）">${svg("x", "sm")}</button>
-      </div>`).join("")
-      : `<div class="none">在画面上拖动画框、圈、箭头、区域，或点一下标点击点；每个标注都可以写说明。</div>`;
+    labCount();
   }
-
-  function select(i) {
-    selected = i;
-    $("rp-marks").querySelectorAll(".mk").forEach(d => d.classList.toggle("sel", Number(d.dataset.i) === i));
-    render();
-  }
-
-  // typing edits the label in place (no re-render, focus stays); one undo step per focus
-  let focusSnap = null;
-  const marksEl = $("rp-marks");
-  marksEl.addEventListener("click", e => {
-    const row = e.target.closest(".mk");
-    if (!row) return;
-    const i = Number(row.dataset.i);
-    if (e.target.closest("[data-del]")) { deleteMark(i); return; }
-    select(i);
-  });
-  marksEl.addEventListener("focusin", e => {
-    const row = e.target.closest(".mk");
-    if (row && e.target.tagName === "INPUT") { select(Number(row.dataset.i)); focusSnap = snapshot(cur); }
-  });
-  marksEl.addEventListener("input", e => {
-    const row = e.target.closest(".mk");
-    const m = row && marksOf(cur)[Number(row.dataset.i)];
-    if (!m) return;
-    m.label = e.target.value;
-    touched(cur, true);
-  });
-  marksEl.addEventListener("focusout", e => {
-    if (focusSnap && e.target.tagName === "INPUT") {
-      const after = snapshot(cur);
-      if (!same(focusSnap, after)) pushUndo(cur, focusSnap, after);
-      focusSnap = null;
-    }
-  });
-  marksEl.addEventListener("keydown", e => {
-    if (e.key === "Enter" && e.target.tagName === "INPUT") e.target.blur();
-  });
-
   const note = $("rp-note");
   let noteSnap = null;
   note.onfocus = () => { noteSnap = snapshot(cur); };
@@ -438,76 +353,163 @@ window.replay = (() => {
   note.onblur = () => {
     if (!noteSnap) return;
     const after = snapshot(cur);
-    if (!same(noteSnap, after)) pushUndo(cur, noteSnap, after);
+    if (!same(noteSnap, after)) pushUndo({ n: cur, before: noteSnap, after });
     noteSnap = null;
   };
+  note.onkeydown = e => { if (e.key === "Enter") note.blur(); };
 
-  function deleteMark(i) {
-    if (i < 0 || i >= marksOf(cur).length) return;
-    mutate(cur, e => e.annotations.splice(i, 1));
-    selected = -1;
-    refreshFrame(); render();
+  function labCount() {
+    const n = rec ? labeledFrames().length : 0;
+    $("rp-labbtn").innerHTML = `已标注 ${n} 帧 ${svg("down", "sm")}`;
+    $("rp-labbtn").disabled = !rec;
   }
-
-  function refreshLabeled() {
+  const labmenu = $("labmenu");
+  function openMenu(menu, anchor, html, up) {
+    menu.innerHTML = html;
+    menu.classList.add("on");
+    const r = anchor.getBoundingClientRect(), mw = menu.offsetWidth, mh = menu.offsetHeight;
+    menu.style.left = clamp(r.left, 8, innerWidth - mw - 8) + "px";
+    menu.style.top = (up ? Math.max(8, r.top - mh - 6) : r.bottom + 6) + "px";
+  }
+  $("rp-labbtn").onclick = e => {
+    e.stopPropagation();
+    if (labmenu.classList.contains("on")) return labmenu.classList.remove("on");
     const all = labeledFrames();
-    $("rp-labcount").textContent = rec ? `${all.length} 帧` : "";
-    $("rp-labeled").innerHTML = !rec ? "" : all.length ? all.map(n => {
+    openMenu(labmenu, $("rp-labbtn"), `<div class="hd">已标注的帧（点一下跳过去）</div>` + (all.length ? all.map(n => {
       const e = entry(n), k = e.annotations?.length || 0;
       const what = [k ? `${k} 个标注` : "", e.note || e.annotations?.map(a => a.label).filter(Boolean).join("；") || ""].filter(Boolean).join(" · ");
       return `<div class="lf${n === cur ? " cur" : ""}" data-n="${n}"><b>#${n}</b><span class="t">${fmtTime(timeMs(n))}</span><span class="s">${esc(what)}</span></div>`;
-    }).join("") : `<div class="none" style="padding:0 6px">还没有标注。定位到关键帧（预警、出手、闪避）后在画面上标注。</div>`;
-  }
-  $("rp-labeled").onclick = e => { const d = e.target.closest(".lf"); if (d) goto(Number(d.dataset.n)); };
+    }).join("") : `<div class="none" style="padding:4px 10px">还没有标注。定位到关键帧（预警、出手、闪避）后在画面上标注。</div>`), true);
+  };
+  labmenu.onclick = e => { const d = e.target.closest(".lf"); if (d) { labmenu.classList.remove("on"); goto(Number(d.dataset.n)); } };
 
-  // ---- scrubber: as wide as the frame, labeled frames marked, thumbnails while dragging
+  // ---- the range (in / out points): the attachment's focus
 
-  // the frame fits the stage keeping its aspect ratio; the scrubber below follows its width
-  function layout() {
-    const r = $("rp-stage").getBoundingClientRect(), ar = cv.width / cv.height;
-    if (!r.width || !r.height) return;
-    let w = r.width, h = w / ar;
-    if (h > r.height) { h = r.height; w = h * ar; }
-    cv.style.width = Math.floor(w) + "px";
-    cv.style.height = Math.floor(h) + "px";
+  /** Set the range; record: one undo step. A tray item being edited gets the new focus. */
+  function setRange(a, b, record = true) {
+    if (a >= 0 && b >= 0 && a > b) [a, b] = [b, a];
+    if (a === inPt && b === outPt) return;
+    if (record) pushUndo({ range: true, before: [inPt, outPt], after: [a, b] });
+    inPt = a; outPt = b;
+    rangeUi(); drawScrub();
+    if (trayItem) writeBack({ focus: focus() });
   }
-  new ResizeObserver(layout).observe($("rp-stage"));
+  const focus = () => inPt < 0 && outPt < 0 ? null : { from: inPt >= 0 ? inPt : 0, to: outPt >= 0 ? outPt : total - 1 };
+  function rangeUi() {
+    const n = here(), f = focus();
+    $("rp-in").textContent = inPt >= 0 && inPt === n ? "清除入点" : "入点";
+    $("rp-out").textContent = outPt >= 0 && outPt === n ? "清除出点" : "出点";
+    $("rp-in").disabled = $("rp-out").disabled = !rec;
+    $("rp-range").style.display = f ? "" : "none";
+    $("rp-range").querySelector(".t").textContent = f ? `范围 ${f.from}–${f.to}` : "";
+  }
+  function setIn() { if (!rec) return; const n = here(); if (inPt === n) setRange(-1, outPt); else setRange(n, outPt >= 0 && outPt < n ? -1 : outPt); }
+  function setOut() { if (!rec) return; const n = here(); if (outPt === n) setRange(inPt, -1); else setRange(inPt >= 0 && inPt > n ? -1 : inPt, n); }
+  $("rp-in").onclick = setIn;
+  $("rp-out").onclick = setOut;
+  $("rp-rangex").onclick = () => setRange(-1, -1);
+
+  // ---- to the chat: the recording goes in the tray (focus: the range); once there, edits here go back into it
+
+  const rpText = $("rp-text");
+  let textTimer = 0;
+  function writeBack(change) {
+    const id = trayItem.id;
+    teach.updateTray(id, change).then(it => { if (trayItem?.id === id) trayItem = it; }).catch(e => toast("更新托盘失败：" + e.message));
+  }
+  rpText.oninput = () => {
+    if (!trayItem) return;
+    clearTimeout(textTimer);
+    textTimer = setTimeout(() => writeBack({ text: rpText.value.trim() }), 500);
+  };
+  rpText.onkeydown = e => { if (e.key === "Enter") rpText.blur(); };
+
+  async function toAI() {
+    if (!rec || playing || trayItem) return;
+    await flush(); // the AI reads the saved labels
+    try {
+      const f = focus(), t = rpText.value.trim();
+      trayItem = await teach.addToTray({ type: "recording", rec: rec.id, ...(f ? { focus: f } : {}), ...(t ? { text: t } : {}) });
+      teach.renderTray(); sendUi();
+      toast(`已放进待发托盘：${focusText(f)}`);
+    } catch (e) { toast("放进托盘失败：" + e.message); }
+  }
+  $("toai").addEventListener("click", () => { if (active) toAI(); });
+  function sendUi() {
+    if (!active) return;
+    const b = $("toai");
+    b.disabled = !rec || !!trayItem;
+    b.title = trayItem ? "已经在托盘里了：范围和说明的改动会自动写回" : "把这段录像放进待发托盘，范围就是 focus（A）";
+    rpText.placeholder = trayItem ? "给 MaaLow 的说明（改动自动写回托盘）" : "给 MaaLow 的说明：这段录像要它看什么";
+  }
+
+  /** A recording's edit button in the tray: once it is open here, the range and text are that item's. */
+  function editItem(item) {
+    const wait = () => {
+      if (rec && rec.id === item.rec) {
+        trayItem = item;
+        inPt = item.focus ? item.focus.from : -1;
+        outPt = item.focus ? item.focus.to : -1;
+        rpText.value = item.text || "";
+        rangeUi(); drawScrub(); sendUi(); teach.renderTray();
+      } else if (active) setTimeout(wait, 100);
+    };
+    wait();
+  }
+  /** The tray changed: a recording taken out of it is no longer being edited. */
+  function trayChanged(items) {
+    if (trayItem && !items.some(t => t.id === trayItem.id)) { trayItem = null; rpText.value = ""; sendUi(); }
+  }
+
+  /** Right after a recording: offer to put it in the tray. */
+  async function offer(r) {
+    if (!await ui.confirm("录像会放进待发托盘，写上说明、需要的话先标注几帧，再发给 MaaLow。", { title: `把“${r.name}”发到当前任务的对话吗？`, ok: "放进托盘" })) return;
+    try {
+      const item = await teach.addToTray({ type: "recording", rec: r.id });
+      if (rec && rec.id === r.id) { trayItem = item; sendUi(); teach.renderTray(); }
+      toast("已放进待发托盘");
+    } catch (e) { toast("放进托盘失败：" + e.message); }
+  }
+
+  // ---- scrubber: labeled frames marked (a tap near one goes there), the range and its ends draggable, thumbnails
 
   const dpr = () => window.devicePixelRatio || 1;
   function sizeScrub() {
-    const w = Math.round(cv.getBoundingClientRect().width) || 0;
-    $("rp-scrubwrap").style.width = w + "px";
+    const w = Math.round($("rp-scrubwrap").getBoundingClientRect().width) || 0;
     scrub.width = Math.max(1, w * dpr());
-    scrub.height = 40 * dpr();
+    scrub.height = 34 * dpr();
     drawScrub();
   }
-  new ResizeObserver(sizeScrub).observe(cv);
+  new ResizeObserver(sizeScrub).observe($("rp-scrubwrap"));
   window.addEventListener("themechange", drawScrub);
 
+  const X = n => { const w = scrub.width / dpr(); return total > 1 ? 6 + n / (total - 1) * (w - 12) : 6; };
   function drawScrub() {
-    const W = scrub.width / dpr(), H = 40;
+    const W = scrub.width / dpr(), H = 34;
     sctx.setTransform(dpr(), 0, 0, dpr(), 0, 0);
     sctx.clearRect(0, 0, W, H);
     const accent = cssVar("--orange");
     sctx.fillStyle = cssVar("--panel-2");
-    sctx.beginPath(); sctx.roundRect(0, 0, W, H, 10); sctx.fill();
+    sctx.beginPath(); sctx.roundRect(0, 0, W, H, 9); sctx.fill();
     if (!rec || total < 1) return;
-    const x = n => total > 1 ? 6 + n / (total - 1) * (W - 12) : 6;
-    const at = playing ? videoFrame : want >= 0 ? want : cur;
-    sctx.fillStyle = cssVar("--line-2"); sctx.fillRect(6, 17, W - 12, 6); // track
-    sctx.fillStyle = accent; sctx.globalAlpha = .5; sctx.fillRect(6, 17, x(at) - 6, 6); sctx.globalAlpha = 1;
-    if (inPt >= 0 || outPt >= 0) { // the range to send to the AI
-      const a = inPt >= 0 ? inPt : 0, b = outPt >= 0 ? outPt : total - 1;
-      sctx.fillStyle = cssVar("--green"); sctx.globalAlpha = .28; sctx.fillRect(x(a), 2, Math.max(2, x(b) - x(a)), H - 4); sctx.globalAlpha = 1;
+    const at = playing ? videoFrame : here();
+    sctx.fillStyle = cssVar("--line-2"); sctx.fillRect(6, 14, W - 12, 6); // track
+    sctx.fillStyle = accent; sctx.globalAlpha = .5; sctx.fillRect(6, 14, X(at) - 6, 6); sctx.globalAlpha = 1;
+    const f = focus();
+    if (f) { // the range, with handles at its ends
+      sctx.fillStyle = cssVar("--green"); sctx.globalAlpha = .25; sctx.fillRect(X(f.from), 2, Math.max(2, X(f.to) - X(f.from)), H - 4); sctx.globalAlpha = 1;
+      sctx.fillStyle = cssVar("--green");
+      if (inPt >= 0) sctx.fillRect(Math.round(X(inPt)) - 2, 2, 4, H - 4);
+      if (outPt >= 0) sctx.fillRect(Math.round(X(outPt)) - 2, 2, 4, H - 4);
     }
     sctx.fillStyle = cssVar("--faint"); // a tick every 10 s
-    for (let f = 0; f < total; f += FPS * 10) sctx.fillRect(Math.round(x(f)), 25, 1, 6);
+    for (let n = 0; n < total; n += FPS * 10) sctx.fillRect(Math.round(X(n)), 22, 1, 6);
     sctx.fillStyle = accent; // labeled frames
-    for (const n of labeledFrames()) sctx.fillRect(Math.round(x(n)) - 1, 3, 3, 11);
-    const g = drag ?? hover;
-    if (g !== null) { sctx.fillStyle = cssVar("--dim"); sctx.fillRect(Math.round(x(g)), 2, 1, H - 4); }
-    sctx.fillStyle = cssVar("--text"); sctx.fillRect(Math.round(x(at)) - 1, 2, 2, H - 4);
-    sctx.beginPath(); sctx.arc(x(at), 20, 7, 0, 2 * Math.PI); sctx.fillStyle = accent; sctx.fill();
+    for (const n of labeledFrames()) sctx.fillRect(Math.round(X(n)) - 1.5, 2, 3, 10);
+    const g = drag?.kind === "seek" ? drag.n : hover;
+    if (g !== null && g !== undefined) { sctx.fillStyle = cssVar("--dim"); sctx.fillRect(Math.round(X(g)), 2, 1, H - 4); }
+    sctx.fillStyle = cssVar("--text"); sctx.fillRect(Math.round(X(at)) - 1, 2, 2, H - 4);
+    sctx.beginPath(); sctx.arc(X(at), 17, 6.5, 0, 2 * Math.PI); sctx.fillStyle = accent; sctx.fill();
     sctx.lineWidth = 2; sctx.strokeStyle = cssVar("--edge"); sctx.stroke();
   }
 
@@ -515,21 +517,23 @@ window.replay = (() => {
     const r = scrub.getBoundingClientRect();
     return clamp(Math.round((clientX - r.left - 6) / Math.max(1, r.width - 12) * (total - 1)), 0, total - 1);
   }
+  const px = clientX => clientX - scrub.getBoundingClientRect().left;
 
   function showPop(n, clientX) {
-    const t = rec.thumbs, img = pop.firstElementChild, W = scrub.getBoundingClientRect().width;
-    const s = 1.3, w = (t?.width || 192) * s, h = (t?.height || 128) * s;
+    const t = rec.thumbs, img = pop.firstElementChild;
+    const s = 1.2, w = (t?.width || 192) * s, h = (t?.height || 128) * s;
     img.style.width = w + "px"; img.style.height = h + "px";
     if (t && t.count) {
       const i = clamp(Math.round(n / t.every), 0, t.count - 1), per = t.cols * t.rows, slot = i % per;
-      img.style.backgroundImage = `url("${sheetUrl(rec, Math.floor(i / per))}")`;
+      img.style.backgroundImage = `url("${localSheet(rec, Math.floor(i / per))}")`;
       img.style.backgroundSize = `${t.cols * w}px ${t.rows * h}px`;
       img.style.backgroundPosition = `-${(slot % t.cols) * w}px -${Math.floor(slot / t.cols) * h}px`;
     } else img.style.backgroundImage = "none";
     pop.lastElementChild.textContent = `#${n} · ${fmtTime(timeMs(n))}`;
-    const x = clientX - scrub.getBoundingClientRect().left;
-    pop.style.left = clamp(x, w / 2 + 4, W - w / 2 - 4) + "px";
+    const r = scrub.getBoundingClientRect();
     pop.style.display = "block";
+    pop.style.left = clamp(clientX, r.left + w / 2 + 4, r.right - w / 2 - 4) + "px";
+    pop.style.top = (r.top - pop.offsetHeight - 8) + "px";
   }
   const hidePop = () => { pop.style.display = "none"; };
 
@@ -538,23 +542,47 @@ window.replay = (() => {
     scrub.setPointerCapture(e.pointerId);
     stopHold();
     if (playing) stopVideo(false);
-    drag = frameAt(e.clientX);
-    showPop(drag, e.clientX); drawScrub();
+    const x = px(e.clientX), near = n => n >= 0 && Math.abs(X(n) - x) <= 6;
+    if (near(inPt) || near(outPt)) { // drag an end of the range
+      drag = { kind: near(inPt) ? "in" : "out", start: [inPt, outPt] };
+      scrub.style.cursor = "ew-resize";
+      return;
+    }
+    drag = { kind: "seek", n: frameAt(e.clientX), x0: e.clientX };
+    showPop(drag.n, e.clientX); drawScrub();
   };
   scrub.onpointermove = e => {
     if (!rec || !total) return;
     const n = frameAt(e.clientX);
-    if (drag !== null) { drag = n; showPop(n, e.clientX); drawScrub(); }
-    else if (e.pointerType === "mouse") { hover = n; showPop(n, e.clientX); drawScrub(); }
+    if (drag?.kind === "in" || drag?.kind === "out") {
+      if (drag.kind === "in") inPt = outPt >= 0 ? Math.min(n, outPt) : n; else outPt = inPt >= 0 ? Math.max(n, inPt) : n;
+      rangeUi(); drawScrub(); showPop(n, e.clientX);
+    } else if (drag) { drag.n = n; showPop(n, e.clientX); drawScrub(); }
+    else if (e.pointerType === "mouse") {
+      hover = n; showPop(n, e.clientX); drawScrub();
+      const x = px(e.clientX);
+      scrub.style.cursor = [inPt, outPt].some(k => k >= 0 && Math.abs(X(k) - x) <= 6) ? "ew-resize" : "pointer";
+    }
   };
-  scrub.onpointerup = () => {
-    if (drag === null) return;
-    const n = drag;
-    drag = null; hidePop();
+  scrub.onpointerup = e => {
+    const d = drag;
+    drag = null; hidePop(); scrub.style.cursor = "";
+    if (!d) return;
+    if (d.kind !== "seek") { // one undo step for the whole drag
+      const [a, b] = [inPt, outPt];
+      [inPt, outPt] = d.start;
+      setRange(a, b);
+      return;
+    }
+    let n = d.n;
+    if (Math.abs(e.clientX - d.x0) < 3) { // a tap: a labeled frame close by wins
+      const x = px(e.clientX), hit = labeledFrames().find(k => Math.abs(X(k) - x) <= 5);
+      if (hit !== undefined) n = hit;
+    }
     goto(n);
   };
-  scrub.onpointercancel = () => { drag = null; hidePop(); drawScrub(); };
-  scrub.onpointerleave = () => { hover = null; if (drag === null) hidePop(); drawScrub(); };
+  scrub.onpointercancel = () => { if (drag && drag.kind !== "seek") [inPt, outPt] = drag.start; drag = null; hidePop(); drawScrub(); rangeUi(); };
+  scrub.onpointerleave = () => { hover = null; if (!drag) hidePop(); drawScrub(); };
 
   // ---- transport buttons: press and hold to keep stepping
 
@@ -565,8 +593,8 @@ window.replay = (() => {
   }
   holdButton("rp-prev", -1);
   holdButton("rp-next", 1);
-  $("rp-back10").onclick = () => goto((want >= 0 ? want : cur) - 10);
-  $("rp-fwd10").onclick = () => goto((want >= 0 ? want : cur) + 10);
+  $("rp-back10").onclick = () => goto(here() - 10);
+  $("rp-fwd10").onclick = () => goto(here() + 10);
   $("rp-prevlab").onclick = () => labeledStep(-1);
   $("rp-nextlab").onclick = () => labeledStep(1);
   $("rp-play").onclick = togglePlay;
@@ -597,7 +625,7 @@ window.replay = (() => {
           if (r && active) offer(r);
         }
       }
-      if (recState.recording !== prev.recording || !!recState.saving !== !!prev.saving) { renderRecButton(); if (started) { loadList(); render(); } }
+      if (recState.recording !== prev.recording || !!recState.saving !== !!prev.saving) { renderRecButton(); if (started) { loadList(); placeholder(); } }
     } catch (e) { /* app restarting */ }
     recTimer();
   }
@@ -606,26 +634,21 @@ window.replay = (() => {
 
   // the clock between polls
   function recTimer() {
-    const badge = $("recbadge"), t = $("rp-rectime");
+    const badge = $("recbadge");
     if (recState.recording) {
       const el = Math.min(recState.limit_ms, recState.elapsed_ms + (Date.now() - recPolled));
-      const left = Math.max(0, recState.limit_ms - el);
       badge.textContent = `录制中 ${fmtClock(el)}`;
       badge.classList.add("show");
-      t.textContent = `${fmtClock(el)} / ${fmtClock(recState.limit_ms)} · 剩余 ${fmtClock(left)}`;
-      t.className = "live";
-    } else {
-      badge.classList.remove("show");
-      t.textContent = recState.saving ? "保存中…" : "";
-      t.className = "";
-    }
+      if (!recState.stopping) $("rp-rec").innerHTML = `${svg("stop")}<span class="tl">结束 ${fmtClock(el)}</span>`;
+    } else badge.classList.remove("show");
   }
   setInterval(recTimer, 250);
 
   function renderRecButton() {
     const b = $("rp-rec");
     b.classList.toggle("live", !!recState.recording);
-    b.innerHTML = recState.recording ? `${svg("stop")}结束录制` : recState.saving ? "保存中…" : `${svg("rec")}开始录制`;
+    b.innerHTML = recState.recording ? `${svg("stop")}<span class="tl">结束录制</span>` : recState.saving ? `<span class="tl">保存中…</span>` : `${svg("rec")}<span class="tl">开始录制</span>`;
+    b.title = recState.recording ? "结束录制并保存" : "录下平板上的真实操作（最长 3 分钟）";
     b.disabled = !!recState.saving && !recState.recording;
   }
 
@@ -636,7 +659,7 @@ window.replay = (() => {
     try {
       if (recState.recording) {
         recState.stopping = true;
-        b.textContent = "保存中…";
+        b.innerHTML = `<span class="tl">保存中…</span>`;
         const meta = await post("/record/stop");
         await loadList();
         await open(meta.id, 0);
@@ -653,29 +676,33 @@ window.replay = (() => {
     } finally {
       b.disabled = false;
       await pollRecord();
-      renderRecButton(); render();
+      renderRecButton(); placeholder();
     }
   };
 
-  // ---- recordings list
+  // ---- recordings: a picker in the toolbar, the list in a menu (search, refresh, rename, delete)
 
+  const recmenu = $("recmenu");
+  let query = "";
   async function loadList() {
     if (!ws) return;
     try {
       recs = await json(`/recordings?workspace=${enc(ws)}`);
     } catch (e) { toast("读取录像列表失败：" + e.message); return; }
     if (rec && !recs.some(r => r.id === rec.id)) close();
-    renderList();
+    pickLabel();
+    if (recmenu.classList.contains("on")) renderList();
     teach.setRecs(recs, ws);
+  }
+  function pickLabel() {
+    $("rp-pick").querySelector(".nm").textContent = rec ? `${rec.name} · ${fmtClock(rec.duration_ms)}` : recs.length ? "选择录像" : "还没有录像";
+    $("rp-pick").title = rec ? `${rec.name}：${rec.frames} 帧，点击换一段` : "选择录像";
   }
 
   function renderList() {
-    const el = $("rp-recs");
-    if (!recs.length) {
-      el.innerHTML = `<div class="none" style="padding:4px 6px">还没有录像。点“开始录制”，然后在平板上正常操作。</div>`;
-      return;
-    }
-    el.innerHTML = recs.map(r => {
+    const q = query.trim().toLowerCase();
+    const list = recs.filter(r => !q || (r.name + " " + (r.note || "") + " " + r.id).toLowerCase().includes(q));
+    const rows = list.map(r => {
       const live = r.state === "recording" || r.state === "saving";
       const sub = live ? (r.state === "recording" ? `● 录制中 ${fmtClock(r.duration_ms || 0)}` : "保存中…")
         : `${fmtClock(r.duration_ms || 0)} · ${r.frames} 帧 · ${(r.started_at || "").slice(5, 16)}${r.stopped_by === "recovered" ? " · 已修复" : ""}${r.stopped_by === "limit" ? " · 到达上限" : ""}`;
@@ -689,13 +716,26 @@ window.replay = (() => {
         ${editing === r.id || live ? "" : `<div class="acts"><button class="btn sm" data-act="edit">改名</button><button class="btn sm danger" data-act="del">删除</button></div>`}
       </div>`;
     }).join("");
+    recmenu.querySelector(".list").innerHTML = rows || `<div class="none" style="padding:6px 10px">${recs.length ? "没有匹配的录像" : "还没有录像。点“开始录制”，然后在平板上正常操作。"}</div>`;
   }
-
-  $("rp-recs").onclick = async e => {
+  $("rp-pick").onclick = e => {
+    e.stopPropagation();
+    if (recmenu.classList.contains("on")) { recmenu.classList.remove("on"); return; }
+    openMenu(recmenu, $("rp-pick"), `<div class="hd row0"><input class="search" placeholder="搜索录像" value="${esc(query)}">
+      <button class="btn icon sm ghost" data-act="refresh" title="刷新列表">${svg("refresh", "sm")}</button></div><div class="list"></div>`);
+    renderList();
+    loadList();
+    recmenu.querySelector(".search").focus();
+  };
+  recmenu.oninput = e => { if (e.target.classList.contains("search")) { query = e.target.value; renderList(); } };
+  recmenu.onclick = async e => {
+    e.stopPropagation();
+    const act = e.target.closest("[data-act]")?.dataset.act;
+    if (act === "refresh") { await loadList(); renderList(); return; }
     const item = e.target.closest(".rec");
     if (!item) return;
-    const id = item.dataset.id, r = recs.find(x => x.id === id), act = e.target.closest("[data-act]")?.dataset.act;
-    if (act === "edit") { editing = id; renderList(); $("rp-recs").querySelector(`[data-id="${id}"] input`)?.focus(); return; }
+    const id = item.dataset.id, r = recs.find(x => x.id === id);
+    if (act === "edit") { editing = id; renderList(); recmenu.querySelector(`[data-id="${id}"] input`)?.focus(); return; }
     if (act === "cancel") { editing = null; renderList(); return; }
     if (act === "save") {
       const name = item.querySelector('[data-f="name"]').value.trim(), noteText = item.querySelector('[data-f="note"]').value;
@@ -703,12 +743,13 @@ window.replay = (() => {
         const m = await json(`/recordings/${enc(ws)}/${enc(id)}`, { method: "PATCH", body: JSON.stringify({ name: name || r.name, note: noteText }) });
         Object.assign(r, m);
         if (rec && rec.id === id) Object.assign(rec, m);
-        editing = null; renderList();
+        editing = null; renderList(); pickLabel(); teach.setRecs(recs, ws);
       } catch (err) { toast("保存失败：" + err.message); }
       return;
     }
     if (act === "del") {
-      if (!await ui.confirm("视频、缩略图和标注都会删除，不能恢复。", { title: `删除录像“${r.name}”？`, ok: "删除", danger: true })) return;
+      recmenu.classList.remove("on");
+      if (!await ui.confirm("视频、缩略图和标注都会删除，不能恢复；引用它的消息会显示“录像已删除”。", { title: `删除录像“${r.name}”？`, ok: "删除", danger: true })) return;
       try {
         await json(`/recordings/${enc(ws)}/${enc(id)}`, { method: "DELETE" });
         if (rec && rec.id === id) close();
@@ -717,14 +758,17 @@ window.replay = (() => {
       return;
     }
     if (editing === id || e.target.closest("input, textarea")) return;
-    if (r && r.state === "ready" && (!rec || rec.id !== id)) open(id, 0);
-    else if (r && r.state !== "ready") toast("这段录像还在录制或保存中");
+    if (r && r.state === "ready") { recmenu.classList.remove("on"); if (!rec || rec.id !== id) open(id, 0); }
+    else if (r) toast("这段录像还在录制或保存中");
   };
-  $("rp-recs").onkeydown = e => {
-    if (e.key === "Enter" && e.target.tagName === "INPUT") e.target.closest(".rec").querySelector('[data-act="save"]').click();
-    if (e.key === "Escape") { editing = null; renderList(); }
+  recmenu.onkeydown = e => {
+    if (e.key === "Enter" && e.target.tagName === "INPUT" && !e.target.classList.contains("search")) e.target.closest(".rec").querySelector('[data-act="save"]').click();
+    if (e.key === "Escape") { e.stopPropagation(); if (editing) { editing = null; renderList(); } else recmenu.classList.remove("on"); }
   };
-  $("rp-refresh").onclick = loadList;
+  document.addEventListener("pointerdown", e => {
+    if (!recmenu.contains(e.target) && !$("rp-pick").contains(e.target)) recmenu.classList.remove("on");
+    if (!labmenu.contains(e.target) && !$("rp-labbtn").contains(e.target)) labmenu.classList.remove("on");
+  });
 
   async function open(id, frame) {
     await flush();
@@ -733,24 +777,31 @@ window.replay = (() => {
     if (meta.state !== "ready") { toast("这段录像还在录制或保存中"); return; }
     stopHold();
     if (playing) stopVideo(false);
-    rec = meta; total = meta.frames; cur = -1; want = -1; image = null; selected = -1;
-    inPt = -1; outPt = -1; trayItem = null; rangeText();
+    rec = meta; total = meta.frames; cur = -1; want = -1; image = null; frameError = "";
     bitmaps.clear(); undoStack = []; redoStack = []; dirty.clear(); saveError = "";
+    inPt = -1; outPt = -1; trayItem = null; rpText.value = "";
     video.removeAttribute("src"); delete video.dataset.src; video.load();
-    cv.width = meta.width; cv.height = meta.height;
-    layout();
     try { labels = await json(`${base()}/labels`); } catch (e) { labels = { version: 0, frames: {} }; toast("读取标注失败：" + e.message); }
-    for (let k = 0; k < (meta.thumbs?.sheets || 0); k++) new Image().src = sheetUrl(meta, k); // warm the scrubbing previews
-    renderList(); undoButtons(); saveStatus(); sizeScrub(); refreshFrame(); refreshLabeled(); render();
+    for (let k = 0; k < (meta.thumbs?.sheets || 0); k++) new Image().src = localSheet(meta, k); // warm the scrubbing previews
+    pickLabel(); saveStatus(); sizeScrub(); refreshFrame(); placeholder(); sendUi(); rangeUi();
+    if (active) { stage.reset(); stage.buttons(); }
+    teach.renderTray();
     goto(clamp(frame || 0, 0, total - 1));
   }
 
   function close() {
     rec = null; total = 0; cur = -1; want = -1; image = null; labels = { version: 0, frames: {} };
-    dirty.clear(); undoStack = []; redoStack = [];
-    inPt = -1; outPt = -1; trayItem = null; rangeText();
-    if (active) history.replaceState(null, "", "#teach/replay");
-    updatePos(); undoButtons(); saveStatus(); refreshFrame(); refreshLabeled(); render(); drawScrub();
+    dirty.clear(); undoStack = []; redoStack = []; inPt = -1; outPt = -1; trayItem = null;
+    if (active) { history.replaceState(null, "", "#teach/replay"); stage.show(null); stage.reset(); }
+    updatePos(); saveStatus(); refreshFrame(); placeholder(); drawScrub(); pickLabel(); sendUi();
+  }
+
+  function placeholder() {
+    if (!active) return;
+    const say = recState.recording ? "录制中……在平板上正常操作。<br>结束录制后可以逐帧查看和标注。"
+      : !ws ? "还没有工作区，先到 <b>工作区</b> 页新建一个。"
+      : recs.some(r => r.state === "ready") ? "点工具栏里的录像选择器，打开一段录像。" : "点 <b>开始录制</b> 录一段在平板上的真实操作（最长 3 分钟）。";
+    stage.over(rec ? "" : `<img src="web/mascot.png" alt=""><div>${say}</div>`);
   }
 
   // ---- workspace: always the current one (switched in the top bar)
@@ -768,66 +819,64 @@ window.replay = (() => {
     close();
     ws = w || "";
     recs = [];
-    renderList();
+    pickLabel();
     if (started && active && ws) { await loadList(); await openDefault(); }
   }
 
-  // ---- keys
+  // ---- keys (undo, tools, delete and Esc are the stage's)
 
-  const typing = t => t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT";
-  // a freshly drawn mark focuses its empty label input; Ctrl+Z there has nothing to undo natively, so undo the mark
-  const focusValue = new WeakMap();
-  window.addEventListener("focusin", e => { if (typing(e.target)) focusValue.set(e.target, e.target.value); });
   window.addEventListener("keydown", e => {
-    if (mode !== "teach" || teach.stage !== "replay" || ui.isOpen()) return;
-    const k = e.key, ctrl = e.ctrlKey || e.metaKey;
-    if (typing(e.target)) {
-      if (k === "Escape") { e.target.blur(); return; }
-      if (!(ctrl && "zZyY".includes(k)) || e.target.value !== focusValue.get(e.target)) return;
-      e.target.blur();
-    }
-    if ((k === "ArrowLeft" || k === "ArrowRight") && !ctrl) {
+    if (!active || mode !== "teach" || ui.isOpen()) return;
+    if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+    const k = e.key;
+    if ((k === "ArrowLeft" || k === "ArrowRight") && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
       if (e.repeat) return;
       const d = (k === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1);
-      if (e.shiftKey) goto((want >= 0 ? want : cur) + d); else startHold(d);
+      if (e.shiftKey) goto(here() + d); else startHold(d);
       return;
     }
-    if (ctrl && (k === "z" || k === "Z")) { e.preventDefault(); undo(e.shiftKey); return; }
-    if (ctrl && (k === "y" || k === "Y")) { e.preventDefault(); undo(true); return; }
-    if (ctrl || e.altKey) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (k === " ") { e.preventDefault(); togglePlay(); }
     else if (k === "Home") { e.preventDefault(); goto(0); }
     else if (k === "End") { e.preventDefault(); goto(total - 1); }
     else if (k === "[" || k === "PageUp") { e.preventDefault(); labeledStep(-1); }
     else if (k === "]" || k === "PageDown") { e.preventDefault(); labeledStep(1); }
     else if (k === "g" || k === "G") { e.preventDefault(); nInput.focus(); }
+    else if (k === "n" || k === "N") { if (rec) { e.preventDefault(); note.focus(); } }
     else if (k === "i" || k === "I") { e.preventDefault(); setIn(); }
     else if (k === "o" || k === "O") { e.preventDefault(); setOut(); }
     else if (k === "a" || k === "A") { e.preventDefault(); toAI(); }
-    else if (k === "n" || k === "N") { if (rec) { e.preventDefault(); note.focus(); } }
-    else if (k === "Delete" || k === "Backspace") { if (selected >= 0) { e.preventDefault(); deleteMark(selected); } }
-    else if (k === "Escape") { start = null; draft = null; select(-1); }
-    else if (TOOLS[Number(k) - 1]) setTool(TOOLS[Number(k) - 1]);
   });
   window.addEventListener("keyup", e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") stopHold(); });
   window.addEventListener("blur", stopHold);
 
-  // ---- enter / leave the mode
+  stage.register("replay", {
+    undo: () => undo(false), redo: () => undo(true),
+    canUndo: () => undoStack.length > 0, canRedo: () => redoStack.length > 0,
+    escape: () => { if (focus()) setRange(-1, -1); },
+  });
+
+  // ---- enter / leave the stage
 
   /** The stage is shown; to: "replay/<id>/<frame>" opens that recording at that frame. */
   async function enter(to = "") {
     active = true;
+    stage.use(doc);
+    stage.onMove = null;
+    stage.show(image);
+    stage.busy(loading);
+    badge(); saveStatus(); sendUi(); placeholder(); stage.buttons();
     const [, id, f] = to.split("/");
     if (!started) {
       started = true;
       ws = wsStore.current;
       $("rp-play").innerHTML = svg("play");
-      render(); updatePos(); undoButtons(); renderRecButton();
+      updatePos(); renderRecButton(); labCount();
       await loadList();
       await openDefault(to);
     } else {
-      requestAnimationFrame(() => { layout(); sizeScrub(); });
+      requestAnimationFrame(sizeScrub);
       if (rec) history.replaceState(null, "", `#teach/replay/${rec.id}/${Math.max(cur, 0)}`); else history.replaceState(null, "", "#teach/replay");
       await loadList();
       if (id && rec && rec.id === id) goto(Number(f) || 0);
@@ -839,66 +888,11 @@ window.replay = (() => {
     active = false;
     stopHold();
     if (playing) stopVideo(false);
+    screen.classList.remove("playing");
+    stage.busy(false);
+    recmenu.classList.remove("on"); labmenu.classList.remove("on");
     flush();
   }
 
-  // ---- to the chat: the recording goes in the tray, with a focus (this frame, the in-out range) or none
-
-  function rangeText() {
-    $("rp-range").textContent = inPt >= 0 || outPt >= 0 ? `范围 ${inPt >= 0 ? inPt : "开头"}–${outPt >= 0 ? outPt : "结尾"}` : "";
-    $("rp-toai").querySelector("span").textContent = trayItem ? "更新托盘" : "发给 AI";
-    drawScrub();
-  }
-  const here = () => want >= 0 ? want : cur;
-  function setIn() { if (!rec) return; const n = here(); inPt = inPt === n ? -1 : n; if (outPt >= 0 && outPt < inPt) outPt = -1; rangeText(); }
-  function setOut() { if (!rec) return; const n = here(); outPt = outPt === n ? -1 : n; if (outPt >= 0 && inPt > outPt) inPt = -1; rangeText(); }
-  $("rp-in").onclick = setIn;
-  $("rp-out").onclick = setOut;
-
-  async function toAI() {
-    if (!rec || playing) return;
-    await flush(); // the AI reads the saved labels
-    const at = here(), hasRange = inPt >= 0 || outPt >= 0;
-    const a = inPt >= 0 ? inPt : 0, b = outPt >= 0 ? outPt : total - 1;
-    const v = await ui.dialog({
-      title: trayItem ? `更新托盘里的“${esc(rec.name)}”` : `把“${esc(rec.name)}”放进待发托盘`,
-      body: `<div class="msgtext">MaaLow 会看到这段录像的逐帧标注。focus 告诉它你说的是哪几帧（别的帧它也能自己看）。</div>`,
-      actions: [
-        { label: "取消", value: null },
-        { label: "不指定", value: "none" },
-        ...(hasRange ? [{ label: `入点到出点（${a}–${b}）`, value: "range" }] : []),
-        { label: `当前帧（#${at}）`, value: "cur", kind: "primary" },
-      ],
-    });
-    if (!v) return;
-    const focus = v === "cur" ? { from: at, to: at } : v === "range" ? { from: a, to: b } : null;
-    try {
-      if (trayItem && trayItem.rec === rec.id) await teach.updateTray(trayItem.id, { focus });
-      else await teach.addToTray({ type: "recording", rec: rec.id, ...(focus ? { focus } : {}) });
-      trayItem = null; rangeText();
-      toast(`已放进待发托盘：${focusText(focus)}`);
-    } catch (e) { toast("放进托盘失败：" + e.message); }
-  }
-  $("rp-toai").onclick = toAI;
-
-  /** A recording's edit button in the tray: once it is open here, sending updates that item instead of adding one. */
-  function editItem(item) {
-    const wait = () => {
-      if (rec && rec.id === item.rec) {
-        trayItem = item;
-        if (item.focus && item.focus.to > item.focus.from) { inPt = item.focus.from; outPt = item.focus.to; }
-        rangeText();
-      } else if (active) setTimeout(wait, 100);
-    };
-    wait();
-  }
-
-  /** Right after a recording: offer to put it in the tray. */
-  async function offer(r) {
-    if (await ui.confirm("录像会放进待发托盘，写上说明、需要的话先标注几帧，再发给 MaaLow。", { title: `把“${r.name}”发到当前任务的对话吗？`, ok: "放进托盘" })) {
-      try { await teach.addToTray({ type: "recording", rec: r.id }); toast("已放进待发托盘"); } catch (e) { toast("放进托盘失败：" + e.message); }
-    }
-  }
-
-  return { enter, leave, flush, setWorkspace, editItem };
+  return { enter, leave, flush, setWorkspace, editItem, trayChanged, editing: () => trayItem?.id ?? null };
 })();

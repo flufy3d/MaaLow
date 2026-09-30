@@ -12,6 +12,7 @@ function setMode(m) {
   if (page === mode) { if (page === "teach" && rest.length) teach.setStage(rest[0], rest.join("/")); return; }
   const prev = mode;
   mode = page;
+  document.body.dataset.mode = page; // the top bar's task controls are for the teaching page
   document.querySelectorAll("#tabs .tab").forEach(b => b.classList.toggle("on", b.dataset.mode === page));
   document.querySelectorAll(".mode").forEach(d => d.classList.toggle("on", d.id === page));
   PAGES[prev]?.leave();

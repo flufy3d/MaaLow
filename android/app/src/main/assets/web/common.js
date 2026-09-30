@@ -322,15 +322,19 @@ function drawMark(ctx, m, n, selected) {
     ctx.lineTo(x2 - 16 * Math.cos(ang + 0.4), y2 - 16 * Math.sin(ang + 0.4));
     ctx.closePath(); ctx.fill();
   } else if (m.kind === "click") { lx = x + 12; ly = y - 12; }
-  if (n) {
-    ctx.font = "bold 16px sans-serif";
-    const t = String(n), tw = ctx.measureText(t).width + 8;
-    ly = Math.max(ly, 20);
-    ctx.fillRect(lx, ly - 20, tw, 20);
-    ctx.fillStyle = "#000"; ctx.fillText(t, lx + 4, ly - 4);
+  if (n) { // the number, and the label written for it
+    ctx.font = "bold 17px sans-serif";
+    const t = markText(m, n), tw = ctx.measureText(t).width + 10;
+    ly = Math.max(ly, 22);
+    lx = Math.min(lx, 1080 - tw);
+    ctx.fillRect(lx, ly - 22, tw, 22);
+    ctx.fillStyle = "#000"; ctx.fillText(t, lx + 5, ly - 5);
   }
   ctx.restore();
 }
+
+/** "3" or "3 领取" (long labels cut short): what is shown beside a mark. */
+const markText = (m, n) => String(n) + (m.label ? " " + (m.label.length > 24 ? m.label.slice(0, 23) + "…" : m.label) : "");
 
 /** Annotations as an SVG overlay for an image of the 1080x720 frame space (chat attachments, the tray). */
 function marksSvg(list, w = 1080, h = 720) {
@@ -350,9 +354,10 @@ function markSvg(m, n) {
     lx = x + 14; ly = y - 14;
   }
   ly = Math.max(ly, 26);
-  const t = String(n);
-  return shape + `<rect x="${lx}" y="${ly - 26}" width="${12 + 12 * t.length}" height="26" rx="3" fill="${c}"/>` +
-    `<text x="${lx + 6}" y="${ly - 6}" font-size="20" font-weight="700" font-family="sans-serif" fill="#000">${t}</text>`;
+  const t = markText(m, n), tw = 12 + [...t].reduce((a, ch) => a + (ch.charCodeAt(0) > 255 ? 20 : 11), 0);
+  lx = Math.min(lx, 1080 - tw);
+  return shape + `<rect x="${lx}" y="${ly - 26}" width="${tw}" height="26" rx="3" fill="${c}"/>` +
+    `<text x="${lx + 6}" y="${ly - 6}" font-size="20" font-weight="700" font-family="sans-serif" fill="#000">${esc(t)}</text>`;
 }
 
 // ---- recordings: clock, thumbnails (100 small frames per sheet, see Thumbs.kt)

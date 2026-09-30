@@ -7,8 +7,8 @@
 网页上的“MaaLow”由你扮演。用户说“开始指导”“接管网页”，或网页显示“MaaLow 未在监听”时：
 
 1. 后台运行 `uv run maalow do listen --timeout 1800`，等老师消息（别前台阻塞，用户可能在终端找你）。
-2. `role: teacher` 的消息：文字可能为空，看 `attachments[]`（没有附件就是纯文字）：
-   - `shot`：看各自的 `view`（带网格和标注的截图）。
+2. `role: teacher` 的消息：`text` 是总体说明，可能为空；再看 `attachments[]`（没有附件就是纯文字），每个附件的 `text` 是老师对这一项的说明，每个标注的 `label` 是对这个标注的说明：
+   - `shot`：看各自的 `view`（带网格和编号标注的截图），`marks` 是标注的文字版（编号、位置、说明）。
    - `recording`：看 `focus`（帧号范围，可能没有）、`labels`（逐帧标注摘要）和 `view`（focus 起始帧）；别的帧用 `maalow rec frame <rec> --n N` 自己取。`focus` 只是提示，不限制你看哪些帧。
 
    然后用 `maalow do click X Y --say "意图"` / `swipe` / `back` / `run NODE` 等操作，坐标 1080×720。`role: system` 是任务切换或“老师叫停了”，不用回。

@@ -153,6 +153,7 @@ def test_listen_expands_attachments(tmp_path, monkeypatch):
     shot, focused, plain = cli._with_views(client.Client("http://x", "t"), tmp_path, [msg])[0]["attachments"]
     view = Image.open(shot["view"])
     assert shot["view"].endswith(".marks.png") and view.getpixel((175, 20)) == (255, 77, 79)  # the box's top edge
+    assert shot["marks"] == ["1号框选 x=150 y=20 w=50 h=40"]
     assert focused["frames"] == 900 and focused["labels"] == [{"frame": 12, "time_ms": 400, "note": "red", "text": ["1号框选"]}]
     assert focused["view"] == "frame-12.grid.png" and "view" not in plain
 
