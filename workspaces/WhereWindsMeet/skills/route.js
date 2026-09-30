@@ -10,6 +10,9 @@
 // everything is done) taps 据点宝箱, 确认领取 with the panel's defaults (领取三份, 扫荡 9, teacher's choice, message 227)
 // and 继续 through the 攻占 result pages.
 //   {points: [{at: [-108, 115], snap: "route/cixin/00.png"}, ...], from: 1, to: 4}
+//   anchors: "teaching/survey/a"  surveying: before each look at the big map, wait until the character has stopped and
+//                            save the screenshot there (<anchors>/NNN.png); the result lists them with the frame number
+//                            and the position read ({n, seq, time, x, y, cam}), to line up frames grabbed meanwhile
 import { calm } from "./lib/hud.js";
 import { angleDiff, cameraHeading } from "./lib/minimap.js";
 import { turn } from "./move.js";
@@ -27,6 +30,7 @@ const LOST = 1.1; // snap legs: the snapshot not seen by this many times the exp
 const MINI = 2.3; // big map px per minimap px
 const DEG_PX = 0.6; // camera turn per px dragged (move.js)
 const CAM_OK = 8; // at a point: turn the camera to its recorded heading until this close
+const ANCHOR_SETTLE = 1500; // anchors: a sprint coasts on a while after the joystick is let go
 
 /** The top right icons are hidden on two looks in a row (right after the map closes they can be missing a moment). */
 function inFight() {
@@ -105,7 +109,7 @@ function seekFight() {
 
 const bearingTo = (from, to) => (Math.atan2(to[0] - from[0], -(to[1] - from[1])) * 180 / Math.PI + 360) % 360;
 
-/** @param {{points: {at: Point, name?: string, snap?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number}} args */
+/** @param {{points: {at: Point, name?: string, snap?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string}} args */
 export default function (args) {
     const reach = args.reach ?? 6;
     const speed = args.speed ?? SPEED;
@@ -117,10 +121,21 @@ export default function (args) {
     let pos = { x: args.points[from - 1].at[0], y: args.points[from - 1].at[1] };
     let known = !!args.points[from].snap; // pos is trusted
     let maps = 0;
+    const anchors = [];
     const look = () => {
         maps++;
+        let image = null;
+        if (args.anchors) {
+            sleep(ANCHOR_SETTLE);
+            image = screenshot();
+            saveImage(image, `${args.anchors}/${String(maps).padStart(3, "0")}.png`);
+        }
         const p = where();
         if (!p) throw new Error("big map: stronghold icon not found (or standing on it)");
+        if (image) {
+            anchors.push({ n: maps, seq: image.seq, time: image.time, x: p.x, y: p.y, cam: p.cam });
+            log(`anchor ${JSON.stringify(anchors[anchors.length - 1])}`); // kept in the logs if the walk fails later
+        }
         known = true;
         return p;
     };
@@ -177,7 +192,7 @@ export default function (args) {
         log(`point ${i} (${p.name ?? ""}) reached at ${Math.round(pos.x)},${Math.round(pos.y)}${cam != null ? `, camera ${Math.round(cam)}° (wants ${p.cam}°)` : ""}${done ? `: ${done}` : ""}`);
         if (done) legs.push({ i, do: p.do, done });
     }
-    const out = { at: [Math.round(pos.x), Math.round(pos.y)], cam: pos.cam ?? null, maps, legs };
+    const out = { at: [Math.round(pos.x), Math.round(pos.y)], cam: pos.cam ?? null, maps, legs, ...(args.anchors ? { anchors } : {}) };
     log(JSON.stringify(out));
     return out;
 }

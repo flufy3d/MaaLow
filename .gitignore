@@ -10,3 +10,5 @@ build/
 workspaces/*/teaching/
 workspaces/*/recordings/
 workspaces/*/memory/
+# offline survey frames (scripts/)
+data/
