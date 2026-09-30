@@ -34,7 +34,7 @@
         "custom_recognition": "stronghold.recognize"
     },
     "CixinRoute": {
-        "desc": "慈心山院：从传送石碑沿录好的路线走（路点坐标是大地图放到最大时相对据点图标的像素，snap 是那个点的小地图快照，templates/route/cixin/），途中销毁 4 朵曼陀罗毒花、打精英怪，最后开据点宝箱领奖（领取三份、扫荡 9）。「去宝箱途中」「据点宝箱」站在据点图标上，坐标按原点记，靠快照定位。技能 skills/route.js，教学 explore 消息 92–227",
+        "desc": "慈心山院：从传送石碑沿录好的路线走（路点坐标是大地图放到最大时相对据点图标的像素，snap 是那个点的小地图快照，templates/route/cixin/），途中销毁 4 朵曼陀罗毒花、打精英怪，最后开据点宝箱领奖（领取三份、扫荡 9）。「去宝箱途中」「据点宝箱」录的时候 where() 被箭头挡住读成了 (0,0)，现在的坐标是拿它们的快照在小地图拼图 locate/cixin_mosaic 里找回来的（第 0–13 点用同法都在 ±6 px 内）。技能 skills/route.js，教学 explore 消息 92–227",
         "recognition": "DirectHit",
         "action": "Custom",
         "custom_action": "route",
@@ -173,8 +173,8 @@
                 },
                 {
                     "at": [
-                        0,
-                        0
+                        31,
+                        2
                     ],
                     "cam": 48,
                     "snap": "route/cixin/15.png",
@@ -182,8 +182,8 @@
                 },
                 {
                     "at": [
-                        0,
-                        0
+                        38,
+                        -33
                     ],
                     "cam": 42,
                     "snap": "route/cixin/16.png",
