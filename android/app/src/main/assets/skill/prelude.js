@@ -46,6 +46,8 @@
         color: (o) => reco("ColorMatch", pick(o, ["lower", "upper", "count", "connected", "method", "order_by"]), o),
         ocr: (o = {}) => reco("OCR", pick(o, ["expected", "threshold", "only_rec", "order_by"]), o),
         detect: (o) => reco("NeuralNetworkDetect", pick(o, ["model", "expected", "labels", "threshold", "order_by"]), o),
+        locate: (ref, o = {}) =>
+            call("locate", { ref, ...pick(o, ["prior", "radius", "cam", "zoom", "center", "prep"]), image: o.image ? o.image.id : undefined }),
 
         waitFor(target, o = {}) {
             const end = Date.now() + (o.timeout ?? 10000);

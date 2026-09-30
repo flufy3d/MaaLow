@@ -1,0 +1,36 @@
+{
+    "desc": "cixin: minimap reference (the big map, scaled), made by scripts/minimap_locate.py export",
+    "levels": [
+        {
+            "zoom": "out",
+            "image": "locate/cixin_bigmap_out.png",
+            "k": 2.3,
+            "origin": [
+                138.48,
+                114.83
+            ],
+            "off": [
+                -2.8,
+                4.0
+            ]
+        },
+        {
+            "zoom": "in",
+            "image": "locate/cixin_bigmap_in.png",
+            "k": 1.15,
+            "origin": [
+                276.96,
+                227.65
+            ],
+            "off": [
+                -2.4,
+                1.3
+            ]
+        }
+    ],
+    "prep": {
+        "kind": "canny",
+        "pre": 1.0,
+        "sigma": 3.0
+    }
+}

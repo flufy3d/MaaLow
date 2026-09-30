@@ -273,6 +273,7 @@ internal class SkillRun(
                 timed(a) { Maa.contextRecognize(context(), node, override.toString(), image(a)) }
             }
             "reco" -> timed(a) { Maa.contextRecognizeDirect(context(), a.str("type"), (a["param"] ?: JsonObject(emptyMap())).toString(), image(a)) }
+            "locate" -> skills.locator.locate(workspace, a, image(a))
             "click" -> done(Maa.controllerClick(device(), i("x"), i("y")), "click")
             "long_press" -> {
                 val c = device()

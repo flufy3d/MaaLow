@@ -8,10 +8,12 @@
 //              it (the arrow hides it): no guessing, a wrong position sends a route off in a wrong direction;
 //              also the camera heading (compass degrees, from the minimap before opening the map)
 //   {where: true}  just report that
+//   {locate: ["locate/cixin_mosaic", "locate/cixin_bigmap"], n: 5}  compare locate() (minimap in a reference image,
+//                  no big map) with where(): each reference n times, with the time each look took
 import { cameraHeading, enemies, onZone, zone } from "./lib/minimap.js";
 
 /** @type {SkillMeta} */
-export const meta = { description: "stronghold checks on the minimap", timeout: 10_000 };
+export const meta = { description: "stronghold checks on the minimap", timeout: 60_000 };
 
 /** @type {Point} */
 const MINIMAP = [144, 70];
@@ -47,8 +49,31 @@ export function recognize(args, ctx) {
     return { box: z.box };
 }
 
+/** locate() with each reference `n` times against one where(): the readings, their spread and time. */
+function compare(refs, n) {
+    const out = { where: where(), refs: {} };
+    sleep(1500); // the minimap stays zoomed out a moment after the big map closes
+    for (const ref of refs) {
+        const reads = [];
+        for (let i = 0; i < n; i++) {
+            const image = screenshot();
+            const cam = cameraHeading(image);
+            const t0 = Date.now();
+            const r = locate(ref, { image, cam, prior: out.where ? [out.where.x, out.where.y] : undefined, radius: 30 });
+            reads.push(r ? { x: r.x, y: r.y, score: r.score, second: r.second, zoom: r.zoom, ms: r.ms, call: Date.now() - t0 } : null);
+        }
+        out.refs[ref] = reads;
+    }
+    return out;
+}
+
 /** Report what the minimap shows: the patch and the enemies on / off it; {where: true}: the position. */
 export default function (args = {}) {
+    if (args.locate) {
+        const out = compare(args.locate, args.n ?? 5);
+        log(JSON.stringify(out));
+        return out;
+    }
     if (args.where) {
         const out = where();
         log(JSON.stringify(out));

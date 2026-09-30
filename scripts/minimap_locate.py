@@ -9,6 +9,7 @@ px (fully zoomed in) from the stronghold icon, x east / y south, as stronghold.j
     uv run --extra cv python scripts/minimap_locate.py track data/wwm      # frame positions from the anchors
     uv run --extra cv python scripts/minimap_locate.py stitch data/wwm --runs s1      # source 2 reference
     uv run --extra cv python scripts/minimap_locate.py eval data/wwm       # errors per image, source and preprocessing
+    uv run --extra cv python scripts/minimap_locate.py export data/wwm --runs s1,s2   # the app's references
 
 Data layout (data/wwm): survey1/ (grab_frames.py output: <seq>.jpg, frames.jsonl), anchors.json ([{run, n, seq,
 x, y, cam}], from route.js `anchors`; their screenshots in the workspace's teaching/survey/<run>/), bigmap/*.png +
@@ -328,11 +329,72 @@ def bigmap_ref(root: Path, zoom: str) -> Ref:
     return Ref(img, v, (org[0] / k, org[1] / k), k, f"bigmap-{zoom}", OFFSETS[zoom])
 
 
+# ---- the app's version (android/app/src/main/cpp/locate_core.cpp), built for the PC:
+#   g++ -O2 -shared -static -std=c++20 -o data/build/locate.dll android/app/src/main/cpp/locate_core.cpp
+
+import ctypes
+
+
+class _LocPrep(ctypes.Structure):
+    _fields_ = [("kind", ctypes.c_int), ("pre", ctypes.c_float), ("sigma", ctypes.c_float), ("r_use", ctypes.c_int),
+                ("r_arrow", ctypes.c_int), ("fan_r", ctypes.c_int), ("fan_half", ctypes.c_float),
+                ("sat_max", ctypes.c_int), ("zone", ctypes.c_int), ("zone_gain", ctypes.c_float)]
+
+
+KINDS = {"raw": 0, "hp": 1, "dog": 2, "grad": 3, "canny": 4}
+ZONE_MODES = {"flat": 0, "mask": 1, "none": 2}
+
+
+def loc_prep(p: Prep) -> _LocPrep:
+    return _LocPrep(KINDS[p.kind], p.pre, p.sigma, p.r_use, p.r_arrow, p.fan_r, p.fan_half, p.sat_max,
+                    ZONE_MODES[p.zone], p.zone_gain)
+
+
+class Native:
+    def __init__(self, path: Path):
+        self.lib = ctypes.CDLL(str(path))
+        L = self.lib
+        L.loc_ref_create.restype = ctypes.c_void_p
+        L.loc_ref_create.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.POINTER(_LocPrep)]
+        L.loc_ref_destroy.argtypes = [ctypes.c_void_p]
+        L.loc_run.restype = ctypes.c_int
+        L.loc_run.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_float, ctypes.c_float,
+                              ctypes.c_float, ctypes.c_float, ctypes.POINTER(_LocPrep), ctypes.POINTER(ctypes.c_float * 5)]
+        self._refs: dict = {}
+
+    def ref(self, ref: Ref, p: Prep):
+        key = (id(ref), p.name())
+        if key not in self._refs:
+            img = np.ascontiguousarray(ref.img)
+            valid = np.ascontiguousarray(ref.valid.astype(np.uint8))
+            lp = loc_prep(p)
+            self._refs[key] = (self.lib.loc_ref_create(img.tobytes(), img.shape[1] * 3, valid.tobytes(), img.shape[1], img.shape[0], ctypes.byref(lp)), img, valid)
+        return self._refs[key][0]
+
+    def locate(self, d, ref: Ref, p: Prep, prior=None, radius=40, cam=None):
+        h = self.ref(ref, p)
+        d = np.ascontiguousarray(d)
+        out = (ctypes.c_float * 5)()
+        pu, pv = ref.to_px(*prior) if prior is not None else (0.0, 0.0)
+        rr = radius / ref.k if prior is not None else -1.0
+        lp = loc_prep(p)
+        if not self.lib.loc_run(h, d.tobytes(), 110 * 3, float("nan") if cam is None else cam, pu, pv, rr, ctypes.byref(lp), ctypes.byref(out)):
+            return None
+        x, y = ref.to_rel(out[0], out[1])
+        return {"x": x, "y": y, "score": out[2], "second": out[3], "cam": cam, "used": int(out[4])}
+
+
+NATIVE: Native | None = None  # set by --native: locate() goes through the app's code
+
+
 def best_of(d, refs: list[Ref], p: Prep, prior=None, radius=40, cam=None):
     """locate() in each reference (one per zoom), the best scoring one; with its ref."""
     out = None
     for ref in refs:
-        r = locate(d, ref, p, prior, radius, cam=cam, cam_known=True)
+        if NATIVE:
+            r = NATIVE.locate(d, ref, p, prior, radius, cam)
+        else:
+            r = locate(d, ref, p, prior, radius, cam=cam, cam_known=True)
         if r and (out is None or r["score"] > out[0]["score"]):
             out = (r, ref)
     return out
@@ -599,8 +661,9 @@ def eval_items(root: Path, holdout=("s2",), every: int = 2):
         d = disc(imread(WS / "teaching" / "survey" / a["run"] / f"{a['n']:03d}.png")).copy()
         split = "test" if a["run"][:2] in holdout else "train"
         items.append((f"anchor {a['run']}/{a['n']}", d, (a["x"], a["y"]), "in" if inside(a["x"], a["y"]) else "out", split))
+    known = root / "explore_backup"  # a copy: the app's explore draft reuses those file names once cleared
     for f, xy in KNOWN.items():
-        d = disc(imread(WS / "teaching" / "explore" / f"{f}.png")).copy()
+        d = disc(imread((known if known.is_dir() else WS / "teaching" / "explore") / f"{f}.png")).copy()
         cat = ("in-zone" if zone_region(d).any() else "in") if inside(*xy) else ("out-zone" if zone_region(d).any() else "out")
         items.append((f"known {f}", d, xy, cat, "test"))
     z = np.load(root / "frames.npz")
@@ -664,18 +727,65 @@ def print_summary(lines, by=("source", "prep", "search", "cat")):
         print(" | ".join(map(str, key)) + f" | {n} | {ok:.0%} | {med:.1f} | {p90:.1f} | {sc:.2f} | {mg:.2f}")
 
 
+# What each source is matched with in the app (the best of eval: margin over the second peak, share within 6 px)
+APP_PREPS = {"mosaic": "dog1-4", "bigmap": "canny"}
+
+
+def export(root: Path, name: str, runs, crop=(-320, -260, 640, 580)) -> None:
+    """Write the app's references to the workspace: templates/locate/<name>_<source>.json with a PNG per zoom (alpha:
+    where the reference is known). The json has what skills/locate() needs: per zoom level the image, k (big map px
+    per px), origin (px of the stronghold icon), off (added to the result: where() frame), and the preprocessing."""
+    out_dir = TEMPLATES / "locate"
+    mosaic_dir = f"mosaic_{'_'.join(runs)}"
+    for zoom in ZOOMS:
+        save_mosaic(root, zoom, runs, ZOOMS[zoom], mosaic_dir)
+    for source in ("mosaic", "bigmap"):
+        levels = []
+        for zoom in ZOOMS:
+            if source == "mosaic":
+                ref = mosaic_ref(root, zoom, mosaic_dir)
+            else:
+                ref = bigmap_ref(root, zoom)
+                # only around the stronghold (the whole composite is large at the courtyard's zoom)
+                x, y, w, h = crop
+                u0, v0 = int(ref.to_px(x, y)[0]), int(ref.to_px(x, y)[1])
+                u1, v1 = int(ref.to_px(x + w, y + h)[0]), int(ref.to_px(x + w, y + h)[1])
+                u0, v0 = max(u0, 0), max(v0, 0)
+                ref = Ref(ref.img[v0:v1, u0:u1], ref.valid[v0:v1, u0:u1], (ref.origin[0] - u0, ref.origin[1] - v0), ref.k, ref.name, ref.off)
+            png = f"locate/{name}_{source}_{zoom}.png"
+            bgra = cv2.cvtColor(ref.img, cv2.COLOR_BGR2BGRA)
+            bgra[:, :, 3] = np.where(ref.valid, 255, 0)
+            imwrite(TEMPLATES / png, bgra)
+            levels.append({"zoom": zoom, "image": png, "k": ref.k, "origin": [round(float(v), 2) for v in ref.origin],
+                           "off": [round(float(v), 2) for v in ref.off]})
+        p = PREPS[APP_PREPS[source]]
+        meta = {
+            "desc": f"{name}: minimap reference ({'stitched from survey runs ' + ', '.join(runs) if source == 'mosaic' else 'the big map, scaled'}), "
+                    "made by scripts/minimap_locate.py export",
+            "levels": levels,
+            "prep": {"kind": p.kind, "pre": p.pre, "sigma": p.sigma},
+        }
+        json.dump(meta, open(out_dir / f"{name}_{source}.json", "w", encoding="utf-8"), ensure_ascii=False, indent=4)
+        print("wrote", out_dir / f"{name}_{source}.json")
+
+
 TRACK_PREP = Prep(kind="dog", pre=1.5, sigma=5)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["cache", "bigmap", "track", "stitch", "eval"])
+    ap.add_argument("cmd", choices=["cache", "bigmap", "track", "stitch", "eval", "export"])
     ap.add_argument("root", type=Path)
     ap.add_argument("--runs", default="s1", help="stitch: the survey runs that make the mosaic (the rest test it)")
     ap.add_argument("--preps", default="", help="eval: preprocessings to try (PREPS keys), default all")
     ap.add_argument("--every", type=int, default=2, help="eval: every n-th tracked frame")
     ap.add_argument("--near-only", action="store_true", help="eval: skip the whole-reference search")
+    ap.add_argument("--name", default="cixin", help="export: the references' name (templates/locate/<name>_*)")
+    ap.add_argument("--native", type=Path, help="eval: locate with the app's code built for the PC (locate.dll)")
     a = ap.parse_args()
+    if a.native:
+        global NATIVE
+        NATIVE = Native(a.native)
     if a.cmd == "cache":
         cache_frames(a.root)
     elif a.cmd == "bigmap":
@@ -685,11 +795,14 @@ def main() -> None:
     elif a.cmd == "stitch":
         for zoom in ZOOMS:
             save_mosaic(a.root, zoom, a.runs.split(","), ZOOMS[zoom])
+    elif a.cmd == "export":
+        export(a.root, a.name, a.runs.split(","))
     elif a.cmd == "eval":
         sources = {"bigmap": [bigmap_ref(a.root, z) for z in ZOOMS], "mosaic": [mosaic_ref(a.root, z) for z in ZOOMS]}
         preps = {k: PREPS[k] for k in a.preps.split(",")} if a.preps else PREPS
         items = eval_items(a.root, every=a.every)
-        rows = evaluate(a.root, sources, preps, items, out_path=a.root / "eval.jsonl", full=not a.near_only)
+        rows = evaluate(a.root, sources, preps, items, full=not a.near_only,
+                        out_path=a.root / ("eval_native.jsonl" if a.native else "eval.jsonl"))
         print_summary(summary([r for r in rows if r["split"] == "test" or r["source"] == "bigmap"]))
 
 

@@ -46,6 +46,7 @@ class Skills(private val app: App) : Maa.Custom {
     internal val timer: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { Thread(it, "maalow-skill-timer").apply { isDaemon = true } }
     internal val memoryLock = Any()
+    internal val locator = Locator(app)
     private val active = CopyOnWriteArraySet<SkillRun>()
 
     /** Options of the standalone run in progress, picked up by the custom action of its one-node task. */

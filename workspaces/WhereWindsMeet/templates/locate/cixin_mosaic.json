@@ -1,0 +1,36 @@
+{
+    "desc": "cixin: minimap reference (stitched from survey runs s1, s2), made by scripts/minimap_locate.py export",
+    "levels": [
+        {
+            "zoom": "out",
+            "image": "locate/cixin_mosaic_out.png",
+            "k": 2.3,
+            "origin": [
+                105.61,
+                49.68
+            ],
+            "off": [
+                0.0,
+                0.0
+            ]
+        },
+        {
+            "zoom": "in",
+            "image": "locate/cixin_mosaic_in.png",
+            "k": 1.15,
+            "origin": [
+                89.26,
+                84.66
+            ],
+            "off": [
+                0.0,
+                0.0
+            ]
+        }
+    ],
+    "prep": {
+        "kind": "dog",
+        "pre": 1,
+        "sigma": 4
+    }
+}

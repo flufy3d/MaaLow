@@ -105,6 +105,41 @@ interface DetectOptions extends RecoOptions {
     threshold?: number | number[];
 }
 
+interface LocateOptions {
+    /** Screenshot to read the minimap from; default: the latest screenshot (one is taken if there is none). */
+    image?: Image;
+    /** Where the character should be, in the reference's units (e.g. big map px from a stronghold icon): only
+     * within `radius` of it is searched. Without it, the whole reference. */
+    prior?: Point;
+    /** Default 30. */
+    radius?: number;
+    /** Camera heading (compass degrees) to leave the minimap's fan out; without it, all it could cover is left out. */
+    cam?: number | null;
+    /** Only this zoom level of the reference. */
+    zoom?: string;
+    /** The minimap's center on screen, default [144, 70]. */
+    center?: Point;
+    /** Preprocessing, over the reference's: kind (raw | hp | dog | grad | canny), pre, sigma, r_use, r_arrow, fan_r,
+     * fan_half, sat_max, zone (flat | mask | none), zone_gain. */
+    prep?: Record<string, number | string>;
+}
+
+interface Located {
+    x: number;
+    y: number;
+    /** Normalized correlation of the match (-1..1). */
+    score: number;
+    /** Best score elsewhere (more than 4 px off): a match well above it is unambiguous. */
+    second: number;
+    /** The zoom level that matched best. */
+    zoom: string;
+    /** Minimap pixels compared. */
+    used: number;
+    ms: number;
+    /** Score per zoom level tried. */
+    levels: Record<string, number>;
+}
+
 interface WaitOptions extends NodeOptions {
     /** Give up after this many ms (default 10000); waitFor returns null then. */
     timeout?: number;
@@ -155,6 +190,12 @@ declare function color(opts: ColorOptions): Hit;
 declare function ocr(opts?: OcrOptions): Hit;
 /** Neural network detection (NeuralNetworkDetect), e.g. a YOLO model. */
 declare function detect(opts: DetectOptions): Hit;
+/**
+ * Where the character is, from the minimap matched inside a reference image drawn at its scale:
+ * templates/<ref>.json (zoom levels, each an image with its position scale and origin; made by
+ * scripts/minimap_locate.py export). Every zoom level is tried, the best one wins; null if none could be matched.
+ */
+declare function locate(ref: string, opts?: LocateOptions): Located | null;
 /** Any Maa recognition type with its pipeline parameters, e.g. reco("FeatureMatch", { template: "a.png" }). */
 declare function reco(type: string, param?: Record<string, any>, opts?: RecoOptions): Hit;
 /**

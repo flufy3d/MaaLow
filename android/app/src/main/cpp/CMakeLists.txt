@@ -15,12 +15,12 @@ add_link_options(-Wl,--exclude-libs,ALL)
 add_library(maalow_bridge SHARED bridge.cpp)
 target_link_libraries(maalow_bridge android mediandk jnigraphics log)
 
-# JNI wrapper over the MaaFramework C API.
+# JNI wrapper over the MaaFramework C API, and skills' minimap locate() (locate_core.cpp, no Maa inside).
 add_library(MaaFramework SHARED IMPORTED)
 set_target_properties(MaaFramework PROPERTIES IMPORTED_LOCATION ${MAAFW_DIR}/jniLibs/arm64-v8a/libMaaFramework.so)
 add_library(MaaUtils SHARED IMPORTED)
 set_target_properties(MaaUtils PROPERTIES IMPORTED_LOCATION ${MAAFW_DIR}/jniLibs/arm64-v8a/libMaaUtils.so)
-add_library(maalow_jni SHARED maa_jni.cpp)
+add_library(maalow_jni SHARED maa_jni.cpp locate_jni.cpp locate_core.cpp)
 target_include_directories(maalow_jni PRIVATE ${MAAFW_DIR}/include)
 target_link_libraries(maalow_jni MaaFramework -Wl,--no-as-needed MaaUtils -Wl,--as-needed log)
 

@@ -209,6 +209,7 @@ export default function (args, ctx) {
 * 运行：`maalow do skill <name> --args '{...}'`、定时任务的 `"skill"` 字段，或 Pipeline 节点 `"action": "Custom", "custom_action": "<name>"`（识别用 `"custom_recognition": "<name>.recognize"`）
 * 改完 `maalow sync` 即生效，不用重装 App；报错带文件名和行号
 * 检查：`npx -p typescript tsc -p workspaces/<ws>/skills`
+* 小地图定位 `locate(ref, {prior, radius, cam})`：把小地图圆盘放进一张同比例的参考图里找（带掩膜的归一化互相关，App 原生实现，每次约 10 ms），不用开大地图。参考图是 `templates/<ref>.json` 加每档缩放一张 PNG，由 `scripts/minimap_locate.py export` 生成：可以是大地图截图缩小拼成的，也可以是沿路线抓的小地图帧拼成的（`scripts/grab_frames.py` 抓帧、`minimap_locate.py track/stitch` 拼图、`eval` 离线评测，要 `uv sync --extra cv`）
 
 ## 目标
 
