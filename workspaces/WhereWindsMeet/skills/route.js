@@ -5,6 +5,10 @@
 // Without one, or when the snapshot never showed, the big map is opened to see where the character is and the way to
 // the point is run as a compass bearing for about the time the distance takes, then looked at again.
 // A fight on the way (the top right icons hidden) is fought with combat first, then the walk goes on.
+// Points with `do`: "flower" taps 销毁 in the interaction list on the right (templates/interact_destroy.png) and waits
+// out its bar (~2–6 s); "fight" seeks the enemy around (an elite that stays put) and fights it; "chest" (shows once
+// everything is done) taps 据点宝箱, 确认领取 with the panel's defaults (领取三份, 扫荡 9, teacher's choice, message 227)
+// and 继续 through the 攻占 result pages.
 //   {points: [{at: [-108, 115], snap: "route/cixin/00.png"}, ...], from: 1, to: 4}
 import { calm } from "./lib/hud.js";
 import { angleDiff, cameraHeading } from "./lib/minimap.js";
@@ -45,6 +49,59 @@ function faceTo(want) {
     return cam;
 }
 
+/** @type {Box} */
+const LIST_ROI = [690, 360, 130, 220]; // the interaction list on the right (auto_pickup.js)
+
+/** Tap 销毁 and wait until it is gone; if it is not offered, step toward where the camera looks and look again. */
+function destroy() {
+    for (let step = 0; step < 3; step++) {
+        const hit = waitFor(() => {
+            const h = match("interact_destroy.png", { image: screenshot(), roi: LIST_ROI, threshold: 0.8 });
+            return h.hit ? h : null;
+        }, { timeout: 2000, interval: 200 });
+        if (hit) {
+            const [x, y, w, h] = /** @type {Box} */ (hit.box);
+            click([x + w / 2 + 25, y + h / 2]); // on the row, right of the word
+            const gone = waitFor(() => !match("interact_destroy.png", { image: screenshot(), roi: LIST_ROI, threshold: 0.8 }).hit, { timeout: 8000, interval: 300 });
+            return gone ? "destroyed" : "still offered";
+        }
+        runSkill("move", { rel: 0, ms: 500, pickup: false });
+    }
+    return "not offered";
+}
+
+/** Tap a template in `roi` once it shows (within `ms`); the tap goes `dx` right of its middle. */
+function tapWhen(template, roi, ms, dx = 0) {
+    const hit = waitFor(() => {
+        const h = match(template, { image: screenshot(), roi, threshold: 0.8 });
+        return h.hit ? h : null;
+    }, { timeout: ms, interval: 200 });
+    if (!hit) return false;
+    const [x, y, w, h] = /** @type {Box} */ (hit.box);
+    click([x + w / 2 + dx, y + h / 2]);
+    return true;
+}
+
+/** Open the stronghold chest and take the reward. */
+function openChest() {
+    if (!tapWhen("interact_chest.png", LIST_ROI, 3000, 10)) return "chest not offered";
+    if (!tapWhen("reward_confirm.png", [800, 640, 280, 80], 5000)) return "no reward panel";
+    let pages = 0;
+    while (pages < 6 && tapWhen("result_continue.png", [900, 640, 180, 80], pages ? 3000 : 8000)) {
+        pages++;
+        sleep(1000);
+    }
+    return `taken (${pages} result pages)`;
+}
+
+/** An enemy waiting there: chase the nearest red mark until locked, then fight. */
+function seekFight() {
+    const r = runSkill("move", { enemy: true, sprint: true, ms: 20000 });
+    if (!r.found && calm(screenshot())) return `no enemy (${r.why})`;
+    runSkill("combat", { hp: 0.5, within: 20 });
+    return "fought";
+}
+
 const bearingTo = (from, to) => (Math.atan2(to[0] - from[0], -(to[1] - from[1])) * 180 / Math.PI + 360) % 360;
 
 /** @param {{points: {at: Point, name?: string, snap?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number}} args */
@@ -62,7 +119,7 @@ export default function (args) {
     const look = () => {
         maps++;
         const p = where();
-        if (!p) throw new Error("big map: stronghold icon not found");
+        if (!p) throw new Error("big map: stronghold icon not found (or standing on it)");
         known = true;
         return p;
     };
@@ -70,6 +127,7 @@ export default function (args) {
         const p = args.points[i];
         let tries = 0;
         let snapOk = !!p.snap;
+        let away = 0; // big map legs in a row that ended farther from the point
         for (;;) {
             if (++tries > LEGS) throw new Error(`point ${i} (${p.name ?? ""}): not reached after ${LEGS} tries`);
             if (snapOk) {
@@ -105,11 +163,17 @@ export default function (args) {
             }
             const was = pos;
             pos = look();
+            // farther than before twice: the way is blocked or the position is wrong; stop rather than wander off
+            const now = Math.hypot(p.at[0] - pos.x, p.at[1] - pos.y);
+            away = now > dist + 3 ? away + 1 : 0;
+            if (away >= 2) throw new Error(`point ${i} (${p.name ?? ""}): getting farther (${Math.round(dist)} → ${Math.round(now)} px), stopped`);
             legs.push({ i, bearing: Math.round(bearing), dist: Math.round(dist), ms, moved: Math.round(Math.hypot(pos.x - was.x, pos.y - was.y)), stuck: r.stuck.length });
         }
         // the last point, or one with something to do: look the way the teacher looked there
         const cam = p.cam != null && (i === (args.to ?? args.points.length - 1) || p.do) ? faceTo(p.cam) : null;
-        log(`point ${i} (${p.name ?? ""}) reached at ${Math.round(pos.x)},${Math.round(pos.y)}${cam != null ? `, camera ${Math.round(cam)}° (wants ${p.cam}°)` : ""}`);
+        const done = p.do === "flower" ? destroy() : p.do === "fight" ? seekFight() : p.do === "chest" ? openChest() : null;
+        log(`point ${i} (${p.name ?? ""}) reached at ${Math.round(pos.x)},${Math.round(pos.y)}${cam != null ? `, camera ${Math.round(cam)}° (wants ${p.cam}°)` : ""}${done ? `: ${done}` : ""}`);
+        if (done) legs.push({ i, do: p.do, done });
     }
     const out = { at: [Math.round(pos.x), Math.round(pos.y)], cam: pos.cam ?? null, maps, legs };
     log(JSON.stringify(out));

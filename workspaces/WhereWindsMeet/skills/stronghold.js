@@ -3,7 +3,9 @@
 //              no red mark on it (StrongholdCleared)
 //   where():   where the character stands, in big map px (fully zoomed in) from the stronghold icon, x east / y south:
 //              tapping the minimap opens the big map centered on the character (the arrow at PLAYER); the icon is
-//              template matched (templates/map_stronghold.png, ~0.97; hidden under the arrow when standing on it);
+//              template matched (templates/map_stronghold.png ~0.97; map_stronghold_done.png, the gray icon with an
+//              hourglass once taken, ~0.99 / ~0.91 on the live one); null when not found, which includes standing on
+//              it (the arrow hides it): no guessing, a wrong position sends a route off in a wrong direction;
 //              also the camera heading (compass degrees, from the minimap before opening the map)
 //   {where: true}  just report that
 import { cameraHeading, enemies, onZone, zone } from "./lib/minimap.js";
@@ -18,21 +20,20 @@ const PLAYER = [537, 362]; // the arrow on the big map opened from the minimap (
 /** @type {Point} */
 const MAP_BACK = [1025, 37]; // the big map's back button
 const MAP_ROI = /** @type {Box} */ ([0, 60, 1080, 660]);
+const ICONS = ["map_stronghold.png", "map_stronghold_done.png"];
 
-/** Open the big map, read the character's position from the stronghold icon, close it. null: icon not in sight. */
+/** Open the big map, read the character's position from the stronghold icon, close it. null: icon not found. */
 export function where() {
     const c = cameraHeading(screenshot());
     const cam = c == null ? null : Math.round(c);
     click(MINIMAP);
     const hit = waitFor(() => {
-        const h = match("map_stronghold.png", { image: screenshot(), roi: MAP_ROI, threshold: 0.85 });
+        const h = match(ICONS, { image: screenshot(), roi: MAP_ROI, threshold: 0.85 });
         return h.hit ? h : null;
     }, { timeout: 5000, interval: 300 }); // the icons show ~2.5 s after the map
-    // under the arrow: standing on the icon (the map opened, the back button shows)
-    const opened = hit || match("map_stronghold.png", { roi: MAP_ROI, threshold: 0.5 }).hit;
     click(MAP_BACK);
     sleep(800);
-    if (!hit) return opened ? { x: 0, y: 0, cam, hidden: true } : null;
+    if (!hit) return null;
     const [x, y, w, h] = /** @type {Box} */ (hit.box);
     return { x: PLAYER[0] - (x + w / 2), y: PLAYER[1] - (y + h / 2), cam };
 }

@@ -34,7 +34,7 @@
         "custom_recognition": "stronghold.recognize"
     },
     "CixinRoute": {
-        "desc": "慈心山院：从传送石碑沿录好的路线走到大门口（路点坐标是大地图放到最大时相对据点图标的像素，snap 是那个点的小地图快照，templates/route/cixin/）。技能 skills/route.js，教学 explore 消息 92–132",
+        "desc": "慈心山院：从传送石碑沿录好的路线走（路点坐标是大地图放到最大时相对据点图标的像素，snap 是那个点的小地图快照，templates/route/cixin/），途中销毁 4 朵曼陀罗毒花、打精英怪，最后开据点宝箱领奖（领取三份、扫荡 9）。「去宝箱途中」「据点宝箱」站在据点图标上，坐标按原点记，靠快照定位。技能 skills/route.js，教学 explore 消息 92–227",
         "recognition": "DirectHit",
         "action": "Custom",
         "custom_action": "route",
@@ -75,6 +75,120 @@
                     "cam": 45,
                     "snap": "route/cixin/04.png",
                     "name": "大门口"
+                },
+                {
+                    "at": [
+                        -30,
+                        40
+                    ],
+                    "cam": 45,
+                    "snap": "route/cixin/05.png",
+                    "name": "进大门后第一个点"
+                },
+                {
+                    "at": [
+                        -32,
+                        20
+                    ],
+                    "cam": 342,
+                    "snap": "route/cixin/06.png",
+                    "name": "第一个毒花附近"
+                },
+                {
+                    "at": [
+                        -36,
+                        16
+                    ],
+                    "cam": 255,
+                    "snap": "route/cixin/07.png",
+                    "name": "第一个毒花",
+                    "do": "flower"
+                },
+                {
+                    "at": [
+                        -6,
+                        -20
+                    ],
+                    "cam": 75,
+                    "snap": "route/cixin/08.png",
+                    "name": "第二个毒花附近"
+                },
+                {
+                    "at": [
+                        2,
+                        -24
+                    ],
+                    "cam": 75,
+                    "snap": "route/cixin/09.png",
+                    "name": "第二个毒花",
+                    "do": "flower"
+                },
+                {
+                    "at": [
+                        36,
+                        -28
+                    ],
+                    "cam": 40,
+                    "snap": "route/cixin/10.png",
+                    "name": "精英怪位置",
+                    "do": "fight"
+                },
+                {
+                    "at": [
+                        50,
+                        -4
+                    ],
+                    "cam": 118,
+                    "snap": "route/cixin/11.png",
+                    "name": "第三个毒花附近"
+                },
+                {
+                    "at": [
+                        58,
+                        -2
+                    ],
+                    "cam": 100,
+                    "snap": "route/cixin/12.png",
+                    "name": "第三个毒花",
+                    "do": "flower"
+                },
+                {
+                    "at": [
+                        -4,
+                        42
+                    ],
+                    "cam": 213,
+                    "snap": "route/cixin/13.png",
+                    "name": "第四个毒花附近"
+                },
+                {
+                    "at": [
+                        -8,
+                        50
+                    ],
+                    "cam": 180,
+                    "snap": "route/cixin/14.png",
+                    "name": "第四个毒花",
+                    "do": "flower"
+                },
+                {
+                    "at": [
+                        0,
+                        0
+                    ],
+                    "cam": 48,
+                    "snap": "route/cixin/15.png",
+                    "name": "去宝箱途中"
+                },
+                {
+                    "at": [
+                        0,
+                        0
+                    ],
+                    "cam": 42,
+                    "snap": "route/cixin/16.png",
+                    "name": "据点宝箱",
+                    "do": "chest"
                 }
             ]
         }
