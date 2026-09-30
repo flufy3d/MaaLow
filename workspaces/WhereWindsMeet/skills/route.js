@@ -22,7 +22,8 @@ const SPEED = 8; // big map px per second sprinting (measured: 23 px in 2.9 s, 3
 const SHORT = 0.8; // big map legs: run this share of the distance, then look again
 const LEG_MS = [700, 5000];
 const LEGS = 8; // tries per point before giving up on it
-const SNAP_SLACK = 1.8; // snap legs: give up on the snapshot after this many times the expected time
+const SNAP_SLACK = 1.8; // snap legs: longest run, times the expected time (tracking a seen snapshot)
+const LOST = 1.1; // snap legs: the snapshot not seen by this many times the expected time: stop and look on the map
 const MINI = 2.3; // big map px per minimap px
 const DEG_PX = 0.6; // camera turn per px dragged (move.js)
 const CAM_OK = 8; // at a point: turn the camera to its recorded heading until this close
@@ -134,7 +135,8 @@ export default function (args) {
                 const dist = Math.hypot(p.at[0] - pos.x, p.at[1] - pos.y);
                 const ms = Math.round(Math.max(3000, (SNAP_SLACK * dist * 1000) / speed));
                 const expect = [(p.at[0] - pos.x) / MINI, (p.at[1] - pos.y) / MINI]; // where the snapshot should show
-                const r = runSkill("move", { face: true, snap: p.snap, expect, bearing: bearingTo([pos.x, pos.y], p.at), sprint: true, reachPx: 2, ms, pickup: false });
+                const lostMs = Math.round(Math.max(1500, (LOST * dist * 1000) / speed));
+                const r = runSkill("move", { face: true, snap: p.snap, expect, lostMs, bearing: bearingTo([pos.x, pos.y], p.at), sprint: true, reachPx: 2, ms, pickup: false });
                 legs.push({ i, snap: true, why: r.why, seen: r.seen, ms: r.ms, stuck: r.stuck.length });
                 if (r.why === "arrived") {
                     pos = { x: p.at[0], y: p.at[1] };

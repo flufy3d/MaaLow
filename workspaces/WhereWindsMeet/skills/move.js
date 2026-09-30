@@ -15,7 +15,8 @@
 //   {snap: "route/x/03.png", bearing: 40}  run to where a minimap snapshot (templates/, taken at a route point:
 //                            44 px around the character, arrow and fan painted green) shows up in the minimap, turning
 //                            as it comes closer; done ("arrived") within `reachPx` (3) minimap px of it; before it shows,
-//                            run `bearing`. A fight starting on the way (the top right icons hide) ends it ("fight")
+//                            run `bearing`, but only for `lostMs` ("lost"). A fight starting on the way (the top right
+//                            icons hide) ends it ("fight")
 //   face: true               keep the camera looking where it runs (within 20°), as when chasing an enemy
 //   sprint: true             hold dodge until its icon turns gold (sprinting), then let go; again if it drops;
 //                            given up after two presses that did not start one (dungeons may not allow it)
@@ -151,7 +152,7 @@ function locked(image) {
 }
 
 /**
- * @param {{face?: boolean, bearing?: number, rel?: number, enemy?: boolean, zone?: boolean, zoneAt?: number, snap?: string, reachPx?: number, snapMin?: number, expect?: Point, near?: number, lockAt?: number, capture?: boolean, ms?: number, sprint?: boolean,
+ * @param {{face?: boolean, bearing?: number, rel?: number, enemy?: boolean, zone?: boolean, zoneAt?: number, snap?: string, reachPx?: number, snapMin?: number, expect?: Point, lostMs?: number, near?: number, lockAt?: number, capture?: boolean, ms?: number, sprint?: boolean,
  *          pickup?: boolean, turn?: number, step?: number}} args
  * @param {SkillContext} [ctx]
  */
@@ -217,6 +218,10 @@ export default function (args, ctx) {
                                 break;
                             }
                         } else hudMiss = 0;
+                    }
+                    if (!snapSeen && args.lostMs && now - t0 > args.lostMs) {
+                        why = "lost"; // not in sight by when it should have been close: stop before running past it
+                        break;
                     }
                     const h = match(args.snap, { image, roi: SNAP_ROI, threshold: args.snapMin ?? SNAP_MIN, green_mask: true });
                     // a weak score alone is not enough (~0.6–0.75 a few steps off, ~0.5 elsewhere): it has to be near
