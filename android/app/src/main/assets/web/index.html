@@ -101,21 +101,25 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
       <div class="bslot for-replay">
         <div id="rp-scrubwrap"><canvas id="rp-scrub"></canvas></div>
         <div class="brow" id="rp-transport">
-          <button class="btn icon" id="rp-prevlab" title="上一个已标注帧（[）"><i data-i="first"></i></button>
-          <button class="btn" id="rp-back10" title="后退 10 帧（Shift+←）">−10</button>
-          <button class="btn icon" id="rp-prev" title="上一帧（←，按住连走）"><i data-i="prev"></i></button>
-          <button class="btn primary icon" id="rp-play" title="播放 / 暂停（空格）"></button>
-          <button class="btn icon" id="rp-next" title="下一帧（→，按住连走）"><i data-i="next"></i></button>
-          <button class="btn" id="rp-fwd10" title="前进 10 帧（Shift+→）">+10</button>
-          <button class="btn icon" id="rp-nextlab" title="下一个已标注帧（]）"><i data-i="last"></i></button>
-          <span id="rp-pos">帧 <input id="rp-n" inputmode="numeric" title="输入帧号回车跳转（G）"> / <span id="rp-total">0</span></span>
-          <span id="rp-time" class="dim"></span>
-          <span class="sep"></span>
-          <button class="btn sm" id="rp-in" title="入点：发给 AI 时的起始帧（I）">入点</button>
-          <button class="btn sm" id="rp-out" title="出点：发给 AI 时的结束帧（O）">出点</button>
-          <span id="rp-range"><span class="t"></span><button class="btn icon sm ghost" id="rp-rangex" title="清除范围（Esc）"><i data-i="x" class="sm"></i></button></span>
-          <span class="grow"></span>
-          <button class="btn sm" id="rp-labbtn" title="已标注的帧"></button>
+          <div class="side">
+            <button class="btn sm" id="rp-in" title="入点：发给 AI 时的起始帧（I）">入点</button>
+            <button class="btn sm" id="rp-out" title="出点：发给 AI 时的结束帧（O）">出点</button>
+            <span id="rp-range"><span class="t"></span><button class="btn icon sm ghost" id="rp-rangex" title="清除范围（Esc）"><i data-i="x" class="sm"></i></button></span>
+          </div>
+          <div class="mid">
+            <button class="btn icon" id="rp-prevlab" title="上一个已标注帧（[）"><i data-i="first"></i></button>
+            <button class="btn" id="rp-back10" title="后退 10 帧（Shift+←）">−10</button>
+            <button class="btn icon" id="rp-prev" title="上一帧（←，按住连走）"><i data-i="prev"></i></button>
+            <button class="btn primary icon" id="rp-play" title="播放 / 暂停（空格）"></button>
+            <button class="btn icon" id="rp-next" title="下一帧（→，按住连走）"><i data-i="next"></i></button>
+            <button class="btn" id="rp-fwd10" title="前进 10 帧（Shift+→）">+10</button>
+            <button class="btn icon" id="rp-nextlab" title="下一个已标注帧（]）"><i data-i="last"></i></button>
+            <span id="rp-pos">帧 <input id="rp-n" inputmode="numeric" title="输入帧号回车跳转（G）"> / <span id="rp-total">0</span></span>
+            <span id="rp-time" class="dim"></span>
+          </div>
+          <div class="side end">
+            <button class="btn sm" id="rp-labbtn" title="已标注的帧"></button>
+          </div>
         </div>
         <div class="brow">
           <input id="rp-note" placeholder="帧说明（存进这一帧的标注）：看到了什么、为什么这样操作（N）">
