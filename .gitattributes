@@ -1,0 +1,2 @@
+workspaces/*/model/** -text
+workspaces/*/model/**/*.onnx filter=lfs diff=lfs merge=lfs -text
