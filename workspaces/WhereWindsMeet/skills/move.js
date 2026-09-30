@@ -172,6 +172,7 @@ const BRAKE_MS = 350; // how long the joystick is let go to end the sprint
 const GO_STUCK_MS = 2000; // not 1 px closer to the point this long: stuck
 const ASTRAY = 15; // this much farther from the point than the closest it got: astray
 const SETTLE_MS = 600; // at the end: coasting, then one more look
+const SETTLE_PX = 6; // ... taken if this close
 const FIGHT_PX = 25; // the top right icons hidden and a red mark this close (minimap px): a fight
 
 /** @param {Point} from @param {Point} to */
@@ -207,7 +208,7 @@ function goTo(args) {
     let cam = cameraHeading(screenshot());
     /** @type {Point | null} */
     let pos = args.from ? [args.from[0], args.from[1]] : null;
-    let wide = !pos; // search the whole reference / the widest radius on the next look
+    let wide = true; // the widest radius on the next look (the whole reference with no position yet)
     let lastFix = t0;
     let fixes = 0;
     let misses = 0;
@@ -261,7 +262,7 @@ function goTo(args) {
                 pos = [pos[0] + v * dt * Math.sin(t), pos[1] - v * dt * Math.cos(t)];
             }
             const radius = wide ? SEARCH[2] : Math.min(SEARCH[2], SEARCH[0] + (SEARCH[1] * (now - lastFix)) / 1000);
-            const r = fix(args.ref, image, cam, pos ? pos : null, radius);
+            const r = fix(args.ref, image, cam, pos, radius);
             wide = false;
             if (r) {
                 pos = [r.x, r.y];
@@ -369,7 +370,8 @@ function goTo(args) {
     if (why === "arrived" && pos) {
         sleep(SETTLE_MS);
         const r = fix(args.ref, screenshot(), cameraHeading(screenshot(), cam), pos, 12);
-        if (r) pos = [r.x, r.y];
+        // it only coasts a few px; farther is a wrong match (seen where the minimap is zooming in, by the gate)
+        if (r && distTo(pos, [r.x, r.y]) <= SETTLE_PX) pos = [r.x, r.y];
     }
     const out = { ms: Date.now() - t0, why, at: pos && [Math.round(pos[0] * 10) / 10, Math.round(pos[1] * 10) / 10], idx, fixes, misses, maxMissRun, stuck, trace };
     log(JSON.stringify(out));
