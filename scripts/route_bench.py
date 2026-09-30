@@ -2,6 +2,8 @@
 
     uv run python scripts/route_bench.py data/wwm/bench --refs locate/cixin_mosaic,locate/cixin_bigmap --rounds 5
 
+--refs: comma separated, one set of rounds each; a+b tries b where a cannot tell.
+
 Each round: the teleport node (CixinTeleport), then route.js through points 1..TO of CixinRoute with check: true
 (stops at every point and reads where() there: the arrival error) and nodo: true. A walk that ends stuck, astray or
 lost is counted against the point it was heading for, and the round starts over from the stone; a point that failed
@@ -53,7 +55,7 @@ def main() -> None:
                     walks.append({"error": "teleport failed"})
                     break
                 keep = [i for i in range(len(points)) if i == 0 or i not in skip]
-                args = {"points": [points[i] for i in keep], "from": 1, "to": len(keep) - 1, "locate": ref,
+                args = {"points": [points[i] for i in keep], "from": 1, "to": len(keep) - 1, "locate": ref.split("+"),
                         "check": True, "nodo": True}
                 w0 = time.time()
                 r = c.post("/skill/run", {"name": "route", "args": args, "timeout": 900_000}, timeout=960)

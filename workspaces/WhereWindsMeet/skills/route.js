@@ -10,7 +10,7 @@
 // everything is done) taps 据点宝箱, 确认领取 with the panel's defaults (领取三份, 扫荡 9, teacher's choice, message 227)
 // and 继续 through the 攻占 result pages.
 //   {points: [{at: [-108, 115], snap: "route/cixin/00.png"}, ...], from: 1, to: 4}
-//   locate: "locate/cixin_mosaic"  instead: no snapshots and no big map on the way; move's goto knows where the character
+//   locate: ["locate/cixin_mosaic", "locate/cixin_bigmap"]  instead (one reference or several, tried in turn): no snapshots and no big map on the way; move's goto knows where the character
 //                            is on every frame (locate() of the minimap in that reference, dead reckoning between) and
 //                            runs through the points, stopping only where something is done and at the end.
 //                            start: where it starts (default: the point before `from`); check: true stops at every
@@ -129,7 +129,7 @@ function act(p, last) {
 
 /**
  * Continuous mode (args.locate): legs of move's goto from stop to stop.
- * @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, locate: string, start?: Point, check?: boolean, nodo?: boolean}} args
+ * @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, locate: string | string[], start?: Point, check?: boolean, nodo?: boolean}} args
  */
 function follow(args) {
     const from = args.from ?? 1;
@@ -185,7 +185,7 @@ function follow(args) {
     return out;
 }
 
-/** @param {{points: {at: Point, name?: string, snap?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string, locate?: string, start?: Point, check?: boolean, nodo?: boolean}} args */
+/** @param {{points: {at: Point, name?: string, snap?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string, locate?: string | string[], start?: Point, check?: boolean, nodo?: boolean}} args */
 export default function (args) {
     if (args.locate) return follow(/** @type {any} */ (args));
     const reach = args.reach ?? 6;

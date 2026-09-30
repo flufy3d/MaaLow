@@ -21,12 +21,13 @@
 //   sprint: true             hold dodge until its icon turns gold (sprinting), then let go; again if it drops;
 //                            given up after two presses that did not start one (dungeons may not allow it)
 //   {turn: 150}              drag the camera by this many px (right: positive), report the heading before and after
-//   {goto: [[-80, 110], [-72, 84]], ref: "locate/cixin_mosaic", from: [-108, 115]}  run through the points and stop
-//                            at the last (positions: big map px from the stronghold icon), knowing where it is on
-//                            every frame without the big map: locate() finds the minimap in the reference near where
-//                            dead reckoning (camera heading, joystick direction, sprint / run speed) puts it, and a
-//                            good match resets the reckoning. Sprints while far, lets go and runs the last stretch
-//                            so it does not overshoot. Stuck: the reckoning moves, the matches do not. See goTo()
+//   {goto: [[-80, 110], [-72, 84]], ref: ["locate/cixin_mosaic", "locate/cixin_bigmap"], from: [-108, 115]}
+//                            run through the points and stop at the last (positions: big map px from the stronghold
+//                            icon), knowing where it is on every frame without the big map: locate() finds the minimap
+//                            in the reference (the next one where the first cannot tell) near where dead reckoning
+//                            (camera heading, joystick direction, sprint / run speed) puts it, and a good match resets
+//                            the reckoning. Sprints while far, lets go and runs the last stretch so it does not
+//                            overshoot. Stuck: the reckoning moves, the matches do not. See goTo()
 import { angleDiff, bearingOf, cameraHeading, CENTER, enemies, onZone, zone } from "./lib/minimap.js";
 import { recognize as pickupPoint } from "./auto_pickup.js";
 import { calm } from "./lib/hud.js";
@@ -181,12 +182,16 @@ const bearingTo = (from, to) => (Math.atan2(to[0] - from[0], -(to[1] - from[1]))
 const distTo = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
 
 /**
- * locate() near `prior` (null: the whole reference); the match when it can be trusted, else null.
- * @param {string} ref @param {Image} image @param {number | null} cam @param {Point | null} prior @param {number} radius
+ * locate() near `prior` (null: the whole reference) in each reference in turn (a stitched one where it was surveyed,
+ * the big map where not); the first match that can be trusted, else null.
+ * @param {string | string[]} ref @param {Image} image @param {number | null} cam @param {Point | null} prior @param {number} radius
  */
 function fix(ref, image, cam, prior, radius) {
-    const r = locate(ref, { image, cam, prior: prior ?? undefined, radius });
-    return r && r.score >= FIX_MIN && r.score - r.second >= FIX_MARGIN ? r : null;
+    for (const one of Array.isArray(ref) ? ref : [ref]) {
+        const r = locate(one, { image, cam, prior: prior ?? undefined, radius });
+        if (r && r.score >= FIX_MIN && r.score - r.second >= FIX_MARGIN) return r;
+    }
+    return null;
 }
 
 /**
@@ -198,7 +203,7 @@ function fix(ref, image, cam, prior, radius) {
  * SPRINT_STOP + 6 px off), letting go at SPRINT_STOP to end the sprint, running the rest.
  * Ends: arrived | stuck (no closer for GO_STUCK_MS after every way out) | astray | lost (no match for LOST_MS) |
  * fight (the top right icons hide) | time.
- * @param {{goto: Point[], ref: string, from?: Point, reach?: number, ms?: number, sprint?: boolean, face?: boolean}} args
+ * @param {{goto: Point[], ref: string | string[], from?: Point, reach?: number, ms?: number, sprint?: boolean, face?: boolean}} args
  */
 function goTo(args) {
     const path = args.goto;
@@ -380,7 +385,7 @@ function goTo(args) {
 
 /**
  * @param {{face?: boolean, bearing?: number, rel?: number, enemy?: boolean, zone?: boolean, zoneAt?: number, snap?: string, reachPx?: number, snapMin?: number, expect?: Point, lostMs?: number, near?: number, lockAt?: number, capture?: boolean, ms?: number, sprint?: boolean,
- *          pickup?: boolean, turn?: number, step?: number, goto?: Point[], ref?: string, from?: Point, reach?: number}} args
+ *          pickup?: boolean, turn?: number, step?: number, goto?: Point[], ref?: string | string[], from?: Point, reach?: number}} args
  * @param {SkillContext} [ctx]
  */
 export default function (args, ctx) {

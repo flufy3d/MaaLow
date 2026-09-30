@@ -1,5 +1,5 @@
 {
-    "desc": "cixin: minimap reference (stitched from survey runs s1, s2), made by scripts/minimap_locate.py export",
+    "desc": "cixin: minimap reference (stitched from survey runs s1, s2, s3, s4), made by scripts/minimap_locate.py export",
     "levels": [
         {
             "zoom": "out",
@@ -20,7 +20,7 @@
             "k": 1.15,
             "origin": [
                 89.26,
-                84.66
+                94.01
             ],
             "off": [
                 0.0,

@@ -11,8 +11,9 @@ px (fully zoomed in) from the stronghold icon, x east / y south, as stronghold.j
     uv run --extra cv python scripts/minimap_locate.py eval data/wwm       # errors per image, source and preprocessing
     uv run --extra cv python scripts/minimap_locate.py export data/wwm --runs s1,s2   # the app's references
 
-Data layout (data/wwm): survey1/ (grab_frames.py output: <seq>.jpg, frames.jsonl), anchors.json ([{run, n, seq,
-x, y, cam}], from route.js `anchors`; their screenshots in the workspace's teaching/survey/<run>/), bigmap/*.png +
+Data layout (data/wwm): survey<N>/ per grab_frames.py run (<seq>.jpg, frames.jsonl; anchors.json [{run, n, seq, x,
+y, cam}] from route.js `anchors`, their screenshots in the workspace's teaching/survey/<run>/; frames.npz and
+track.json made by cache / track --survey survey<N>), bigmap/*.png +
 bigmap/shots.json (big map screenshots and where the icon is), map_header.png (the big map's 单人 / 多人 header).
 
 What the survey showed: the minimap zooms in about 2x in the courtyard (1 minimap px = 1.15 big map px there, 2.3
@@ -403,9 +404,31 @@ def best_of(d, refs: list[Ref], p: Prep, prior=None, radius=40, cam=None):
 # ---- data
 
 
-def load_frames(root: Path):
-    fr = [json.loads(l) for l in open(root / "survey1" / "frames.jsonl", encoding="utf-8")]
-    return [(f["seq"], root / "survey1" / f"{f['seq']}.jpg") for f in fr]
+def load_frames(sd: Path):
+    fr = [json.loads(l) for l in open(sd / "frames.jsonl", encoding="utf-8")]
+    return [(f["seq"], sd / f"{f['seq']}.jpg") for f in fr]
+
+
+def surveys(root: Path) -> list[Path]:
+    """The survey directories (a grab_frames.py run each: frame numbers restart when the app restarts)."""
+    return sorted(d for d in root.glob("survey*") if (d / "anchors.json").exists())
+
+
+_NPZ: dict[Path, dict] = {}
+
+
+def frames_of(sd: Path) -> dict:
+    """A survey's frames.npz (`cache`), with idx: frame number -> row."""
+    if sd not in _NPZ:
+        z = dict(np.load(sd / "frames.npz"))
+        z["idx"] = {int(s): i for i, s in enumerate(z["seq"])}
+        _NPZ[sd] = z
+    return _NPZ[sd]
+
+
+def tracks(root: Path) -> list[dict]:
+    """Tracked frames of every survey (`track`), each with its survey's directory name."""
+    return [t | {"survey": sd.name} for sd in surveys(root) if (sd / "track.json").exists() for t in json.load(open(sd / "track.json"))]
 
 
 _HEADER = None
@@ -422,10 +445,10 @@ def in_world(img: np.ndarray, root: Path) -> bool:
     return heading(disc(img)) is not None
 
 
-def cache_frames(root: Path) -> None:
-    """frames.npz: every grabbed frame's minimap disc, whether it is the world screen, the camera heading."""
+def cache_frames(root: Path, sd: Path) -> None:
+    """<survey>/frames.npz: every grabbed frame's minimap disc, whether it is the world screen, the camera heading."""
     seqs, discs, world, cams = [], [], [], []
-    for seq, p in load_frames(root):
+    for seq, p in load_frames(sd):
         img = imread(p)
         if img is None:
             continue
@@ -433,7 +456,7 @@ def cache_frames(root: Path) -> None:
         w = in_world(img, root)
         c = heading(d) if w else None
         seqs.append(seq), discs.append(d), world.append(w), cams.append(np.nan if c is None else c)
-    np.savez(root / "frames.npz", seq=np.array(seqs), world=np.array(world), disc=np.array(discs), cam=np.array(cams))
+    np.savez(sd / "frames.npz", seq=np.array(seqs), world=np.array(world), disc=np.array(discs), cam=np.array(cams))
 
 
 def good_frames(world: np.ndarray) -> np.ndarray:
@@ -469,17 +492,22 @@ def _chain(D, cam, fr, p: Prep, k: float, start: np.ndarray, step_max=5.0, sc_mi
     return np.array(pos), scores
 
 
-def track(root: Path, p: Prep) -> list[dict]:
+MAX_DRIFT = 4.0  # a chain that missed its end anchor by more than this is not trusted (big map px)
+
+
+def track(root: Path, sd: Path, p: Prep, relocate: list[tuple[list[Ref], Prep]] | None = None) -> list[dict]:
     """Positions of the grabbed frames between anchors (route.js `anchors`, where() before each look at the map).
     Each stretch between two looks starts zoomed out (closing the map resets the minimap) and, in the courtyard,
     zooms in after a second or two. Frames are told apart by which zoom of the big map they match better (only the
     zoom is taken from it); the zoomed-out part is chained forward from the anchor it starts at, the zoomed-in part
     backward from the anchor it ends at; a stretch that stays zoomed out is chained forward and its drift at the end
-    spread along the way."""
-    z = np.load(root / "frames.npz")
+    spread along the way. Long runs across the courtyard can wobble off by 20 px and more: with `relocate`
+    (references and their preprocessing, tried in turn), the frames of a stretch that drifted more than MAX_DRIFT are
+    placed by locate() instead (near where the anchors put them; only trusted matches, the rest left out)."""
+    z = frames_of(sd)
     seq, D, cam = z["seq"], z["disc"], z["cam"]
     good = good_frames(z["world"])
-    anchors = json.load(open(root / "anchors.json"))
+    anchors = json.load(open(sd / "anchors.json"))
     refs = [bigmap_ref(root, "out"), bigmap_ref(root, "in")]
     out, fits = [], []
     for a0, a1 in zip(anchors, anchors[1:]):
@@ -509,7 +537,19 @@ def track(root: Path, p: Prep) -> list[dict]:
             steps = np.r_[0, np.cumsum(np.linalg.norm(np.diff(pos, axis=0), axis=1))]
             drift = B - pos[-1]
             pos = pos + np.outer(steps / max(steps[-1], 1e-6), drift)
-            rows += [(fr[t], pos[t], zm, "spread") for t in range(len(fr))]
+            if relocate and np.linalg.norm(drift) > MAX_DRIFT:
+                n0 = len(rows)
+                for t, i in enumerate(fr):
+                    prior = tuple(A + (B - A) * t / max(1, len(fr) - 1))
+                    c = None if np.isnan(cam[i]) else float(cam[i])
+                    for refs, q in relocate:
+                        r = best_of(D[i], refs, q, prior, 45, c)
+                        if r and r[0]["score"] >= 0.4 and r[0]["score"] - r[0]["second"] >= 0.1:
+                            rows.append((i, np.array([r[0]["x"], r[0]["y"]]), zm, "locate"))
+                            break
+                print(seg, "relocated", len(rows) - n0, "of", len(fr))
+            else:
+                rows += [(fr[t], pos[t], zm, "spread") for t in range(len(fr))]
             fits.append((zm, raw[-1], B - A, steps[-1]))
             print(seg, zm, len(fr), "drift", np.round(drift, 1), "path", round(float(steps[-1]), 1))
         else:
@@ -523,14 +563,15 @@ def track(root: Path, p: Prep) -> list[dict]:
             print(seg, "out", n_out, "in", len(fr) - n_in, "of", len(fr))
         for i, q, zm, how in sorted(rows, key=lambda r: r[0]):
             out.append({"seq": int(seq[i]), "x": round(float(q[0]), 2), "y": round(float(q[1]), 2), "zoom": zm,
-                        "how": how, "seg": seg, "run": a0["run"][:2]})
+                        "how": how, "seg": seg, "run": a0["run"][:2],
+                        **({"drift": round(float(np.linalg.norm(drift)), 1)} if how == "spread" else {})})
     for zm in ZOOMS:  # the zoom that fits the chains best (stretches that moved, that did not go astray)
         f = [(c, d) for z_, c, d, path in fits if z_ == zm and np.linalg.norm(d) > 8 and path < 2 * np.linalg.norm(d) + 10]
         if f:
             c, d = np.array([x[0] for x in f]), np.array([x[1] for x in f])
             k = (c * d).sum() / (c * c).sum()
             print(zm, "zoom fit", round(float(k), 3), "from", len(f), "stretches; residuals", np.round(np.linalg.norm(d - k * c, axis=1), 1))
-    json.dump(out, open(root / "track.json", "w"), indent=0)
+    json.dump(out, open(sd / "track.json", "w"), indent=0)
     return out
 
 
@@ -576,12 +617,9 @@ def stitch(root: Path, zoom: str, runs=("s1",), k: float | None = None, max_drif
     Returns (image, valid, origin, spread): spread is the median absolute deviation of the samples, a measure of how
     well the frames line up (smaller is better; used to fit k)."""
     k = k or ZOOMS[zoom]
-    tr = [t for t in json.load(open(root / "track.json")) if t["run"] in {r[:2] for r in runs} and t["zoom"] == zoom]
+    tr = [t for t in tracks(root) if t["run"] in {r[:2] for r in runs} and t["zoom"] == zoom]
     bad = set(json.load(open(root / "track_drift.json")).get("bad", [])) if (root / "track_drift.json").exists() else set()
-    tr = [t for t in tr if t["seg"] not in bad]
-    z = np.load(root / "frames.npz")
-    idx = {int(s): i for i, s in enumerate(z["seq"])}
-    D, cam = z["disc"], z["cam"]
+    tr = [t for t in tr if t["seg"] not in bad and t.get("drift", 0) <= max_drift]
     xs, ys = [t["x"] for t in tr], [t["y"] for t in tr]
     pad = C + 4
     x0, y0 = min(xs) / k - pad, min(ys) / k - pad
@@ -593,11 +631,12 @@ def stitch(root: Path, zoom: str, runs=("s1",), k: float | None = None, max_drif
         if last is not None and math.hypot(u - last[0], v - last[1]) < step:
             continue
         last = (u, v)
-        i = idx[t["seq"]]
-        c = None if np.isnan(cam[i]) else float(cam[i])
-        m = disc_mask(D[i], Prep(zone="mask", sat_max=0), c)
+        z = frames_of(root / t["survey"])
+        i = z["idx"][t["seq"]]
+        c = None if np.isnan(z["cam"][i]) else float(z["cam"][i])
+        m = disc_mask(z["disc"][i], Prep(zone="mask", sat_max=0), c)
         M = np.float32([[1, 0, u - C], [0, 1, v - C]])
-        stack.append(cv2.warpAffine(D[i], M, (w, h), flags=cv2.INTER_LINEAR))
+        stack.append(cv2.warpAffine(z["disc"][i], M, (w, h), flags=cv2.INTER_LINEAR))
         masks.append(cv2.warpAffine(m.astype(np.uint8), M, (w, h), flags=cv2.INTER_NEAREST) > 0)
     S = np.array(stack).astype(np.float32)
     V = np.array(masks)
@@ -672,12 +711,12 @@ PREPS = {
 }
 
 
-def eval_items(root: Path, holdout=("s2",), every: int = 2):
+def eval_items(root: Path, holdout=("s2", "s4"), every: int = 2):
     """(name, disc, truth, category, split) to test on: the anchor screenshots, the known teaching screenshots, and
     every `every`-th tracked frame. split: train (its run went into the mosaic) / test."""
     items = []
     inside = lambda x, y: y < 52 and x > -48  # past the gate
-    for a in json.load(open(root / "anchors.json")):
+    for a in (a for sd in surveys(root) for a in json.load(open(sd / "anchors.json"))):
         d = disc(imread(WS / "teaching" / "survey" / a["run"] / f"{a['n']:03d}.png")).copy()
         split = "test" if a["run"][:2] in holdout else "train"
         items.append((f"anchor {a['run']}/{a['n']}", d, (a["x"], a["y"]), "in" if inside(a["x"], a["y"]) else "out", split))
@@ -686,13 +725,12 @@ def eval_items(root: Path, holdout=("s2",), every: int = 2):
         d = disc(imread((known if known.is_dir() else WS / "teaching" / "explore") / f"{f}.png")).copy()
         cat = ("in-zone" if zone_region(d).any() else "in") if inside(*xy) else ("out-zone" if zone_region(d).any() else "out")
         items.append((f"known {f}", d, xy, cat, "test"))
-    z = np.load(root / "frames.npz")
-    idx = {int(s): i for i, s in enumerate(z["seq"])}
     bad = set(json.load(open(root / "track_drift.json")).get("bad", []))
-    tr = [t for t in json.load(open(root / "track.json")) if t["seg"] not in bad]
+    tr = [t for t in tracks(root) if t["seg"] not in bad and t.get("drift", 0) <= MAX_DRIFT]
     for t in tr[::every]:
         split = "test" if t["run"] in holdout else "train"
-        items.append((f"frame {t['seq']}", z["disc"][idx[t["seq"]]], (t["x"], t["y"]),
+        z = frames_of(root / t["survey"])
+        items.append((f"frame {t['survey']}/{t['seq']}", z["disc"][z["idx"][t["seq"]]], (t["x"], t["y"]),
                       "in" if inside(t["x"], t["y"]) else "out", split))
     return items
 
@@ -796,6 +834,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["cache", "bigmap", "track", "stitch", "eval", "export"])
     ap.add_argument("root", type=Path)
+    ap.add_argument("--survey", default="survey1", help="cache / track: the survey directory")
+    ap.add_argument("--relocate", default="", help="track: a mosaic directory (e.g. mosaic_s1_s2) to place drifted stretches with")
     ap.add_argument("--runs", default="s1", help="stitch: the survey runs that make the mosaic (the rest test it)")
     ap.add_argument("--preps", default="", help="eval: preprocessings to try (PREPS keys), default all")
     ap.add_argument("--every", type=int, default=2, help="eval: every n-th tracked frame")
@@ -806,12 +846,17 @@ def main() -> None:
     if a.native:
         global NATIVE
         NATIVE = Native(a.native)
+    sd = a.root / a.survey
     if a.cmd == "cache":
-        cache_frames(a.root)
+        cache_frames(a.root, sd)
     elif a.cmd == "bigmap":
         build_bigmap(a.root)
     elif a.cmd == "track":
-        track(a.root, TRACK_PREP)
+        rel = None
+        if a.relocate:  # the references made so far: the mosaic, then the big map
+            rel = [([mosaic_ref(a.root, z, a.relocate) for z in ZOOMS], PREPS[APP_PREPS["mosaic"]]),
+                   ([bigmap_ref(a.root, z) for z in ZOOMS], PREPS[APP_PREPS["bigmap"]])]
+        track(a.root, sd, TRACK_PREP, rel)
     elif a.cmd == "stitch":
         for zoom in ZOOMS:
             save_mosaic(a.root, zoom, a.runs.split(","), ZOOMS[zoom])
@@ -820,7 +865,9 @@ def main() -> None:
     elif a.cmd == "eval":
         sources = {"bigmap": [bigmap_ref(a.root, z) for z in ZOOMS], "mosaic": [mosaic_ref(a.root, z) for z in ZOOMS]}
         preps = {k: PREPS[k] for k in a.preps.split(",")} if a.preps else PREPS
-        items = eval_items(a.root, every=a.every)
+        used = set(json.load(open(a.root / "mosaic" / "in.json"))["runs"])  # the rest tests the mosaic
+        runs = {x["run"][:2] for sd in surveys(a.root) for x in json.load(open(sd / "anchors.json"))}
+        items = eval_items(a.root, holdout=tuple(sorted(runs - used)), every=a.every)
         rows = evaluate(a.root, sources, preps, items, full=not a.near_only,
                         out_path=a.root / ("eval_native.jsonl" if a.native else "eval.jsonl"))
         print_summary(summary([r for r in rows if r["split"] == "test" or r["source"] == "bigmap"]))
