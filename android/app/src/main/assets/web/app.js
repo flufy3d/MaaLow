@@ -1,19 +1,22 @@
-// The page shell: tabs (kept in the URL hash: #overview, #live, #replay/<recording>/<frame>, #workspaces), the
-// workspace switcher, theme and help. Loaded last.
+// The page shell: tabs (kept in the URL hash: #overview, #teach/live, #teach/replay/<recording>/<frame>, #workspaces;
+// the old #live and #replay/... still work), the workspace switcher, theme and help. Loaded last.
 "use strict";
 
 let mode = "";
-const PAGES = { overview: window.overview, replay: window.replay, workspaces: window.wsPage };
+const PAGES = { overview: window.overview, teach: window.teach, workspaces: window.wsPage };
+/** Show a page; m may carry the rest of the address, e.g. "teach/replay/<id>/<frame>" (or the old "replay/..."). */
 function setMode(m) {
-  if (!["overview", "live", "replay", "workspaces"].includes(m)) m = "overview";
-  if (m === mode) return;
+  let [page, ...rest] = (m || "").split("/");
+  if (page === "live" || page === "replay") { rest = [page, ...rest]; page = "teach"; }
+  if (!PAGES[page]) page = "overview";
+  if (page === mode) { if (page === "teach" && rest.length) teach.setStage(rest[0], rest.join("/")); return; }
   const prev = mode;
-  mode = m;
-  document.querySelectorAll("#tabs .tab").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
-  document.querySelectorAll(".mode").forEach(d => d.classList.toggle("on", d.id === m));
+  mode = page;
+  document.querySelectorAll("#tabs .tab").forEach(b => b.classList.toggle("on", b.dataset.mode === page));
+  document.querySelectorAll(".mode").forEach(d => d.classList.toggle("on", d.id === page));
   PAGES[prev]?.leave();
-  PAGES[m]?.enter();
-  if (m !== "replay") history.replaceState(null, "", "#" + m);
+  if (page !== "teach") history.replaceState(null, "", "#" + page);
+  PAGES[page]?.enter(rest.join("/"));
 }
 document.querySelectorAll("#tabs .tab").forEach(b => b.onclick = () => setMode(b.dataset.mode));
 
@@ -112,5 +115,5 @@ hydrateIcons();
 renderTheme();
 renderSwitcher();
 wsStore.refresh().catch(e => toast("连接 App 失败：" + e.message)).finally(() => {
-  setMode((location.hash.slice(1).split("/")[0]) || (wsStore.current ? "live" : "overview"));
+  setMode(location.hash.slice(1) || (wsStore.current ? "teach" : "overview"));
 });

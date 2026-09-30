@@ -331,3 +331,40 @@ function drawMark(ctx, m, n, selected) {
   }
   ctx.restore();
 }
+
+/** Annotations as an SVG overlay for an image of the 1080x720 frame space (chat attachments, the tray). */
+function marksSvg(list, w = 1080, h = 720) {
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${(list || []).map((m, i) => markSvg(m, i + 1)).join("")}</svg>`;
+}
+function markSvg(m, n) {
+  const c = COLORS[m.kind] || "#fff", [x, y, w, h] = m.coords || [];
+  const st = `stroke="${c}" stroke-width="2.5" fill="none" vector-effect="non-scaling-stroke"`;
+  let shape = "", lx = x, ly = y;
+  if (m.kind === "rect" || m.kind === "region") shape = `<rect x="${x}" y="${y}" width="${w}" height="${h}" ${st}${m.kind === "region" ? ' stroke-dasharray="7 5"' : ""}/>`;
+  else if (m.kind === "circle") shape = `<ellipse cx="${x + w / 2}" cy="${y + h / 2}" rx="${Math.max(w / 2, 1)}" ry="${Math.max(h / 2, 1)}" ${st}/>`;
+  else if (m.kind === "arrow") {
+    const ang = Math.atan2(h - y, w - x), p = d => `${w - 22 * Math.cos(ang + d)},${h - 22 * Math.sin(ang + d)}`;
+    shape = `<line x1="${x}" y1="${y}" x2="${w}" y2="${h}" ${st}/><polygon points="${w},${h} ${p(-0.4)} ${p(0.4)}" fill="${c}"/>`;
+  } else if (m.kind === "click") {
+    shape = `<circle cx="${x}" cy="${y}" r="12" ${st}/><path d="M${x - 20} ${y}H${x + 20}M${x} ${y - 20}V${y + 20}" ${st}/>`;
+    lx = x + 14; ly = y - 14;
+  }
+  ly = Math.max(ly, 26);
+  const t = String(n);
+  return shape + `<rect x="${lx}" y="${ly - 26}" width="${12 + 12 * t.length}" height="26" rx="3" fill="${c}"/>` +
+    `<text x="${lx + 6}" y="${ly - 6}" font-size="20" font-weight="700" font-family="sans-serif" fill="#000">${t}</text>`;
+}
+
+// ---- recordings: clock, thumbnails (100 small frames per sheet, see Thumbs.kt)
+const fmtClock = ms => { const s = Math.floor((ms || 0) / 1000); return `${pad2(Math.floor(s / 60))}:${pad2(s % 60)}`; };
+const sheetUrl = (ws, r, k) => withToken(`${API}/recordings/${enc(ws)}/${enc(r.id)}/thumbs/${k}`);
+/** CSS showing one frame (10% in) of recording r from its thumbnail sheets, at width w. */
+function thumbStyle(ws, r, w) {
+  const t = r.thumbs;
+  if (!t || !t.count) return "";
+  const s = w / t.width, h = t.height * s, i = Math.min(t.count - 1, Math.floor(t.count * 0.1)), per = t.cols * t.rows, slot = i % per;
+  return `background-image:url('${sheetUrl(ws, r, Math.floor(i / per))}');background-size:${t.cols * w}px ${t.rows * h}px;` +
+    `background-position:-${(slot % t.cols) * w}px -${Math.floor(slot / t.cols) * h}px`;
+}
+/** "第 N 帧", "第 A–B 帧" or "整段" for an attachment's focus. */
+const focusText = f => !f ? "整段" : f.from === f.to ? `第 ${f.from} 帧` : `第 ${f.from}–${f.to} 帧`;

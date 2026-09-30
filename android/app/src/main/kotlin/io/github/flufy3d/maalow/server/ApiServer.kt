@@ -268,8 +268,12 @@ private fun aiDoing(path: String): String = when {
     path == "/api/v1/skill/run" -> "运行技能"
     path == "/api/v1/shot" || path == "/api/v1/screen" -> "截图"
     path == "/api/v1/say" -> "回复"
-    path.startsWith("/api/v1/recordings/") -> "看录像"
+    path.startsWith("/api/v1/recordings") -> "看录像"
     path.startsWith("/api/v1/files/") || path.startsWith("/api/v1/sync") -> "同步文件"
+    path.startsWith("/api/v1/task") -> "切换任务"
+    path.startsWith("/api/v1/record") -> "录制"
+    path.startsWith("/api/v1/skills") -> "查看技能"
+    path == "/api/v1/state" || path == "/api/v1/status" || path == "/api/v1/messages" -> "查看状态"
     else -> path.removePrefix("/api/v1/").substringBefore('/')
 }
 

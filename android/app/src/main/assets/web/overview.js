@@ -45,8 +45,8 @@ window.overview = (() => {
         <div class="chips">${n("tasks", "任务", "live")}${n("recordings", "录像", "replay")}${n("pipelines", "规则文件", "browse:pipelines")}${n("templates", "模板", "browse:templates")}${n("skills", "技能", "browse:skills")}${n("guards", "守护规则", "guards")}</div>
       </div>
       <div class="acts">
-        <button class="btn primary" data-go="live">${svg("chat")}实时指导</button>
-        <button class="btn" data-go="replay">${svg("film")}回放指导</button>
+        <button class="btn primary" data-go="teach/live">${svg("chat")}指导</button>
+        <button class="btn" data-go="teach/replay">${svg("film")}录像回放</button>
         <button class="btn" data-go="workspaces">${svg("layers")}管理</button>
       </div>`;
   }

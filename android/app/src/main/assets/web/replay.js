@@ -1,5 +1,6 @@
-// Replay teaching: record the tablet, find the exact frame, annotate it. Frames shown while paused are decoded by the
-// app by frame number (never the browser's video seek); the <video> is only for quick playback.
+// The recording stage: record the tablet, find the exact frame, annotate it, send the recording (with a focus on some
+// frames) to the chat. Frames shown while paused are decoded by the app by frame number (never the browser's video
+// seek); the <video> is only for quick playback.
 "use strict";
 window.replay = (() => {
   const FPS = 30;
@@ -8,7 +9,6 @@ window.replay = (() => {
   const enc = encodeURIComponent;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const timeMs = n => Math.round(n * 1000 / FPS);
-  const fmtClock = ms => { const s = Math.floor(ms / 1000); return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; };
   const fmtTime = ms => `${fmtClock(ms)}.${String(ms % 1000).padStart(3, "0")}`;
 
   let started = false, active = false;
@@ -23,6 +23,7 @@ window.replay = (() => {
   let recState = { recording: false }, recPolled = 0;
   let playing = false, videoFrame = 0, hideVideoOnLoad = false;
   let drag = null, hover = null, hold = null, editing = null;
+  let inPt = -1, outPt = -1, trayItem = null; // the range to send, and the tray item being changed (from its edit button)
 
   const base = () => `/recordings/${enc(ws)}/${enc(rec.id)}`;
   const entry = n => labels.frames[n];
@@ -91,7 +92,7 @@ window.replay = (() => {
     if (changed) { selected = -1; start = null; draft = null; }
     if (hideVideoOnLoad) { hideVideoOnLoad = false; box.classList.remove("playing"); }
     render(); drawScrub(); refreshFrame(); refreshLabeled();
-    history.replaceState(null, "", `#replay/${rec.id}/${cur}`);
+    if (active) history.replaceState(null, "", `#teach/replay/${rec.id}/${cur}`);
   }
 
   function updatePos(n = want >= 0 ? want : cur) {
@@ -495,6 +496,10 @@ window.replay = (() => {
     const at = playing ? videoFrame : want >= 0 ? want : cur;
     sctx.fillStyle = cssVar("--line-2"); sctx.fillRect(6, 17, W - 12, 6); // track
     sctx.fillStyle = accent; sctx.globalAlpha = .5; sctx.fillRect(6, 17, x(at) - 6, 6); sctx.globalAlpha = 1;
+    if (inPt >= 0 || outPt >= 0) { // the range to send to the AI
+      const a = inPt >= 0 ? inPt : 0, b = outPt >= 0 ? outPt : total - 1;
+      sctx.fillStyle = cssVar("--green"); sctx.globalAlpha = .28; sctx.fillRect(x(a), 2, Math.max(2, x(b) - x(a)), H - 4); sctx.globalAlpha = 1;
+    }
     sctx.fillStyle = cssVar("--faint"); // a tick every 10 s
     for (let f = 0; f < total; f += FPS * 10) sctx.fillRect(Math.round(x(f)), 25, 1, 6);
     sctx.fillStyle = accent; // labeled frames
@@ -586,7 +591,11 @@ window.replay = (() => {
       const ended = (prev.recording || prev.saving) && !recState.recording && !recState.saving;
       if (ended && started) {
         await loadList();
-        if (!prev.stopping) toast(`录制已结束${prev.remaining_ms < 2000 ? "（到达 3 分钟上限）" : ""}，已保存`);
+        if (!prev.stopping) {
+          toast(`录制已结束${prev.remaining_ms < 2000 ? "（到达 3 分钟上限）" : ""}，已保存`);
+          const r = recs.find(x => x.state === "ready");
+          if (r && active) offer(r);
+        }
       }
       if (recState.recording !== prev.recording || !!recState.saving !== !!prev.saving) { renderRecButton(); if (started) { loadList(); render(); } }
     } catch (e) { /* app restarting */ }
@@ -632,6 +641,7 @@ window.replay = (() => {
         await loadList();
         await open(meta.id, 0);
         toast(`已保存“${meta.name}”：${meta.frames} 帧，${fmtClock(meta.duration_ms)}`);
+        offer(meta);
       } else {
         recState = await post("/record/start", { workspace: ws });
         recPolled = Date.now();
@@ -656,14 +666,7 @@ window.replay = (() => {
     } catch (e) { toast("读取录像列表失败：" + e.message); return; }
     if (rec && !recs.some(r => r.id === rec.id)) close();
     renderList();
-  }
-
-  function thumbStyle(r, w) {
-    const t = r.thumbs;
-    if (!t || !t.count) return "";
-    const s = w / t.width, h = t.height * s, i = Math.min(t.count - 1, Math.floor(t.count * 0.1)), per = t.cols * t.rows, slot = i % per;
-    return `background-image:url('${sheetUrl(r, Math.floor(i / per))}');background-size:${t.cols * w}px ${t.rows * h}px;` +
-      `background-position:-${(slot % t.cols) * w}px -${Math.floor(slot / t.cols) * h}px`;
+    teach.setRecs(recs, ws);
   }
 
   function renderList() {
@@ -681,7 +684,7 @@ window.replay = (() => {
            <button class="btn sm primary" data-act="save">保存</button> <button class="btn sm" data-act="cancel">取消</button>`
         : `<div class="nm">${esc(r.name)}</div><div class="sub">${sub}</div>${r.note ? `<div class="nt" title="${esc(r.note)}">${esc(r.note)}</div>` : ""}`;
       return `<div class="rec${rec && rec.id === r.id ? " cur" : ""}${live ? " live" : ""}" data-id="${esc(r.id)}">
-        <div class="th" style="${thumbStyle(r, 96)}"></div>
+        <div class="th" style="${thumbStyle(ws, r, 96)}"></div>
         <div class="bd">${body}</div>
         ${editing === r.id || live ? "" : `<div class="acts"><button class="btn sm" data-act="edit">改名</button><button class="btn sm danger" data-act="del">删除</button></div>`}
       </div>`;
@@ -731,6 +734,7 @@ window.replay = (() => {
     stopHold();
     if (playing) stopVideo(false);
     rec = meta; total = meta.frames; cur = -1; want = -1; image = null; selected = -1;
+    inPt = -1; outPt = -1; trayItem = null; rangeText();
     bitmaps.clear(); undoStack = []; redoStack = []; dirty.clear(); saveError = "";
     video.removeAttribute("src"); delete video.dataset.src; video.load();
     cv.width = meta.width; cv.height = meta.height;
@@ -744,13 +748,14 @@ window.replay = (() => {
   function close() {
     rec = null; total = 0; cur = -1; want = -1; image = null; labels = { version: 0, frames: {} };
     dirty.clear(); undoStack = []; redoStack = [];
-    if (active) history.replaceState(null, "", "#replay");
+    inPt = -1; outPt = -1; trayItem = null; rangeText();
+    if (active) history.replaceState(null, "", "#teach/replay");
     updatePos(); undoButtons(); saveStatus(); refreshFrame(); refreshLabeled(); render(); drawScrub();
   }
 
   // ---- workspace: always the current one (switched in the top bar)
 
-  /** Open the recording in the address (#replay/<id>/<frame>), else the newest ready one. */
+  /** Open the recording asked for ("replay/<id>/<frame>"), else the newest ready one. */
   async function openDefault(hash) {
     const [, id, f] = (hash || "").split("/");
     const pick = recs.find(r => r.id === id && r.state === "ready") || recs.find(r => r.state === "ready");
@@ -774,7 +779,7 @@ window.replay = (() => {
   const focusValue = new WeakMap();
   window.addEventListener("focusin", e => { if (typing(e.target)) focusValue.set(e.target, e.target.value); });
   window.addEventListener("keydown", e => {
-    if (mode !== "replay" || ui.isOpen()) return;
+    if (mode !== "teach" || teach.stage !== "replay" || ui.isOpen()) return;
     const k = e.key, ctrl = e.ctrlKey || e.metaKey;
     if (typing(e.target)) {
       if (k === "Escape") { e.target.blur(); return; }
@@ -797,6 +802,9 @@ window.replay = (() => {
     else if (k === "[" || k === "PageUp") { e.preventDefault(); labeledStep(-1); }
     else if (k === "]" || k === "PageDown") { e.preventDefault(); labeledStep(1); }
     else if (k === "g" || k === "G") { e.preventDefault(); nInput.focus(); }
+    else if (k === "i" || k === "I") { e.preventDefault(); setIn(); }
+    else if (k === "o" || k === "O") { e.preventDefault(); setOut(); }
+    else if (k === "a" || k === "A") { e.preventDefault(); toAI(); }
     else if (k === "n" || k === "N") { if (rec) { e.preventDefault(); note.focus(); } }
     else if (k === "Delete" || k === "Backspace") { if (selected >= 0) { e.preventDefault(); deleteMark(selected); } }
     else if (k === "Escape") { start = null; draft = null; select(-1); }
@@ -807,20 +815,23 @@ window.replay = (() => {
 
   // ---- enter / leave the mode
 
-  async function enter() {
+  /** The stage is shown; to: "replay/<id>/<frame>" opens that recording at that frame. */
+  async function enter(to = "") {
     active = true;
+    const [, id, f] = to.split("/");
     if (!started) {
       started = true;
       ws = wsStore.current;
       $("rp-play").innerHTML = svg("play");
       render(); updatePos(); undoButtons(); renderRecButton();
       await loadList();
-      await openDefault(location.hash);
+      await openDefault(to);
     } else {
       requestAnimationFrame(() => { layout(); sizeScrub(); });
-      if (rec) history.replaceState(null, "", `#replay/${rec.id}/${Math.max(cur, 0)}`); else history.replaceState(null, "", "#replay");
+      if (rec) history.replaceState(null, "", `#teach/replay/${rec.id}/${Math.max(cur, 0)}`); else history.replaceState(null, "", "#teach/replay");
       await loadList();
-      if (!rec) await openDefault(); // e.g. the workspace was switched while away
+      if (id && rec && rec.id === id) goto(Number(f) || 0);
+      else if (id || !rec) await openDefault(to); // e.g. the workspace was switched while away
     }
   }
 
@@ -831,5 +842,63 @@ window.replay = (() => {
     flush();
   }
 
-  return { enter, leave, flush, setWorkspace };
+  // ---- to the chat: the recording goes in the tray, with a focus (this frame, the in-out range) or none
+
+  function rangeText() {
+    $("rp-range").textContent = inPt >= 0 || outPt >= 0 ? `范围 ${inPt >= 0 ? inPt : "开头"}–${outPt >= 0 ? outPt : "结尾"}` : "";
+    $("rp-toai").querySelector("span").textContent = trayItem ? "更新托盘" : "发给 AI";
+    drawScrub();
+  }
+  const here = () => want >= 0 ? want : cur;
+  function setIn() { if (!rec) return; const n = here(); inPt = inPt === n ? -1 : n; if (outPt >= 0 && outPt < inPt) outPt = -1; rangeText(); }
+  function setOut() { if (!rec) return; const n = here(); outPt = outPt === n ? -1 : n; if (outPt >= 0 && inPt > outPt) inPt = -1; rangeText(); }
+  $("rp-in").onclick = setIn;
+  $("rp-out").onclick = setOut;
+
+  async function toAI() {
+    if (!rec || playing) return;
+    await flush(); // the AI reads the saved labels
+    const at = here(), hasRange = inPt >= 0 || outPt >= 0;
+    const a = inPt >= 0 ? inPt : 0, b = outPt >= 0 ? outPt : total - 1;
+    const v = await ui.dialog({
+      title: trayItem ? `更新托盘里的“${esc(rec.name)}”` : `把“${esc(rec.name)}”放进待发托盘`,
+      body: `<div class="msgtext">MaaLow 会看到这段录像的逐帧标注。focus 告诉它你说的是哪几帧（别的帧它也能自己看）。</div>`,
+      actions: [
+        { label: "取消", value: null },
+        { label: "不指定", value: "none" },
+        ...(hasRange ? [{ label: `入点到出点（${a}–${b}）`, value: "range" }] : []),
+        { label: `当前帧（#${at}）`, value: "cur", kind: "primary" },
+      ],
+    });
+    if (!v) return;
+    const focus = v === "cur" ? { from: at, to: at } : v === "range" ? { from: a, to: b } : null;
+    try {
+      if (trayItem && trayItem.rec === rec.id) await teach.updateTray(trayItem.id, { focus });
+      else await teach.addToTray({ type: "recording", rec: rec.id, ...(focus ? { focus } : {}) });
+      trayItem = null; rangeText();
+      toast(`已放进待发托盘：${focusText(focus)}`);
+    } catch (e) { toast("放进托盘失败：" + e.message); }
+  }
+  $("rp-toai").onclick = toAI;
+
+  /** A recording's edit button in the tray: once it is open here, sending updates that item instead of adding one. */
+  function editItem(item) {
+    const wait = () => {
+      if (rec && rec.id === item.rec) {
+        trayItem = item;
+        if (item.focus && item.focus.to > item.focus.from) { inPt = item.focus.from; outPt = item.focus.to; }
+        rangeText();
+      } else if (active) setTimeout(wait, 100);
+    };
+    wait();
+  }
+
+  /** Right after a recording: offer to put it in the tray. */
+  async function offer(r) {
+    if (await ui.confirm("录像会放进待发托盘，写上说明、需要的话先标注几帧，再发给 MaaLow。", { title: `把“${r.name}”发到当前任务的对话吗？`, ok: "放进托盘" })) {
+      try { await teach.addToTray({ type: "recording", rec: r.id }); toast("已放进待发托盘"); } catch (e) { toast("放进托盘失败：" + e.message); }
+    }
+  }
+
+  return { enter, leave, flush, setWorkspace, editItem };
 })();

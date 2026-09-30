@@ -34,7 +34,7 @@ window.browseUi = (() => {
             ${on.has(x.name) ? `<span class="chip ok">守护中</span>` : off.has(x.name) ? `<span class="chip">守护已停用</span>` : ""}</b>
             <small>${esc(x.desc || "没有说明")}</small></div></div>`).join("")}</div>
         <pre class="code" hidden></pre></div>`).join("")
-      : `<div class="none">还没有规则文件（pipeline/*.json）。在实时指导里让 MaaLow 把教的内容写成规则。</div>`;
+      : `<div class="none">还没有规则文件（pipeline/*.json）。在指导页让 MaaLow 把教的内容写成规则。</div>`;
     ui.dialog({ title: `${svg("file")}${esc(ws)} 的规则文件`, wide: true, body, init: box => expandable(box, ws) });
   }
 
