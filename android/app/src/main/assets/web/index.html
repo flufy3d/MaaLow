@@ -59,36 +59,45 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
       <div class="seg" id="modes">
         <button class="btn icon" data-stage="live" title="实时截图"><i data-i="camera"></i></button>
         <button class="btn icon" data-stage="replay" title="录像回放"><i data-i="film"></i></button>
-        <button class="btn icon" data-stage="remote" disabled title="远程操控 · 即将推出"><i data-i="eye"></i></button>
+        <button class="btn icon" data-stage="remote" title="远程操控：实时画面，接管后可以点、划、按键"><i data-i="monitor"></i></button>
       </div>
       <span class="sep"></span>
       <div id="tb-main">
         <button class="btn solid orange for-live" id="shot" title="截一张（S）"><i data-i="camera"></i><span class="tl">截一张</span></button>
         <button class="btn for-replay" id="rp-pick" title="选择录像"><i data-i="film"></i><span class="nm">选择录像</span><i data-i="down" class="sm"></i></button>
         <button class="btn solid red for-replay" id="rp-rec"></button>
+        <button class="btn solid orange for-remote" id="rm-take"></button>
+        <button class="btn for-remote" id="rm-shot" title="截一张全质量截图放进托盘（S）"><i data-i="camera"></i><span class="tl">截一张</span></button>
       </div>
       <span class="sep"></span>
-      <div class="seg" id="tools">
+      <div class="seg for-remote" id="rm-keys">
+        <button class="btn" data-key="back" title="返回（Esc、右键）"><i data-i="back"></i><span class="tl">返回</span></button>
+        <button class="btn" data-key="home" title="主页"><i data-i="navhome"></i><span class="tl">主页</span></button>
+        <button class="btn" data-key="recents" title="最近任务"><i data-i="recents"></i><span class="tl">最近任务</span></button>
+        <button class="btn" data-key="wakeup" title="唤醒屏幕"><i data-i="power"></i><span class="tl">唤醒</span></button>
+      </div>
+      <div class="seg not-remote" id="tools">
         <button class="btn" data-tool="rect" title="框选（1）"><i data-i="rect"></i><span class="tl">框选</span></button>
         <button class="btn" data-tool="circle" title="圈（2）"><i data-i="circle"></i><span class="tl">圈</span></button>
         <button class="btn" data-tool="arrow" title="箭头（3）"><i data-i="arrow"></i><span class="tl">箭头</span></button>
         <button class="btn" data-tool="click" title="点击点（4）"><i data-i="click"></i><span class="tl">点击点</span></button>
         <button class="btn" data-tool="region" title="区域（5）"><i data-i="region"></i><span class="tl">区域</span></button>
       </div>
-      <span class="sep"></span>
-      <div class="grp">
+      <span class="sep not-remote"></span>
+      <div class="grp not-remote">
         <button class="btn icon" id="undo" title="撤销（Ctrl+Z）"><i data-i="undo"></i></button>
         <button class="btn icon" id="redo" title="重做（Ctrl+Shift+Z）"><i data-i="redo"></i></button>
         <button class="btn icon" id="clear" title="清空这张的标注"><i data-i="trash"></i></button>
       </div>
       <span class="grow"></span>
       <span id="savestate"></span>
-      <button class="btn primary" id="toai" title="放进待发托盘（A）"><i data-i="send"></i><span class="tl">发给 AI</span></button>
+      <button class="btn primary not-remote" id="toai" title="放进待发托盘（A）"><i data-i="send"></i><span class="tl">发给 AI</span></button>
     </div>
     <div id="screenwrap"><div id="screen">
       <canvas id="scr-img" width="1080" height="720"></canvas>
       <video id="scr-video" muted playsinline preload="auto"></video>
       <canvas id="scr-cv" width="1080" height="720"></canvas>
+      <canvas id="scr-remote" width="1080" height="720"></canvas>
       <div id="scr-badge"></div>
       <div id="scr-over" class="empty"></div>
       <input id="scr-label" autocomplete="off">
@@ -126,7 +135,11 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
           <input id="rp-text" placeholder="给 MaaLow 的说明：这段录像要它看什么">
         </div>
       </div>
-      <div class="bslot for-remote"><div class="brow dim">延迟 — · 未连接（远程操控即将推出）</div></div>
+      <div class="bslot for-remote">
+        <div class="brow"><span class="dot" id="rm-dot"></span><span id="rm-conn"></span></div>
+        <div class="brow dim" id="rm-who"></div>
+        <div class="brow dim">接管后：左键或手指 = 触摸，右键或 Esc = 返回，滚轮 = 划动。画面只在这个舞台开着、标签页在前台时才推流。</div>
+      </div>
     </div>
   </div>
   <div id="split" title="拖动调整宽度；双击恢复"></div>
@@ -175,6 +188,13 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
     <tr><td><kbd>Esc</kbd></td><td>清除入点、出点（没有选中的标注时）</td></tr>
     <tr><td>拖动进度条</td><td>粗定位，显示缩略图；松手加载精确帧</td></tr>
   </table>
+  <h4>远程操控</h4>
+  <table>
+    <tr><td>左键 / 手指</td><td>接管后在画面上点、划（多指也行）</td></tr>
+    <tr><td>右键 / <kbd>Esc</kbd></td><td>返回键</td></tr>
+    <tr><td>滚轮</td><td>一次短划动</td></tr>
+    <tr><td><kbd>S</kbd></td><td>截一张全质量截图放进托盘</td></tr>
+  </table>
   <h4>标注（两种舞台通用）</h4>
   <table>
     <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>框选 / 圈 / 箭头 / 点击点 / 区域</td></tr>
@@ -199,6 +219,7 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
 <script src="web/chat.js"></script>
 <script src="web/stage.js"></script>
 <script src="web/live.js"></script>
+<script src="web/remote.js"></script>
 <script src="web/replay.js"></script>
 <script src="web/guards.js"></script>
 <script src="web/browse.js"></script>

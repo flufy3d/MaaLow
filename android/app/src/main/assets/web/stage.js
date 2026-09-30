@@ -39,8 +39,13 @@ window.stage = (() => {
     });
   }
   function badge(text, cls = "") { const b = $("scr-badge"); b.innerHTML = text || ""; b.className = text ? cls : ""; }
-  /** A message over the picture (empty state, error); "" hides it. */
-  function over(html) { const o = $("scr-over"); o.innerHTML = html || ""; o.style.display = html ? "flex" : "none"; }
+  /** A message over the picture (empty state, error); "" hides it. act: it has buttons or inputs to use. */
+  function over(html, act = false) {
+    const o = $("scr-over");
+    o.innerHTML = html || "";
+    o.style.display = html ? "flex" : "none";
+    o.classList.toggle("act", !!act);
+  }
   function busy(b) { screen.classList.toggle("loading", !!b); }
 
   // ---- annotations: the mode gives a doc {marks(), change(fn), editable()}; change records undo and saves

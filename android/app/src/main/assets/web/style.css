@@ -107,6 +107,7 @@ button.chip { border:0; font:inherit; font-size:12px; }
 #ctlpill.ai { background:rgba(224,160,48,.16); color:var(--accent-text); }
 #ctlpill.task { background:rgba(63,166,107,.14); color:var(--green); }
 #ctlpill.stopped { background:rgba(217,83,79,.12); color:var(--red); }
+#ctlpill.teacher { background:rgba(254,135,90,.2); color:var(--accent-text); }
 #recbadge { display:none; color:#fff; background:var(--red); border-radius:999px; padding:3px 10px; font-size:12.5px; font-variant-numeric:tabular-nums; white-space:nowrap; }
 #recbadge.show { display:inline-flex; align-items:center; gap:6px; }
 #recbadge::before { content:""; width:7px; height:7px; border-radius:50%; background:#fff; animation:pulse 1.2s infinite; }
@@ -239,6 +240,7 @@ body[data-mode=teach] #taskbar { display:flex; }
 #teach.stage-folded #chat { flex:1; width:auto !important; }
 .for-live, .for-replay, .for-remote { }
 #teach:not([data-stage=live]) .for-live, #teach:not([data-stage=replay]) .for-replay, #teach:not([data-stage=remote]) .for-remote { display:none !important; }
+#teach[data-stage=remote] .not-remote { display:none !important; }
 
 /* the toolbar: fixed height, groups in fixed places */
 #tbar { height:52px; flex:none; display:flex; align-items:center; gap:6px; padding:0 12px; overflow:hidden; white-space:nowrap; border-bottom:1px solid var(--line); background:var(--panel); }
@@ -249,6 +251,10 @@ body[data-mode=teach] #taskbar { display:flex; }
 #rp-pick { flex:1; min-width:0; justify-content:flex-start; }
 #rp-pick .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; text-align:left; }
 #rp-rec { flex:none; }
+#rm-take { flex:1; min-width:0; justify-content:flex-start; }
+#rm-take .st { font-weight:700; }
+#rm-take .tl { font-weight:500; }
+#rm-shot { flex:none; }
 .btn.solid { font-weight:700; border:1.5px solid var(--edge); box-shadow:0 2px 0 var(--edge); }
 .btn.solid.orange { background:var(--orange); color:var(--ink); }
 .btn.solid.orange:hover { background:var(--orange-2); }
@@ -272,6 +278,12 @@ body[data-mode=teach] #taskbar { display:flex; }
 #screen { position:relative; aspect-ratio:3/2; background:#000; border-radius:8px; box-shadow:var(--shadow); overflow:hidden; flex:none; }
 #screen canvas, #scr-video { position:absolute; inset:0; width:100%; height:100%; display:block; }
 #scr-cv { touch-action:none; }
+/* the remote stage: its own canvas takes the picture and the pointer; a frame around it while this page has control */
+#screen #scr-remote { display:none; touch-action:none; } /* beats "#screen canvas" above: only the remote stage shows it */
+#teach[data-stage=remote] #scr-remote { display:block; }
+#teach[data-stage=remote] #scr-cv { display:none; }
+#screen.ctl #scr-remote { cursor:crosshair; }
+#screen.ctl::after { content:""; position:absolute; inset:0; border:3px solid var(--orange); border-radius:8px; pointer-events:none; z-index:3; }
 #scr-video { display:none; background:#000; }
 #screen.playing #scr-video { display:block; }
 #screen.playing #scr-cv { visibility:hidden; }
@@ -283,6 +295,12 @@ body[data-mode=teach] #taskbar { display:flex; }
 #scr-over { position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:10px; pointer-events:none;
             background:var(--stage); color:var(--dim); text-align:center; padding:18px; z-index:2; }
 #scr-over img { width:96px; opacity:.9; }
+#scr-over.act { pointer-events:auto; overflow:auto; }
+.rm-card { max-width:560px; text-align:left; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 18px; box-shadow:var(--shadow); }
+.rm-card h3 { margin:0 0 8px; display:flex; gap:8px; align-items:center; font-size:15px; }
+.rm-card p { margin:0 0 8px; font-size:13px; line-height:1.65; }
+.rm-card .row { display:flex; gap:6px; }
+.rm-card .row input { flex:1; min-width:0; }
 #scr-label { position:absolute; display:none; z-index:4; min-height:32px; padding:4px 10px; border:2px solid var(--orange); box-shadow:var(--pop-shadow); font-size:13.5px; }
 
 /* the bottom slot: fixed height; its contents scroll inside it rather than overlap */

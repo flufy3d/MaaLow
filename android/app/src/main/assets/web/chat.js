@@ -12,7 +12,7 @@ window.teach = (() => {
 
   /** Show a stage in the shared frame (its toolbar group and bottom slot come with it); the frame stays put. */
   function setStage(s, rest = "") {
-    if (!["live", "replay"].includes(s)) s = "live";
+    if (!["live", "replay", "remote"].includes(s)) s = "live";
     const was = stage;
     stage = s;
     $("teach").dataset.stage = s;
@@ -20,7 +20,9 @@ window.teach = (() => {
     if (!active) return;
     if (was === "replay" && s !== "replay") replay.leave();
     if (was === "live" && s !== "live") live.leave();
+    if (was === "remote" && s !== "remote") remote.leave();
     if (s === "replay") replay.enter(rest);
+    else if (s === "remote") { remote.enter(); history.replaceState(null, "", "#teach/remote"); }
     else { live.enter(); history.replaceState(null, "", "#teach/live"); }
     renderTray();
   }
@@ -37,7 +39,7 @@ window.teach = (() => {
   }
   function leave() {
     active = false;
-    if (stage === "replay") replay.leave(); else live.leave();
+    if (stage === "replay") replay.leave(); else if (stage === "remote") remote.leave(); else live.leave();
   }
 
   // ---- recordings the messages refer to (names, lengths, thumbnails)
@@ -206,7 +208,9 @@ window.teach = (() => {
   setInterval(renderStatus, 1000);
 
   /** The top bar's control indicator and the chat's status line. */
-  const CONTROL = { idle: ["空闲", ""], ai: ["AI 执行中", "warn pulse"], task: ["任务运行中", "ok pulse"], stopped: ["已停止", "bad"] };
+  const CONTROL = {
+    idle: ["空闲", ""], ai: ["AI 执行中", "warn pulse"], task: ["任务运行中", "ok pulse"], stopped: ["已停止", "bad"], teacher: ["老师操控中", "warn"],
+  };
   const FORCE_AFTER_MS = 3 * 60_000;
   function idleMs() { // since the AI last did something (or since the wait began, if it never did)
     const since = Date.now() - polledAt;
@@ -311,9 +315,10 @@ window.teach = (() => {
     renderTray();
     live.trayChanged(tray); replay.trayChanged(tray);
   }
-  /** A fresh screenshot into the tray, opened on the live stage. */
-  async function takeShot() {
+  /** A fresh screenshot into the tray, opened on the live stage (open = false: the remote stage keeps watching). */
+  async function takeShot(open = true) {
     const item = trayGot(await post("/shot", { tray: true }));
+    if (!open) { renderTray(); return item; }
     if (stage !== "live") setStage("live");
     live.edit(item);
     return item;
