@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import zipfile
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from maalow import __version__
 from maalow import rec, sync
-from maalow.client import HOME, Client, grid_png
+from maalow.client import HOME, Client, grid_png, local_base
 from maalow.skills import registry
 from maalow.workspace import Workspace
 
@@ -65,7 +66,11 @@ def _add_do_parser(sub) -> None:
     p.add_argument("--no-wait", action="store_true", help="start it and return at once")
     ops.add_parser("skills", help="list the app's skills and their load errors").add_argument("--workspace")
     ops.add_parser("stop", help="stop the running task or skill")
-    ops.add_parser("say", help="reply to the teacher in the web UI").add_argument("text")
+    p = ops.add_parser("say", help="reply to the teacher in the web UI")
+    p.add_argument("text", nargs="?", default="")
+    p.add_argument("--attach", action="append", default=[], type=_attachment, metavar="JSON",
+                   help='an attachment, repeatable: {"type":"shot","file":"now" or a screenshot,"annotations":[...]} '
+                        'or {"type":"recording","rec":ID,"focus":{"from":N,"to":N}}')
     ops.add_parser("listen", help="wait for teacher messages").add_argument("--timeout", type=int, default=1800)
     p = op("click", "tap a point")
     p.add_argument("x", type=int)
@@ -179,20 +184,59 @@ def _sync(args, client: Client) -> int:
     return 1 if "error" in out else 0
 
 
+def _attachment(text: str) -> dict:
+    try:
+        a = json.loads(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"not JSON: {e}")
+    if not isinstance(a, dict) or a.get("type") not in ("shot", "recording"):
+        raise argparse.ArgumentTypeError(f"not a shot or recording attachment: {text}")
+    return a
+
+
 def _with_views(client: Client, root: Path, out):
-    """Fetch screenshots the app mentions and add local paths (view: grid image) for the AI to look at."""
+    """Fetch screenshots the app mentions and add local paths (view: grid image) for the AI to look at. Each of a
+    message's attachments gets its own: a shot its image with grid and annotations, a recording its length, labels
+    digest and focus frame."""
     if isinstance(out, list):
         return [_with_views(client, root, m) for m in out]
     if not isinstance(out, dict) or "error" in out:
         return out
     ws = out.get("workspace")
-    if ws is None and (out.get("screenshot") or out.get("note")):
+    if ws is None and (out.get("screenshot") or out.get("attachments")):
         ws = client.get("/state").get("workspace")
-    if out.get("note"):
-        out = {**out, "view": client.fetch(ws, out["note"], root, grid=False)["image"]}
+    if out.get("attachments"):
+        out = {**out, "attachments": [_expand(client, root, ws, a) for a in out["attachments"]]}
     elif out.get("screenshot"):
         out = {**out, **client.fetch(ws, out["screenshot"], root)}
     return out
+
+
+def _expand(client: Client, root: Path, ws: str, a: dict) -> dict:
+    try:
+        if a.get("type") == "shot":
+            got = client.fetch(ws, a["file"], root, annotations=a.get("annotations"))
+            return {**a, "image": got["image"], "view": got["view"]}
+        if a.get("type") == "recording":
+            digest = rec.labels(client, ws, a["rec"])
+            info = digest["recording"]
+            out = {**a, "name": info.get("name", ""), "frames": info.get("frames"), "fps": info.get("fps", 30),
+                   "labels": [{k: f[k] for k in ("frame", "time_ms", "note", "text")} for f in digest["frames"]]}
+            if a.get("focus"):
+                out["view"] = rec.frame(client, ws, a["rec"], a["focus"]["from"])["view"]
+            return out
+    except Exception as e:  # a deleted recording or screenshot: say so, keep the rest of the message
+        return {**a, "error": f"{type(e).__name__}: {e}"}
+    return a
+
+
+def _local_to_app(root: Path, ws: str | None, a: dict) -> dict:
+    """A shot attachment may name a local copy (image or view from listen or shot): turn it into the app's path."""
+    f = a.get("file", "")
+    if a.get("type") != "shot" or not ws or not Path(f).is_absolute():
+        return a
+    rel = Path(f).resolve().relative_to(local_base(root, ws).resolve()).as_posix()
+    return {**a, "file": re.sub(r"\.(grid|marks)\.png$", ".png", rel)}
 
 
 def _do(args, client: Client):
@@ -208,7 +252,9 @@ def _do(args, client: Client):
     if op == "shot":
         return _with_views(client, args.root, client.post("/shot"))
     if op == "say":
-        return client.post("/say", {"text": args.text})
+        local = any(a.get("type") == "shot" and Path(a.get("file", "")).is_absolute() for a in args.attach)
+        ws = client.get("/state").get("workspace") if local else None
+        return client.post("/say", {"text": args.text, "attachments": [_local_to_app(args.root, ws, a) for a in args.attach]})
     if op == "listen":
         # the app answers each poll within 25 s, so it notices soon when nobody is listening any more
         end = time.monotonic() + args.timeout

@@ -3,6 +3,8 @@ package io.github.flufy3d.maalow.teach
 import io.github.flufy3d.maalow.App
 import io.github.flufy3d.maalow.store.PrettyJson
 import io.github.flufy3d.maalow.store.optArray
+import io.github.flufy3d.maalow.store.optInt
+import io.github.flufy3d.maalow.store.optLong
 import io.github.flufy3d.maalow.store.optStr
 import io.github.flufy3d.maalow.store.readJsonObject
 import io.github.flufy3d.maalow.store.writeAtomic
@@ -27,10 +29,11 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * A teaching session, as in the PC TeachingServer: the teacher (web UI) takes screenshots on demand, draws numbered
- * annotations and talks; the AI (PC client) listens, drives the device and replies. Every AI action becomes a step
- * with before/after screenshots. Files match maalow.teaching: teaching/<task>.json (TeachingSession),
- * teaching/<task>.chat.jsonl and teaching/<task>/NNNN.png.
+ * A teaching session: the teacher (web UI) and the AI (PC client) talk in messages that carry text and attachments
+ * (a screenshot with its annotations, or a recording with an optional focus on some frames). The AI listens, drives
+ * the device and replies. Every AI action becomes a step with before/after screenshots. Files match maalow.teaching:
+ * teaching/<task>.json (TeachingSession), teaching/<task>.chat.jsonl, teaching/<task>/NNNN.png, and the teacher's
+ * unsent attachments in teaching/<task>.tray.json.
  */
 class Teaching(private val app: App) {
     private val lock = Any() // session and chat state; device work goes through the engine's device lock
@@ -43,13 +46,21 @@ class Teaching(private val app: App) {
     private var steps = ArrayList<JsonObject>()
     private var messages = ArrayList<JsonObject>()
     private var delivered = 0 // messages already handed to the AI
-    private var pending: JsonObject? = null // teacher message whose annotations go on the next step
+    private var pending: JsonObject? = null // {text, annotations} of the teacher message, for the next step
+    private var tray = ArrayList<JsonObject>() // the teacher's unsent attachments, each with an id
+    private var trayRev = 0
+    private var stopped = false // the teacher pressed stop: AI actions are refused until it says something
     private var listeners = 0
     private var lastPoll = 0L // when the last listen returned: the CLI polls again right away
     private var last = "" // latest screenshot, workspace-relative
     private var counter = 0
     private var session = 0 // bumped whenever another session (or a cleared one) is opened: the web UI reloads its chat
     @Volatile private var used = 0L // last request from the teacher or the AI
+    @Volatile private var aiSeen = 0L // last request from the AI (the PC client), and what it was
+    @Volatile private var aiDid = ""
+
+    /** Thrown by AI actions while the teacher has stopped it; the API answers {"error": "stopped by teacher"}. */
+    class Stopped : IllegalStateException(STOPPED)
 
     val active: Boolean get() = workspace.isNotEmpty()
 
@@ -70,11 +81,14 @@ class Teaching(private val app: App) {
         counter = File(d, name).listFiles()?.mapNotNull { it.name.removeSuffix(".png").toIntOrNull() }?.maxOrNull() ?: 0
         val log = File(d, "$name.chat.jsonl")
         messages = ArrayList(
-            if (log.isFile) log.readLines().filter { it.isNotBlank() }.map { PrettyJson.parseToJsonElement(it).jsonObject }
+            if (log.isFile) log.readLines().filter { it.isNotBlank() }.map { upgrade(PrettyJson.parseToJsonElement(it).jsonObject) }
             else emptyList(),
         )
         delivered = messages.size // history was already handled
         pending = null
+        stopped = false
+        tray = ArrayList(readJsonObject(File(d, "$name.tray.json"))?.optArray("items")?.map { it.jsonObject } ?: emptyList())
+        trayRev++
         last = steps.lastOrNull()?.optStr("after").orEmpty()
         session++
         changed.value++
@@ -105,10 +119,17 @@ class Teaching(private val app: App) {
         }
     }
 
+    /** The teacher spoke and the AI has not replied yet (nor was the wait skipped). */
+    private fun waiting(): Boolean {
+        val asked = messages.indexOfLast { it.optStr("role") == "teacher" }
+        return asked >= 0 && messages.indexOfLast { (it.optStr("role") == "ai" && it["auto"] == null) || it["unlock"] != null } < asked
+    }
+
     fun state(): JsonObject = synchronized(lock) {
         ensure()
         val talk = talk()
-        val waiting = talk.isNotEmpty() && talk.last().optStr("role") == "teacher" // teacher spoke, AI has not replied
+        val waiting = waiting()
+        val busy = app.engine.busy
         buildJsonObject {
             put("workspace", workspace)
             put("task", task)
@@ -120,7 +141,31 @@ class Teaching(private val app: App) {
             put("waiting", waiting)
             val online = listeners > 0 || System.currentTimeMillis() - lastPoll < POLL_GAP_MS
             put("ai", if (online) "listening" else if (waiting) "busy" else "away")
+            put("stopped", stopped)
+            // who has the device, for the top bar (arbitration comes with remote control)
+            put("control", when {
+                stopped -> "stopped"
+                waiting -> "ai"
+                busy != null && !busy.startsWith("guard:") -> "task"
+                else -> "idle"
+            })
+            if (aiSeen > 0) {
+                put("ai_idle_ms", System.currentTimeMillis() - aiSeen)
+                put("ai_did", aiDid)
+            }
+            put("tray_rev", trayRev)
         }
+    }
+
+    /** A request from the AI: it is alive and working (the web UI tells slow from stuck by this). */
+    fun aiActive(what: String) {
+        aiSeen = System.currentTimeMillis()
+        aiDid = what
+    }
+
+    /** AI actions (act, run, skill) call this first. */
+    fun checkNotStopped() {
+        if (stopped) throw Stopped()
     }
 
     fun shot(): JsonObject {
@@ -130,6 +175,7 @@ class Teaching(private val app: App) {
 
     suspend fun act(action: JsonObject, say: String, waitMs: Long): JsonObject {
         ensure()
+        checkNotStopped()
         val type = action.optStr("type")
         val full = if (type in setOf("start_app", "stop_app") && action["package"] == null) {
             JsonObject(action + ("package" to JsonPrimitive(app.workspaces.packageOf(workspace))))
@@ -156,12 +202,14 @@ class Teaching(private val app: App) {
         }
     }
 
-    /** Annotation list in the maalow.teaching.Annotation shape, coordinates rounded to ints. */
+    /** Annotation list in the maalow.teaching.Annotation shape, coordinates rounded to ints ("box" is taken as rect). */
     private fun annotations(raw: JsonArray?): JsonArray = buildJsonArray {
         raw?.forEach { e ->
             val a = e.jsonObject
+            val kind = a.optStr("kind").let { if (it == "box") "rect" else it }
+            require(kind in KINDS) { "unknown annotation kind: $kind (${KINDS.joinToString()})" }
             add(buildJsonObject {
-                put("kind", a.optStr("kind"))
+                put("kind", kind)
                 put("coords", buildJsonArray { a.optArray("coords")?.forEach { add(JsonPrimitive(Math.round(it.jsonPrimitive.content.toDouble()))) } })
                 put("label", a.optStr("label").orEmpty())
             })
@@ -170,6 +218,7 @@ class Teaching(private val app: App) {
 
     suspend fun run(node: String, once: Boolean): JsonObject {
         ensure()
+        checkNotStopped()
         return app.engine.exclusive("teach:$workspace/$task") {
             val r = app.engine.run(workspace, node, once)
             JsonObject(mapOf("node" to JsonPrimitive(node)) + r + capture())
@@ -220,7 +269,7 @@ class Teaching(private val app: App) {
             val d = dir()
             val (from, to) = task to name
             require(from != to) { "same name: $name" }
-            require(listOf("$to.json", "$to.chat.jsonl", to).none { File(d, it).exists() }) { "task exists: $to" }
+            require(listOf("$to.json", "$to.chat.jsonl", "$to.tray.json", to).none { File(d, it).exists() }) { "task exists: $to" }
             if (steps.isNotEmpty()) save()
             val (a, b) = "teaching/$from/" to "teaching/$to/"
             readJsonObject(File(d, "$from.json"))?.let { File(d, "$to.json").writeJson(retarget(it, a, b)) }
@@ -229,9 +278,11 @@ class Teaching(private val app: App) {
                     f.readLines().filter { it.isNotBlank() }.joinToString("") { retarget(PrettyJson.parseToJsonElement(it), a, b).toString() + "\n" },
                 )
             }
+            readJsonObject(File(d, "$from.tray.json"))?.let { File(d, "$to.tray.json").writeJson(retarget(it, a, b)) }
             File(d, from).takeIf { it.isDirectory }?.let { check(it.renameTo(File(d, to))) { "cannot move $from/" } }
             File(d, "$from.json").delete()
             File(d, "$from.chat.jsonl").delete()
+            File(d, "$from.tray.json").delete()
             start(workspace, to)
             system("${who(by)} ${if (from == DEFAULT_TASK) "把草稿另存为任务 $to" else "把任务 $from 改名为 $to"}（${steps.size} 步）", by)
         }
@@ -246,6 +297,7 @@ class Teaching(private val app: App) {
             val d = dir()
             File(d, "$gone.json").delete()
             File(d, "$gone.chat.jsonl").delete()
+            File(d, "$gone.tray.json").delete()
             File(d, gone).deleteRecursively()
             start(workspace, DEFAULT_TASK)
             system(if (gone == DEFAULT_TASK) "${who(by)} 清空了草稿（$n 步）" else "${who(by)} 删除了任务 $gone（$n 步），回到草稿", by)
@@ -277,6 +329,7 @@ class Teaching(private val app: App) {
         val names = files.mapNotNull { f ->
             when {
                 f.name.endsWith(".chat.jsonl") -> f.name.removeSuffix(".chat.jsonl")
+                f.name.endsWith(".tray.json") -> null
                 f.name.endsWith(".json") -> f.name.removeSuffix(".json")
                 else -> null
             }
@@ -330,8 +383,69 @@ class Teaching(private val app: App) {
         m
     }
 
-    /** A teacher message. image: the annotated screenshot as a PNG data URL; screenshot: the frame it was drawn on. */
-    fun teach(text: String, annotations: JsonArray, image: String, screenshot: String?): JsonObject {
+    /**
+     * Messages from before attachments kept one screenshot's annotations on the message itself: read them as one shot
+     * attachment (note: the annotated image the old web UI drew). The file on disk stays as it is.
+     */
+    private fun upgrade(m: JsonObject): JsonObject {
+        if (m["attachments"] != null || m.optStr("role") != "teacher") return m
+        val marks = m.optArray("annotations") ?: JsonArray(emptyList())
+        val note = m.optStr("note").orEmpty()
+        val shot = m.optStr("screenshot").orEmpty().ifEmpty { note } // some old ones kept only the drawing
+        val list = if (shot.isNotEmpty() && (marks.isNotEmpty() || note.isNotEmpty())) listOf(shotAttachment(shot, marks, note)) else emptyList()
+        return JsonObject(m - setOf("annotations", "note", "screenshot", "view") + ("attachments" to JsonArray(list)))
+    }
+
+    private fun shotAttachment(file: String, annotations: JsonArray, note: String = "") = buildJsonObject {
+        put("type", "shot")
+        put("file", file)
+        put("annotations", annotations)
+        if (note.isNotEmpty()) put("note", note)
+    }
+
+    /** Workspace-relative path of a screenshot named in an attachment: as given, under teaching/, or in this task. */
+    private fun shotPath(name: String): String {
+        val ws = app.workspaces.dir(workspace)
+        return listOf(name, "teaching/$name", "teaching/$task/$name")
+            .firstOrNull { ".." !in it && File(ws, it).isFile } ?: throw IllegalArgumentException("没有这张截图：$name")
+    }
+
+    /**
+     * Check an attachment and bring it to its stored shape. shot {file, annotations}: file "now" (the AI only) takes a
+     * fresh screenshot. recording {rec, focus?: {from, to}}: a saved recording of this workspace, focus within its frames.
+     */
+    private fun attachment(e: JsonElement, now: Boolean): JsonObject {
+        val a = e as? JsonObject ?: throw IllegalArgumentException("attachment is not an object: $e")
+        return when (a.optStr("type")) {
+            "shot" -> {
+                val name = (a["file"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw IllegalArgumentException("shot needs file")
+                val marks = annotations(a.optArray("annotations")) // checked before a screenshot is taken for nothing
+                val file = if (name == "now" && now) capture().optStr("screenshot")!! else shotPath(name)
+                shotAttachment(file, marks, a.optStr("note").orEmpty())
+            }
+            "recording" -> {
+                val rec = a.optStr("rec") ?: throw IllegalArgumentException("recording needs rec")
+                app.recordings.video(workspace, rec) // exists and is saved
+                val frames = app.recordings.meta(workspace, rec).optInt("frames") ?: 0
+                buildJsonObject {
+                    put("type", "recording")
+                    put("rec", rec)
+                    (a["focus"] as? JsonObject)?.let { f ->
+                        val from = f.optInt("from") ?: throw IllegalArgumentException("focus needs from")
+                        val to = f.optInt("to") ?: from
+                        require(from in 0..to && to < frames) { "focus $from–$to 不在录像里（0–${frames - 1}）" }
+                        put("focus", buildJsonObject { put("from", from); put("to", to) })
+                    }
+                }
+            }
+            else -> throw IllegalArgumentException("unknown attachment type: ${a.optStr("type")}")
+        }
+    }
+
+    private fun attachments(raw: JsonArray?, now: Boolean): List<JsonObject> = raw.orEmpty().map { attachment(it, now) }
+
+    /** The old POST /teach body: annotations drawn on one screenshot; image: that drawing as a PNG data URL. */
+    fun legacyAttachments(annotations: JsonArray, image: String, screenshot: String?): JsonArray {
         ensure()
         var note = ""
         if (image.startsWith(PNG_URL)) {
@@ -340,26 +454,135 @@ class Teaching(private val app: App) {
             f.writeAtomic(Base64.getDecoder().decode(image.substring(PNG_URL.length)))
             note = f.relativeTo(app.workspaces.dir(workspace)).invariantSeparatorsPath
         }
-        return post(
-            mapOf(
-                "role" to JsonPrimitive("teacher"),
-                "text" to JsonPrimitive(text),
-                "annotations" to annotations,
-                "screenshot" to JsonPrimitive(screenshot?.takeIf { it.isNotEmpty() } ?: last),
-                "note" to JsonPrimitive(note),
-            ),
-        )
+        val file = (screenshot?.takeIf { it.isNotEmpty() } ?: last).ifEmpty { note }
+        if (file.isEmpty() || (annotations.isEmpty() && note.isEmpty())) return JsonArray(emptyList())
+        return JsonArray(listOf(shotAttachment(file, annotations, note)))
     }
 
-    /** Task boundary line. auto, so it neither locks the composer nor counts as a reply. */
-    private fun system(text: String, by: String) =
-        post(mapOf("role" to JsonPrimitive("system"), "text" to JsonPrimitive(text), "by" to JsonPrimitive(by), "auto" to JsonPrimitive(true)))
-
-    /** AI reply. (Guard notices are marked auto: they do not count as answering the teacher.) */
-    fun say(text: String): JsonObject {
+    /** A teacher message. Attachments from the tray (they carry its item id) leave it: a sent message is final. */
+    fun teach(text: String, raw: JsonArray?): JsonObject {
         ensure()
-        return post(mapOf("role" to JsonPrimitive("ai"), "text" to JsonPrimitive(text)))
+        val list = attachments(raw, now = false)
+        require(text.isNotBlank() || list.isNotEmpty()) { "消息不能既没有文字也没有附件" }
+        val sent = raw.orEmpty().mapNotNull { (it as JsonObject).optLong("id") }.toSet()
+        return synchronized(lock) {
+            if (tray.removeAll { it.optLong("id") in sent }) saveTray()
+            post(mapOf("role" to JsonPrimitive("teacher"), "text" to JsonPrimitive(text), "attachments" to JsonArray(list)))
+        }
     }
+
+    /** Task boundaries and the like. auto, so it neither locks the composer nor counts as a reply (unlock: it ends the wait). */
+    private fun system(text: String, by: String, unlock: Boolean = false) = post(
+        mapOf("role" to JsonPrimitive("system"), "text" to JsonPrimitive(text), "by" to JsonPrimitive(by), "auto" to JsonPrimitive(true)) +
+            (if (unlock) mapOf("unlock" to JsonPrimitive(true)) else emptyMap()),
+    )
+
+    /**
+     * AI reply, with attachments like the teacher's. It answers the teacher: the composer unlocks and a stop is over.
+     * (Guard notices are marked auto: they do not count as answering.)
+     */
+    fun say(text: String, raw: JsonArray? = null): JsonObject {
+        ensure()
+        val list = attachments(raw, now = true)
+        require(text.isNotBlank() || list.isNotEmpty()) { "消息不能既没有文字也没有附件" }
+        return synchronized(lock) {
+            stopped = false
+            post(mapOf("role" to JsonPrimitive("ai"), "text" to JsonPrimitive(text), "attachments" to JsonArray(list)))
+        }
+    }
+
+    /**
+     * The teacher stops the AI while waiting for its reply. The AI is not listening then, so the app ends what runs now
+     * and refuses its further actions (reads still work) until it explains itself with say.
+     */
+    fun stop(): JsonObject {
+        synchronized(lock) {
+            ensure()
+            check(waiting()) { "没有在等 MaaLow 回复" }
+            if (!stopped) system("老师叫停了", "teacher")
+            stopped = true
+        }
+        app.skills.stop()
+        app.engine.stopTask()
+        return state()
+    }
+
+    /** The teacher gives up waiting (the AI seems stuck): unlock the composer, and tell the AI when it is back. */
+    fun unlock(): JsonObject {
+        synchronized(lock) {
+            ensure()
+            check(waiting()) { "没有在等 MaaLow 回复" }
+            stopped = false
+            system("老师跳过了等待", "teacher", unlock = true)
+        }
+        return state()
+    }
+
+    // ---- the tray: attachments the teacher is getting ready to send, kept per task so a reload or another page sees them
+
+    fun tray(): JsonObject = synchronized(lock) {
+        ensure()
+        buildJsonObject { put("rev", trayRev); put("items", JsonArray(tray)) }
+    }
+
+    private fun saveTray() {
+        trayRev++
+        val f = File(dir(), "$task.tray.json")
+        if (tray.isEmpty()) f.delete() else f.writeJson(buildJsonObject { put("items", JsonArray(tray)) })
+        changed.value++
+    }
+
+    /** Put an attachment in the tray (shot with file "now": take the screenshot); returns the item, id included. */
+    fun trayAdd(raw: JsonObject): JsonObject {
+        ensure()
+        val a = attachment(raw, now = true)
+        return synchronized(lock) {
+            val id = maxOf(System.currentTimeMillis(), (tray.maxOfOrNull { it.optLong("id") ?: 0 } ?: 0) + 1)
+            val item = JsonObject(mapOf("id" to JsonPrimitive(id)) + a)
+            tray.add(item)
+            saveTray()
+            item
+        }
+    }
+
+    /** Change a tray item: a shot's annotations, a recording's focus (null: none). */
+    fun trayEdit(id: Long, change: JsonObject): JsonObject {
+        ensure()
+        val i = synchronized(lock) { tray.indexOfFirst { it.optLong("id") == id } }
+        if (i < 0) throw NoSuchElementException("托盘里没有这一项：$id")
+        val old = tray[i]
+        val a = attachment(JsonObject(old + change.filterKeys { it == "annotations" || it == "focus" }), now = false)
+        return synchronized(lock) {
+            val item = JsonObject(mapOf("id" to JsonPrimitive(id)) + a)
+            val j = tray.indexOfFirst { it.optLong("id") == id }
+            if (j < 0) throw NoSuchElementException("托盘里没有这一项：$id")
+            tray[j] = item
+            saveTray()
+            item
+        }
+    }
+
+    /** Take items out of the tray (all when ids is null); their screenshots go too unless something else uses them. */
+    fun trayRemove(ids: Set<Long>?): JsonObject {
+        synchronized(lock) {
+            ensure()
+            val gone = tray.filter { ids == null || it.optLong("id") in ids }
+            if (gone.isEmpty()) return tray()
+            tray.removeAll(gone.toSet())
+            saveTray()
+            gone.mapNotNull { if (it.optStr("type") == "shot") it.optStr("file") else null }.filterNot { used(it) }.forEach { f ->
+                app.workspaces.file(workspace, f).delete()
+                if (last == f) last = steps.lastOrNull()?.optStr("after").orEmpty()
+            }
+        }
+        return tray()
+    }
+
+    /** A screenshot some message, step or tray item refers to. */
+    private fun used(file: String): Boolean =
+        messages.any { m -> m.optArray("attachments").orEmpty().any { (it as JsonObject).optStr("file") == file || it.optStr("note") == file } } ||
+            steps.any { it.optStr("screenshot") == file || it.optStr("after") == file } ||
+            tray.any { it.optStr("file") == file }
 
     /** Chat messages with since < id < before, at most the last [limit] of them. */
     fun since(n: Int, before: Int? = null, limit: Int? = null): List<JsonObject> = synchronized(lock) {
@@ -382,19 +605,30 @@ class Teaching(private val app: App) {
         }
         try {
             val end = System.currentTimeMillis() + timeoutMs.coerceAtMost(POLL_MAX_MS)
+            var first = true
             while (true) {
                 val seen = changed.value
                 synchronized(lock) {
-                    // teacher messages, and task switches the teacher made in the web UI
+                    // teacher messages, and what the teacher did in the web UI (task switches, stop, skipping the wait)
                     val new = messages.drop(delivered).filter {
                         it.optStr("role") == "teacher" || (it.optStr("role") == "system" && it.optStr("by") == "teacher")
                     }
                     if (new.isNotEmpty()) {
                         delivered = messages.size
-                        val said = new.lastOrNull { it.optStr("role") == "teacher" }
-                        if (said?.optArray("annotations")?.isNotEmpty() == true) pending = said
+                        new.lastOrNull { it.optStr("role") == "teacher" }?.let { said ->
+                            val shot = said.optArray("attachments").orEmpty().map { it.jsonObject }
+                                .lastOrNull { it.optStr("type") == "shot" && it.optArray("annotations")?.isNotEmpty() == true }
+                            pending = shot?.let { buildJsonObject { put("text", said.optStr("text").orEmpty()); put("annotations", it["annotations"]!!) } }
+                        }
                         return new
                     }
+                    // back to listening without answering what it was given (it forgot to say): unlock the teacher
+                    if (first && waiting()) {
+                        stopped = false
+                        system("MaaLow 没有回复就回去等消息了，已自动解锁", "app", unlock = true)
+                        delivered = messages.size
+                    }
+                    first = false
                 }
                 val left = end - System.currentTimeMillis()
                 if (left <= 0) return emptyList()
@@ -416,6 +650,8 @@ class Teaching(private val app: App) {
 
     companion object {
         const val PNG_URL = "data:image/png;base64,"
+        const val STOPPED = "stopped by teacher"
+        val KINDS = setOf("rect", "circle", "arrow", "click", "region")
         const val DEFAULT_TASK = "explore" // the scratch task: where teaching starts and ending a task returns to
         const val NOTICE_WINDOW_MS = 30 * 60_000L
         const val POLL_MAX_MS = 25_000L

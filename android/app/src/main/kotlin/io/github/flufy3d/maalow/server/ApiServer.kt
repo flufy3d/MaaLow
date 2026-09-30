@@ -16,6 +16,7 @@ import io.github.flufy3d.maalow.store.optInt
 import io.github.flufy3d.maalow.store.optLong
 import io.github.flufy3d.maalow.store.optStr
 import io.github.flufy3d.maalow.store.str
+import io.github.flufy3d.maalow.teach.Teaching
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -68,6 +69,8 @@ class ApiServer(private val app: App) {
                     val auth = call.request.headers["Authorization"]?.removePrefix("Bearer ")?.trim()
                     val token = auth ?: call.request.queryParameters["token"]
                     if (token != app.token) call.respondJson(HttpStatusCode.Unauthorized, errorBody("bad or missing token"))
+                    // the PC client marks its requests: the web UI shows how long ago the AI last did something
+                    else if (call.request.headers[CLIENT_HEADER] == "cli" && path != "/api/v1/listen") app.teaching.aiActive(aiDoing(path))
                 }
             })
             install(PartialContent) // video seeking in the replay page
@@ -79,7 +82,7 @@ class ApiServer(private val app: App) {
                         is IllegalStateException -> HttpStatusCode.Conflict
                         else -> HttpStatusCode.InternalServerError
                     }
-                    call.respondJson(code, errorBody("${e.javaClass.simpleName}: ${e.message}"))
+                    call.respondJson(code, errorBody(if (e is Teaching.Stopped) Teaching.STOPPED else "${e.javaClass.simpleName}: ${e.message}"))
                 }
             }
             routing {
@@ -115,6 +118,7 @@ class ApiServer(private val app: App) {
 
         // {action, say?, wait?, record?}: recorded as a teaching step (with a screenshot after) unless record=false.
         post("/api/v1/act") {
+            app.teaching.checkNotStopped()
             val body = call.body()
             val action = body["action"]!!.jsonObject
             if (body.optBool("record") != false) {
@@ -127,6 +131,7 @@ class ApiServer(private val app: App) {
 
         // {node, once?, workspace?, record?}: in the teaching session (screenshot after) unless record=false.
         post("/api/v1/run") {
+            app.teaching.checkNotStopped()
             val body = call.body()
             val node = body.str("node")
             val once = body.optBool("once") ?: true
@@ -252,6 +257,21 @@ class ApiServer(private val app: App) {
 }
 
 fun errorBody(msg: String) = buildJsonObject { put("error", msg) }
+
+/** Header the PC client (maalow CLI) sends with every request. */
+const val CLIENT_HEADER = "X-MaaLow-Client"
+
+/** What an AI request was, in a few words for the web UI. */
+private fun aiDoing(path: String): String = when {
+    path == "/api/v1/act" -> "操作"
+    path == "/api/v1/run" -> "运行节点"
+    path == "/api/v1/skill/run" -> "运行技能"
+    path == "/api/v1/shot" || path == "/api/v1/screen" -> "截图"
+    path == "/api/v1/say" -> "回复"
+    path.startsWith("/api/v1/recordings/") -> "看录像"
+    path.startsWith("/api/v1/files/") || path.startsWith("/api/v1/sync") -> "同步文件"
+    else -> path.removePrefix("/api/v1/").substringBefore('/')
+}
 
 suspend fun ApplicationCall.body(): JsonObject {
     val text = receiveText()

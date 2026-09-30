@@ -41,6 +41,7 @@ fun Route.skillRoutes(app: App) {
     }
 
     post("/api/v1/skill/run") {
+        app.teaching.checkNotStopped()
         val b = call.body()
         val ws = workspaceOf(b.optStr("workspace"))
         val name = b.str("name")

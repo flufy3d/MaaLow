@@ -127,3 +127,51 @@ def test_do_skill_posts_run_and_fails_on_skill_error(tmp_path, monkeypatch, caps
     assert main(["do", "skill", "x", "--args", '{"n": 2}', "--timeout", "5000"]) == 1
     assert posts == [("/skill/run", {"name": "x", "args": {"n": 2}, "wait": True, "timeout": 5000}, 65.0)]
     assert json.loads(capsys.readouterr().out)["error"]["line"] == 3
+
+
+def test_listen_expands_attachments(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from maalow import cli, client, rec
+
+    Workspace.create(tmp_path, "demo")
+
+    def download(self, path, dest, timeout=0):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (300, 200)).save(dest)
+        return dest
+
+    monkeypatch.setattr(client.Client, "download", download)
+    monkeypatch.setattr(rec, "labels", lambda c, ws, rid: {"recording": {"name": "boss", "frames": 900, "fps": 30},
+                                                           "frames": [{"frame": 12, "time_ms": 400, "note": "red", "text": ["1号框选"], "annotations": []}]})
+    monkeypatch.setattr(rec, "frame", lambda c, ws, rid, n: {"view": f"frame-{n}.grid.png"})
+    msg = {"workspace": "demo", "role": "teacher", "text": "", "attachments": [
+        {"type": "shot", "file": "teaching/t/0001.png", "annotations": [{"kind": "rect", "coords": [150, 20, 50, 40], "label": ""}]},
+        {"type": "recording", "rec": "r1", "focus": {"from": 12, "to": 12}},
+        {"type": "recording", "rec": "r2"},
+    ]}
+    shot, focused, plain = cli._with_views(client.Client("http://x", "t"), tmp_path, [msg])[0]["attachments"]
+    view = Image.open(shot["view"])
+    assert shot["view"].endswith(".marks.png") and view.getpixel((175, 20)) == (255, 77, 79)  # the box's top edge
+    assert focused["frames"] == 900 and focused["labels"] == [{"frame": 12, "time_ms": 400, "note": "red", "text": ["1号框选"]}]
+    assert focused["view"] == "frame-12.grid.png" and "view" not in plain
+
+
+def test_say_posts_attachments(monkeypatch, capsys):
+    from maalow import cli
+
+    posts = []
+
+    class App:
+        def __init__(self, *a):
+            pass
+
+        def post(self, path, body=None, timeout=120):
+            posts.append((path, body))
+            return {"id": 3}
+
+    monkeypatch.setattr(cli, "Client", App)
+    assert main(["do", "say", "这个？", "--attach", '{"type":"shot","file":"now"}',
+                 "--attach", '{"type":"recording","rec":"r1","focus":{"from":5,"to":5}}']) == 0
+    assert posts == [("/say", {"text": "这个？", "attachments": [
+        {"type": "shot", "file": "now"}, {"type": "recording", "rec": "r1", "focus": {"from": 5, "to": 5}}]})]

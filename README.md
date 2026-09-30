@@ -103,8 +103,8 @@ MaaLow
 { "id": 123, "time": "...", "role": "teacher",   // teacher | ai | system
   "text": "...",
   "attachments": [
-    { "type": "shot", "file": "<任务>/0042.png",
-      "annotations": [{ "kind": "box", "coords": [x, y, w, h], "label": "..." }] },
+    { "type": "shot", "file": "teaching/<任务>/0042.png",
+      "annotations": [{ "kind": "rect", "coords": [x, y, w, h], "label": "..." }] },
     { "type": "recording", "rec": "20260930-1412",
       "focus": { "from": 1800, "to": 1900 } }       // focus 可选；只看一帧时 from = to
   ] }
@@ -179,7 +179,7 @@ MaaLow
 ### 锁与停止
 
 * **锁**：严格一问一答。老师发出后，要等 AI `say` 回复才能发下一条。只锁“发送”按钮；输入框、托盘、截图、标注、选录像都能照常用
-* **AI 卡住时**：AI 等很久才回答是常事（在想、在写规则），也可能真卡在某个调用上。App 把 AI 发来的每个命令（点击、截图、取帧……）都当成活动，网页显示“AI 最后活动：N 秒前（点击）”，好分清是慢还是卡。连续 3 分钟没有活动才出现“强制解锁”，按下后解锁、清掉“已停止”，对话里记一条 `system` 消息“老师跳过了等待”，AI 回来时就知道老师已经往下走了。AI 没 `say` 就回去 listen 时（忘了回复），App 也自动解锁，记同样的 `system` 消息
+* **AI 卡住时**：AI 等很久才回答是常事（在想、在写规则），也可能真卡在某个调用上。App 把 AI 发来的每个命令（点击、截图、取帧……）都当成活动，网页显示“AI 最后活动：N 秒前（点击）”，好分清是慢还是卡。连续 3 分钟没有活动才出现“强制解锁”，按下后解锁、清掉“已停止”，对话里记一条 `system` 消息“老师跳过了等待”，AI 回来时就知道老师已经往下走了。AI 没 `say` 就回去 listen 时（忘了回复），App 也自动解锁，记一条“MaaLow 没有回复就回去等消息了，已自动解锁”（只给老师看）
 * **停止**：只在等待 AI 回复时能按，其他时候灰着。AI 执行期间没有在 listen，停止没法当成消息发给 AI，所以改成由 App 拒绝 AI 接下来的操作：
   1. 老师点“停止”后，App 立刻停掉正在跑的节点或 Skill（同 `maalow do stop`），在对话里记一条 `system` 消息“老师叫停了”，进入“已停止”状态
   2. “已停止”期间，AI 的操作类命令（`click` / `swipe` / `back` / `run` / `skill` 等）一律返回 `{"error": "stopped by teacher"}`，不执行；`shot`、`screen`、`rec` 这类只读命令照常可用
@@ -190,9 +190,12 @@ MaaLow
 
 网页 → App：
 
-* `POST /api/v1/teach {text, attachments}`：一次发整条消息；旧格式 `{text, image, annotations}` 继续接受
-* `POST /api/v1/shot`：截图进托盘，返回文件名
-* `POST /api/v1/teach/stop`：老师叫停
+* `POST /api/v1/teach {text, attachments}`：一次发整条消息；旧格式 `{text, annotations, image, screenshot}` 继续接受
+* `POST /api/v1/shot {tray: true}`：截图进托盘，返回托盘项 `{id, type: "shot", file, annotations}`（不带 `tray` 是 AI 的 `do shot`，不进托盘）
+* 托盘：`GET /api/v1/tray` → `{rev, items}`；`POST /api/v1/tray {附件}` 加一项（录像）；`PUT /api/v1/tray/{id} {annotations | focus}` 改一项；`DELETE /api/v1/tray/{id}`、`DELETE /api/v1/tray` 删一项或全部。`/state` 带 `tray_rev`，变了就重新取
+* `/teach` 的附件是托盘项（带 `id`），发出后从托盘里拿掉
+* `POST /api/v1/teach/stop`：老师叫停；`POST /api/v1/teach/unlock`：强制解锁
+* `/state` 还带 `stopped`、`control`（idle / ai / task / stopped）、`ai_idle_ms` 和 `ai_did`（AI 最后一次活动离现在多久、是什么）。PC 端每个请求都带 `X-MaaLow-Client: cli`，App 靠它认出 AI 的活动
 
 App → AI（`maalow do listen`）：每个附件展开成本地文件和摘要，其他帧由 AI 用 `maalow rec frame` 按需取；`role: system` 的消息照旧，不用回。
 
@@ -212,12 +215,12 @@ AI → 网页（`maalow do say`）：`--attach` 可以重复，JSON 和消息里
 
 ```sh
 maalow do say "你说的领取按钮是这个吗？" \
-  --attach '{"type":"shot","file":"now","annotations":[{"kind":"box","coords":[820,560,160,60],"label":"领取"}]}'
+  --attach '{"type":"shot","file":"now","annotations":[{"kind":"rect","coords":[820,560,160,60],"label":"领取"}]}'
 maalow do say "预警是从这帧开始的吗？" \
   --attach '{"type":"recording","rec":"20260930-1412","focus":{"from":1834,"to":1834}}'
 ```
 
-* shot 的 `file` 写已有截图的文件名，就是引用 AI 看过的那张（listen 或 `do shot` 返回的）；写 `"now"`，App 当场截一张新图，用来汇报操作后的画面
+* shot 的 `file` 写已有截图（工作区里的路径，如 listen 给的 `file`、`do shot` 给的 `screenshot`；只写文件名就在当前任务里找；本地的 `image` / `view` 路径 PC 端会换成 App 上的），就是引用 AI 看过的那张；写 `"now"`，App 当场截一张新图，用来汇报操作后的画面
 * AI 截的图也存进当前任务的截图目录
 * 每次 `say` 都会给网页解锁，也会清掉“已停止”状态
 

@@ -13,7 +13,7 @@
 
    然后用 `maalow do click X Y --say "意图"` / `swipe` / `back` / `run NODE` 等操作，坐标 1080×720。`role: system` 是任务切换或“老师叫停了”，不用回。
 3. 每条老师消息都要 `uv run maalow do say "..."` 回复，否则网页发送按钮一直锁着。回复可以带附件（`--attach '<JSON>'`，可重复，格式同消息里的附件）：
-   - 确认理解时框出目标：`--attach '{"type":"shot","file":"<你看过的那张>","annotations":[{"kind":"box","coords":[x,y,w,h],"label":"领取"}]}'`。
+   - 确认理解时框出目标：`--attach '{"type":"shot","file":"<你看过的那张>","annotations":[{"kind":"rect","coords":[x,y,w,h],"label":"领取"}]}'`。
    - 汇报结果时用 `"file":"now"`，App 当场截一张操作后的画面。
    - 讨论录像时带 focus：`--attach '{"type":"recording","rec":"<id>","focus":{"from":N,"to":N}}'`。
 4. 操作命令返回 `{"error": "stopped by teacher"}`：老师按了停止。立刻停下，不要再点、不要重试，用 `say` 说明做到哪一步，然后回到第 1 步。只读命令（`shot`、`screen`、`rec`）照常可用。
