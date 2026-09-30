@@ -33,8 +33,20 @@
         "recognition": "Custom",
         "custom_recognition": "stronghold.recognize"
     },
+    "Cixin": {
+        "desc": "慈心山院一键跑完：从任意画面（大世界、菜单、江湖行、据点挑战页、别处的大地图都行）关弹窗 → CixinTeleport 传送到石碑 → CixinRoute 走完路线（4 朵毒花 + 精英怪 + 路上的绣金卫，开据点宝箱）。卡片上写着「势力重新占据时间」（还没刷新）就在石碑停下报错，不跑路线。技能 skills/stronghold.js 的 teleport 模式",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "stronghold",
+        "custom_action_param": {
+            "teleport": "CixinTeleport"
+        },
+        "next": [
+            "CixinRoute"
+        ]
+    },
     "CixinRoute": {
-        "desc": "慈心山院：从传送石碑沿录好的路线走（路点坐标是大地图放到最大时相对据点图标的像素）。默认连续定位（locate：每帧用小地图在拼图 locate/cixin_mosaic 里找位置，认不出再用大地图 locate/cixin_bigmap，中间航位推算，不开大地图；只在有动作的点和终点停下）；去掉 locate 就回到旧的快照模式（snap 是那个点的小地图快照，templates/route/cixin/）。途中销毁 4 朵曼陀罗毒花、打精英怪，最后开据点宝箱领奖（领取三份、扫荡 9）。「去宝箱途中」「据点宝箱」录的时候 where() 被箭头挡住读成了 (0,0)，现在的坐标是拿它们的快照在小地图拼图 locate/cixin_mosaic 里找回来的（第 0–13 点用同法都在 ±6 px 内）。技能 skills/route.js，教学 explore 消息 92–227",
+        "desc": "慈心山院：从传送石碑沿录好的路线走（路点坐标是大地图放到最大时相对据点图标的像素）。默认连续定位（locate：每帧用小地图在拼图 locate/cixin_mosaic 里找位置，认不出再用大地图 locate/cixin_bigmap，中间航位推算，不开大地图；只在有动作的点和终点停下）；去掉 locate 就回到旧的快照模式（snap 是那个点的小地图快照，templates/route/cixin/）。途中销毁 4 朵曼陀罗毒花、打精英怪，最后开据点宝箱领奖（默认领取三份、扫荡次数按面板默认，老师同意）。路上打完仗在整张参考图里重新定位，从这段剩下最近的点接着走；到宝箱点没有宝箱就看任务栏补：没销毁的毒花沿路线回去补，还有绣金卫就跑 StrongholdFight 清场，再回宝箱。「去宝箱途中」「据点宝箱」录的时候 where() 被箭头挡住读成了 (0,0)，现在的坐标是拿它们的快照在小地图拼图 locate/cixin_mosaic 里找回来的（第 0–13 点用同法都在 ±6 px 内）。「绕开第二个毒花旁的石像」是 2026-10-01 补的（直线去精英怪会撞上花旁的石像，照解困后的路补）。第 0–14 点（除补的那个）是据点活着时用 where() 记的，读的是红色活图标，比参考图用的灰图标偏 (1,2)，已统一减掉（2026-10-01）。技能 skills/route.js，教学 explore 消息 92–227",
         "recognition": "DirectHit",
         "action": "Custom",
         "custom_action": "route",
@@ -46,8 +58,8 @@
             "points": [
                 {
                     "at": [
-                        -108,
-                        115
+                        -109,
+                        113
                     ],
                     "cam": 53,
                     "snap": "route/cixin/00.png",
@@ -55,8 +67,8 @@
                 },
                 {
                     "at": [
-                        -80,
-                        110
+                        -81,
+                        108
                     ],
                     "cam": 62,
                     "snap": "route/cixin/01.png",
@@ -64,8 +76,8 @@
                 },
                 {
                     "at": [
-                        -72,
-                        84
+                        -73,
+                        82
                     ],
                     "cam": 42,
                     "snap": "route/cixin/03.png",
@@ -73,8 +85,8 @@
                 },
                 {
                     "at": [
-                        -42,
-                        54
+                        -43,
+                        52
                     ],
                     "cam": 45,
                     "snap": "route/cixin/04.png",
@@ -82,8 +94,8 @@
                 },
                 {
                     "at": [
-                        -30,
-                        40
+                        -31,
+                        38
                     ],
                     "cam": 45,
                     "snap": "route/cixin/05.png",
@@ -91,8 +103,8 @@
                 },
                 {
                     "at": [
-                        -32,
-                        20
+                        -33,
+                        18
                     ],
                     "cam": 342,
                     "snap": "route/cixin/06.png",
@@ -100,8 +112,8 @@
                 },
                 {
                     "at": [
-                        -36,
-                        16
+                        -37,
+                        14
                     ],
                     "cam": 255,
                     "snap": "route/cixin/07.png",
@@ -110,8 +122,8 @@
                 },
                 {
                     "at": [
-                        -6,
-                        -20
+                        -7,
+                        -22
                     ],
                     "cam": 75,
                     "snap": "route/cixin/08.png",
@@ -119,8 +131,8 @@
                 },
                 {
                     "at": [
-                        2,
-                        -24
+                        1,
+                        -26
                     ],
                     "cam": 75,
                     "snap": "route/cixin/09.png",
@@ -129,8 +141,15 @@
                 },
                 {
                     "at": [
-                        36,
-                        -28
+                        6,
+                        -28.5
+                    ],
+                    "name": "绕开第二个毒花旁的石像"
+                },
+                {
+                    "at": [
+                        35,
+                        -30
                     ],
                     "cam": 40,
                     "snap": "route/cixin/10.png",
@@ -139,8 +158,8 @@
                 },
                 {
                     "at": [
-                        50,
-                        -4
+                        49,
+                        -6
                     ],
                     "cam": 118,
                     "snap": "route/cixin/11.png",
@@ -148,8 +167,8 @@
                 },
                 {
                     "at": [
-                        58,
-                        -2
+                        57,
+                        -4
                     ],
                     "cam": 100,
                     "snap": "route/cixin/12.png",
@@ -158,8 +177,8 @@
                 },
                 {
                     "at": [
-                        -4,
-                        42
+                        -5,
+                        40
                     ],
                     "cam": 213,
                     "snap": "route/cixin/13.png",
@@ -167,8 +186,8 @@
                 },
                 {
                     "at": [
-                        -8,
-                        50
+                        -9,
+                        48
                     ],
                     "cam": 180,
                     "snap": "route/cixin/14.png",
@@ -198,9 +217,10 @@
         }
     },
     "CixinTeleport": {
-        "desc": "传送到慈心山院的传送石碑：菜单 → 江湖行 → 挑战 → 据点挑战「慈心山院」卡片 → 大地图（放到最大、据点居中）上点石碑（相对据点图标 (-108,115)）→ 传送 → 回到大世界；从中间哪一页开始都能接着走（每步没反应就再点）。卡在据点里（大殿）或路线跑乱了用它回起点，路线 CixinRoute 从这里开始",
+        "desc": "传送到慈心山院的传送石碑：菜单 → 江湖行 → 挑战 → 据点挑战「慈心山院」卡片 → 大地图（放到最大、据点居中）上点石碑（相对据点图标 (-108,115)）→ 传送 → 回到大世界；从中间哪一页开始都能接着走（每步没反应就再点），开着别处的大地图就先退出来。卡片上写着「势力重新占据时间」时经过 Teleport_NotRefreshed（只做记号，照样传送；一键入口 Cixin 看到它就停）。卡在据点里（大殿）或路线跑乱了用它回起点，路线 CixinRoute 从这里开始",
         "recognition": "DirectHit",
         "next": [
+            "Teleport_NotRefreshed",
             "Teleport_Go",
             "Teleport_Stone",
             "Teleport_ClosePanel",
@@ -208,6 +228,7 @@
             "Teleport_Challenge",
             "Teleport_Jianghu",
             "Teleport_OpenMenu",
+            "Teleport_LeaveMap",
             "[JumpBack]CloseItemTip",
             "[JumpBack]DismissIdleSlideshow"
         ]
@@ -286,6 +307,7 @@
         "action": "Click",
         "post_delay": 3000,
         "next": [
+            "Teleport_NotRefreshed",
             "Teleport_Go",
             "Teleport_Stone",
             "Teleport_ClosePanel",
@@ -298,8 +320,24 @@
             1
         ]
     },
+    "Teleport_NotRefreshed": {
+        "desc": "据点说明面板写着「势力重新占据时间」：据点还没刷新。只做记号（剩余时间记进 memory 的 stronghold_wait），照样去传送；一键入口 Cixin 看到走过这个节点就停",
+        "recognition": "Custom",
+        "custom_recognition": "stronghold.waiting",
+        "roi": [
+            790,
+            340,
+            290,
+            320
+        ],
+        "next": [
+            "Teleport_Go",
+            "Teleport_Stone",
+            "Teleport_ClosePanel"
+        ]
+    },
     "Teleport_ClosePanel": {
-        "desc": "大地图开着据点说明面板（底部「识途」），石碑图标还没显示：点一下石碑的位置把面板收起（点中了石碑就直接是「传送」面板）",
+        "desc": "大地图开着据点说明面板（底部「识途」）：先点一下石碑的位置 (434,476) 收起面板（地图放到最大时就点中了石碑），再找离据点图标最近的传送石碑去点，直到弹出「传送」。大地图的缩放会被记住，缩小时图标认不出，就先以据点为中心双指放大；最多 3 轮，还不行就报错停下，不乱点。技能 skills/stronghold.js 的 stone 模式",
         "recognition": "TemplateMatch",
         "template": "stronghold_panel_route.png",
         "roi": [
@@ -309,18 +347,40 @@
             70
         ],
         "threshold": 0.8,
-        "action": "Click",
-        "post_delay": 1500,
+        "action": "Custom",
+        "custom_action": "stronghold",
+        "custom_action_param": {
+            "stone": true
+        },
         "next": [
-            "Teleport_Go",
-            "Teleport_Stone",
-            "Teleport_ClosePanel"
+            "Teleport_Go"
+        ]
+    },
+    "Teleport_LeaveMap": {
+        "desc": "开着的是别处的大地图（左下「标点筛选」）：点右上返回退出来，再从菜单或据点挑战页接着走",
+        "recognition": "TemplateMatch",
+        "template": "map_filter_button.png",
+        "roi": [
+            20,
+            640,
+            150,
+            80
         ],
+        "threshold": 0.8,
+        "action": "Click",
         "target": [
-            434,
-            476,
+            1025,
+            37,
             1,
             1
+        ],
+        "post_delay": 2000,
+        "next": [
+            "Teleport_CixinCard",
+            "Teleport_Challenge",
+            "Teleport_Jianghu",
+            "Teleport_OpenMenu",
+            "Teleport_LeaveMap"
         ]
     },
     "Teleport_Stone": {

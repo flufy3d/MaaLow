@@ -17,6 +17,8 @@
 //                            as it comes closer; done ("arrived") within `reachPx` (3) minimap px of it; before it shows,
 //                            run `bearing`, but only for `lostMs` ("lost"). A fight starting on the way (the top right
 //                            icons hide) ends it ("fight")
+//   untilFight: true         enemy / zone: stop ("fight") once a fight has started (the icons hide), for combat to
+//                            take over, rather than keep chasing an enemy that moves about in the fight
 //   face: true               keep the camera looking where it runs (within 20°), as when chasing an enemy
 //   sprint: true             hold dodge until its icon turns gold (sprinting), then let go; again if it drops;
 //                            given up after two presses that did not start one (dungeons may not allow it)
@@ -167,7 +169,11 @@ const FIX_MIN = 0.4; // a match counts from this score, and this far above the b
 const FIX_MARGIN = 0.1; // frames: 2 wrong among 243 taken with the stitched reference)
 const SEARCH = [10, 8, 40]; // search radius around the reckoning: px, + px per second without a match, at most
 const LOST_MS = 3000; // no match this long: lost
-const PASS = 6; // a point on the way counts as passed this close
+const PASS = 2.5; // a point on the way counts as passed this close,
+const PASS_SIDE = 6; // or once past it (over the line across the way there) no farther than this to the side
+const REACH_BACK = 3; // the last point: within this and getting farther again (it went by), arrived too
+const FRESH_MS = 400; // arriving takes a match this recent; there by the reckoning alone (up stairs it runs slower
+const LOOK_MS = 1500; // than reckoned, 2 px/s at the chest), it stops and looks this long first
 const SPRINT_STOP = 12; // let go of a sprint this far from the last point, then run the rest
 const BRAKE_MS = 350; // how long the joystick is let go to end the sprint
 const GO_STUCK_MS = 2000; // not 1 px closer to the point this long: stuck
@@ -194,12 +200,37 @@ function fix(ref, image, cam, prior, radius) {
     return null;
 }
 
+const RELOCATE_PX = 4; // relocate: two looks in a row this close agree
+
+/**
+ * Where the character is from the minimap alone, with nothing to go by (a fight pulled it around, the track was
+ * lost): locate() over the whole of each reference, taken once two looks in a row agree; null if none do in `ms`.
+ * @param {string | string[]} ref @param {number} [ms]
+ * @returns {Point | null}
+ */
+export function relocate(ref, ms = 4000) {
+    const t0 = Date.now();
+    /** @type {Point | null} */
+    let last = null;
+    while (Date.now() - t0 < ms) {
+        const image = screenshot();
+        const r = fix(ref, image, cameraHeading(image), null, SEARCH[2]);
+        if (r) {
+            if (last && distTo(last, [r.x, r.y]) <= RELOCATE_PX) return [r.x, r.y];
+            last = [r.x, r.y];
+        } else last = null;
+        sleep(200);
+    }
+    return null;
+}
+
 /**
  * Run through `args.goto` (big map px from the stronghold icon), stopping at the last point.
  * Every frame: dead reckoning moves the position along the direction steered (camera + joystick) at the speed of the
  * moment (sprinting: the dodge button is gold; running; coasting a moment after letting go), then locate() looks for
  * the minimap near it, within a radius that grows while nothing matches; a trusted match replaces the position.
- * Points on the way are passed within PASS; the last is run to within `reach`: sprinting (while more than
+ * Points on the way are passed within PASS, or once past them (turning early cut the corners: into the statue by the
+ * steps at 石像旁); the last is run to within `reach` (or went by it within REACH_BACK): sprinting (while more than
  * SPRINT_STOP + 6 px off), letting go at SPRINT_STOP to end the sprint, running the rest.
  * Ends: arrived | stuck (no closer for GO_STUCK_MS after every way out) | astray | lost (no match for LOST_MS) |
  * fight (the top right icons hide) | time.
@@ -207,7 +238,7 @@ function fix(ref, image, cam, prior, radius) {
  */
 function goTo(args) {
     const path = args.goto;
-    const reach = args.reach ?? 4;
+    const reach = args.reach ?? 2;
     const ms = args.ms ?? 60000;
     const t0 = Date.now();
     let cam = cameraHeading(screenshot());
@@ -232,6 +263,8 @@ function goTo(args) {
     let dir = null; // compass direction steered
     let lastT = t0;
     let closest = Infinity;
+    let nearest = Infinity; // the last point: closest so far, to the fraction
+    let lookSince = 0; // stopped at the last point to see it matched
     let since = t0;
     let level = 0;
     let lastHud = 0;
@@ -241,6 +274,18 @@ function goTo(args) {
     let why = "time";
     const stuck = [];
     const trace = [];
+    const start = pos;
+    /**
+     * Point k is behind: close to it, or past the line across the way at it (and not far off to the side).
+     * @param {Point} at @param {number} k
+     */
+    const passed = (at, k) => {
+        const d = distTo(at, path[k]);
+        if (d <= PASS) return true;
+        const prev = k ? path[k - 1] : start;
+        if (!prev || d > PASS_SIDE) return false;
+        return (at[0] - path[k][0]) * (path[k][0] - prev[0]) + (at[1] - path[k][1]) * (path[k][1] - prev[1]) >= 0;
+    };
     const release = () => {
         if (holding) touch.up(1);
         holding = 0;
@@ -293,7 +338,7 @@ function goTo(args) {
                 } else hudMiss = 0;
             }
             // the point to run to: points on the way are passed
-            while (idx < path.length - 1 && distTo(pos, path[idx]) <= PASS) {
+            while (idx < path.length - 1 && passed(pos, idx)) {
                 idx++;
                 closest = Infinity;
                 level = 0;
@@ -301,10 +346,23 @@ function goTo(args) {
             const goal = path[idx];
             const last = idx === path.length - 1;
             const dist = distTo(pos, goal);
-            if (last && dist <= reach) {
-                why = "arrived";
-                break;
+            if (last && (dist <= reach || (nearest <= REACH_BACK && dist > nearest + 1))) {
+                if (now - lastFix <= FRESH_MS || (lookSince && now - lookSince >= LOOK_MS)) {
+                    why = "arrived";
+                    break;
+                }
+                if (!lookSince) {
+                    lookSince = now;
+                    if (held) {
+                        releasedAt = now;
+                        coastFast = fast;
+                        release();
+                    }
+                }
+                continue;
             }
+            lookSince = 0;
+            if (last) nearest = Math.min(nearest, dist);
             if (dist < closest - 1) {
                 closest = dist;
                 since = now;
@@ -366,7 +424,7 @@ function goTo(args) {
                 else sprintFails++;
             }
             if (trace.length === 0 || now - t0 - trace[trace.length - 1].t >= 250) {
-                trace.push({ t: now - t0, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}) });
+                trace.push({ t: now - t0, seq: image.seq, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}) });
             }
         }
     } finally {
@@ -384,7 +442,7 @@ function goTo(args) {
 }
 
 /**
- * @param {{face?: boolean, bearing?: number, rel?: number, enemy?: boolean, zone?: boolean, zoneAt?: number, snap?: string, reachPx?: number, snapMin?: number, expect?: Point, lostMs?: number, near?: number, lockAt?: number, capture?: boolean, ms?: number, sprint?: boolean,
+ * @param {{face?: boolean, bearing?: number, rel?: number, enemy?: boolean, zone?: boolean, untilFight?: boolean, zoneAt?: number, snap?: string, reachPx?: number, snapMin?: number, expect?: Point, lostMs?: number, near?: number, lockAt?: number, capture?: boolean, ms?: number, sprint?: boolean,
  *          pickup?: boolean, turn?: number, step?: number, goto?: Point[], ref?: string | string[], from?: Point, reach?: number}} args
  * @param {SkillContext} [ctx]
  */
@@ -442,16 +500,16 @@ export default function (args, ctx) {
                 if (lock && !was && args.capture) saveImage(image, "captures/locked.png");
                 let foes = args.enemy || args.zone ? enemies(image) : [];
                 let goal = null; // zone: no enemy on the patch in sight, head for its middle; snap: where it shows
+                if ((args.snap || args.untilFight) && now - lastHud >= HUD_MS) {
+                    lastHud = now;
+                    if (!calm(image)) {
+                        if (++hudMiss >= 2) {
+                            why = "fight";
+                            break;
+                        }
+                    } else hudMiss = 0;
+                }
                 if (args.snap) {
-                    if (now - lastHud >= HUD_MS) {
-                        lastHud = now;
-                        if (!calm(image)) {
-                            if (++hudMiss >= 2) {
-                                why = "fight";
-                                break;
-                            }
-                        } else hudMiss = 0;
-                    }
                     if (!snapSeen && args.lostMs && now - t0 > args.lostMs) {
                         why = "lost"; // not in sight by when it should have been close: stop before running past it
                         break;

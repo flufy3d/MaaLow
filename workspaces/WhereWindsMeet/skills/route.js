@@ -15,17 +15,19 @@
 //                            runs through the points, stopping only where something is done and at the end.
 //                            start: where it starts (default: the point before `from`); check: true stops at every
 //                            point and reads where() there too (the arrival error, for trying references); nodo: true
-//                            skips the points' actions. Stuck, astray or lost ends the walk with an error.
+//                            skips the points' actions; skip: [14] only those points' (leaving one flower for last
+//                            keeps the stronghold from finishing, so a run can be tried again). A fight on the way,
+//                            or a leg that lost its way, finds the character on the whole reference and goes on.
 //   anchors: "teaching/survey/a"  surveying: before each look at the big map, wait until the character has stopped and
 //                            save the screenshot there (<anchors>/NNN.png); the result lists them with the frame number
 //                            and the position read ({n, seq, time, x, y, cam}), to line up frames grabbed meanwhile
 import { calm } from "./lib/hud.js";
-import { angleDiff, cameraHeading } from "./lib/minimap.js";
-import { turn } from "./move.js";
-import { where } from "./stronghold.js";
+import { angleDiff, bearingOf, cameraHeading, CENTER, enemies } from "./lib/minimap.js";
+import { relocate, turn } from "./move.js";
+import { progress, where } from "./stronghold.js";
 
 /** @type {SkillMeta} */
-export const meta = { description: "walk a recorded route through a stronghold", timeout: 600_000 };
+export const meta = { description: "walk a recorded route through a stronghold", timeout: 1_800_000 };
 
 const SPEED = 8; // big map px per second sprinting (measured: 23 px in 2.9 s, 39 px in 4.8 s)
 const SHORT = 0.8; // big map legs: run this share of the distance, then look again
@@ -63,20 +65,77 @@ function faceTo(want) {
 /** @type {Box} */
 const LIST_ROI = [690, 360, 130, 220]; // the interaction list on the right (auto_pickup.js)
 
-/** Tap 销毁 and wait until it is gone; if it is not offered, step toward where the camera looks and look again. */
+// The flowers glow purple: OpenCV HSV H 118–160, S ≥ 70, V ≥ 80 gives ≥ ~900 px around one in sight and ≤ ~250 on
+// the rest of the courtyard (teaching shots 0107–0116, 2026-10-01 run). 销毁 only shows within a step or two of the
+// flower, closer than a route point is reached (a few px off), so the last steps go by the flower on screen.
+const FLOWER = { lower: [118, 70, 80], upper: [160, 255, 255], method: 40 };
+/** @type {Box} */
+const FLOWER_ROI = [40, 200, 860, 390]; // the scene around the character, under the tracker, above the chat box
+const FLOWER_PX = 400;
+const FLOWER_NEAR = 90; // blobs this close to the biggest are petals of the same flower
+const SCREEN_DEG = 0.08; // steering: degrees per screen px off the middle (the view is ~85° wide)
+const STEPS = 8; // steps toward the flower before giving up
+
+/** The flower on screen (its purple blobs' middle), or null. @param {Image} image */
+function flowerAt(image) {
+    const hit = color({ ...FLOWER, image, roi: FLOWER_ROI, count: 30, connected: true });
+    if (!hit.hit) return null;
+    const mid = (/** @type {Match} */ m) => [m.box[0] + m.box[2] / 2, m.box[1] + m.box[3] / 2];
+    const top = hit.results.reduce((a, b) => ((b.count ?? 0) > (a.count ?? 0) ? b : a));
+    const [tx, ty] = mid(top);
+    let n = 0;
+    let sx = 0;
+    let sy = 0;
+    for (const m of hit.results) {
+        const [x, y] = mid(m);
+        if (Math.hypot(x - tx, y - ty) > FLOWER_NEAR) continue;
+        n += m.count ?? 0;
+        sx += x * (m.count ?? 0);
+        sy += y * (m.count ?? 0);
+    }
+    return n >= FLOWER_PX ? { x: sx / n, y: sy / n, n } : null;
+}
+
+const BLIND = 2; // steps straight ahead with no flower in sight (already destroyed, or behind something)
+const BAR_MS = 10_000; // 销毁's bar: ~2–6 s (teaching messages 171, 186)
+
+/**
+ * Tap 销毁 and wait out its bar: done once the tracker's flower count goes up (the row turns white as the bar fills,
+ * so the word stops matching long before the end); the whole bar's time when the tracker cannot be read. Not offered:
+ * a short step toward the flower on screen (straight ahead, BLIND times, when it is not in sight), and look again; a
+ * fight starting meanwhile (the icons hide, a red mark close) is fought first.
+ */
 function destroy() {
-    for (let step = 0; step < 3; step++) {
+    let blind = 0;
+    for (let step = 0; step < STEPS; step++) {
         const hit = waitFor(() => {
             const h = match("interact_destroy.png", { image: screenshot(), roi: LIST_ROI, threshold: 0.8 });
             return h.hit ? h : null;
-        }, { timeout: 2000, interval: 200 });
+        }, { timeout: step ? 700 : 2000, interval: 200 });
         if (hit) {
+            const before = progress().flowers;
             const [x, y, w, h] = /** @type {Box} */ (hit.box);
             click([x + w / 2 + 25, y + h / 2]); // on the row, right of the word
-            const gone = waitFor(() => !match("interact_destroy.png", { image: screenshot(), roi: LIST_ROI, threshold: 0.8 }).hit, { timeout: 8000, interval: 300 });
-            return gone ? "destroyed" : "still offered";
+            if (!before) {
+                sleep(BAR_MS);
+                return match("interact_destroy.png", { image: screenshot(), roi: LIST_ROI, threshold: 0.8 }).hit ? "still offered" : "destroyed";
+            }
+            const up = waitFor(() => {
+                const now = progress().flowers;
+                return !now || now[0] > before[0]; // its line goes with the last one
+            }, { timeout: BAR_MS, interval: 500 });
+            return up ? "destroyed" : "still offered";
         }
-        runSkill("move", { rel: 0, ms: 500, pickup: false });
+        const image = screenshot();
+        if (!calm(image) && enemies(image).some((e) => e.dist <= 25)) {
+            runSkill("combat", { hp: 0.5, within: 20 });
+            continue;
+        }
+        const f = flowerAt(image);
+        if (!f && ++blind > BLIND) break;
+        const rel = f ? Math.max(-70, Math.min(70, (f.x - 540) * SCREEN_DEG)) : 0;
+        log(`flower: step ${step + 1}${f ? ` toward (${Math.round(f.x)},${Math.round(f.y)}) ${f.n} px, ${Math.round(rel)}°` : ", not in sight"}`);
+        runSkill("move", { rel, ms: 400, pickup: false });
     }
     return "not offered";
 }
@@ -93,9 +152,32 @@ function tapWhen(template, roi, ms, dx = 0) {
     return true;
 }
 
+/** @type {Box} */
+const DISC_ROI = [90, 16, 110, 110]; // the minimap disc
+const CHEST_MS = 12_000; // walking to the chest's mark before giving up
+
+/**
+ * Walk up to the chest by its mark on the minimap (templates/minimap_chest.png, ~1.0 against ~0.45 elsewhere,
+ * teaching message 215) until 据点宝箱 is offered: the last steps go by it rather than by the position, which the
+ * minimap reference can lose by the chest while the stronghold's orange patch is still over it.
+ */
+function toChest() {
+    const t0 = Date.now();
+    while (Date.now() - t0 < CHEST_MS) {
+        const image = screenshot();
+        if (match("interact_chest.png", { image, roi: LIST_ROI, threshold: 0.8 }).hit) return true;
+        const mark = match("minimap_chest.png", { image, roi: DISC_ROI, threshold: 0.8 });
+        if (!mark.hit || !mark.box) return false;
+        const [x, y] = [mark.box[0] + mark.box[2] / 2, mark.box[1] + mark.box[3] / 2];
+        const d = Math.hypot(x - CENTER[0], y - CENTER[1]);
+        runSkill("move", { bearing: bearingOf([x, y]), ms: d > 8 ? 600 : 300, pickup: false });
+    }
+    return false;
+}
+
 /** Open the stronghold chest and take the reward. */
 function openChest() {
-    if (!tapWhen("interact_chest.png", LIST_ROI, 3000, 10)) return "chest not offered";
+    if (!tapWhen("interact_chest.png", LIST_ROI, 1500, 10) && !(toChest() && tapWhen("interact_chest.png", LIST_ROI, 2000, 10))) return "chest not offered";
     if (!tapWhen("reward_confirm.png", [800, 640, 280, 80], 5000)) return "no reward panel";
     let pages = 0;
     while (pages < 6 && tapWhen("result_continue.png", [900, 640, 180, 80], pages ? 3000 : 8000)) {
@@ -107,9 +189,12 @@ function openChest() {
 
 /** An enemy waiting there: chase the nearest red mark until locked, then fight. */
 function seekFight() {
-    // move answers false instead of its report when run from a pipeline node and nobody was found
-    const r = runSkill("move", { enemy: true, sprint: true, ms: 20000 });
-    if (!r?.found && calm(screenshot())) return `no enemy (${r ? r.why : "none in sight"})`;
+    // already fighting: combat at once; chasing it meanwhile, the enemy moving about reads as stuck (jumps, detours)
+    if (calm(screenshot())) {
+        // move answers false instead of its report when run from a pipeline node and nobody was found
+        const r = runSkill("move", { enemy: true, sprint: true, ms: 20000, untilFight: true });
+        if (!r?.found && r?.why !== "fight" && calm(screenshot())) return `no enemy (${r ? r.why : "none in sight"})`;
+    }
     runSkill("combat", { hp: 0.5, within: 20 });
     return "fought";
 }
@@ -128,44 +213,142 @@ function act(p, last) {
     return { cam, done };
 }
 
+const RETRIES = 2; // a leg that lost the track, went astray or got stuck: found again and gone on this many times
+const FINISH = 2; // at the chest point with no chest: rounds of doing what is left and coming back
+
+/** @param {Point} a @param {Point} b */
+const distTo = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
+/** @param {number} a @param {number} b */
+const range = (a, b) => Array.from({ length: b - a + 1 }, (_, n) => a + n);
+
 /**
  * Continuous mode (args.locate): legs of move's goto from stop to stop.
- * @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, locate: string | string[], start?: Point, check?: boolean, nodo?: boolean}} args
+ * A fight on the way is fought; then the character is found again on the whole reference (a fight pulls it around,
+ * often beyond the search radius) and the leg goes on from the nearest of its points left. A leg that lost the track,
+ * went astray or got stuck is found again and gone on the same way, RETRIES times.
+ * At the chest point with no chest offered, what the tracker says is left is done first (FINISH rounds): flowers not
+ * destroyed on the way are walked back to along the route, enemies left are cleared with the `clear` node (zone mode,
+ * StrongholdFight), then back to the chest.
+ * @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, locate: string | string[], start?: Point, check?: boolean, nodo?: boolean, skip?: number[], clear?: string, tracker?: Record<string, string>}} args
  */
 function follow(args) {
+    const P = args.points;
     const from = args.from ?? 1;
-    const to = args.to ?? args.points.length - 1;
+    const to = args.to ?? P.length - 1;
     /** @type {Point} */
-    let pos = args.start ?? args.points[from - 1].at;
+    let pos = args.start ?? P[from - 1].at;
     /** @type {Record<string, any>[]} */
     const legs = [];
     let maps = 0;
+    let fights = 0;
+    let relocs = 0;
+    /** @type {Map<number, boolean>} */
+    const flowers = new Map(); // flower point → destroyed
     const t0 = Date.now();
     /** @param {string} msg */
     const fail = (msg) => {
         log(`legs ${JSON.stringify(legs)}`);
         throw new Error(msg);
     };
+    /** @param {number} k */
+    const away = (k) => distTo(pos, P[k].at);
+    /** @param {number} k */
+    const named = (k) => `${k} (${P[k].name ?? ""})`;
+
+    /** Find the character on the whole reference; false when it cannot tell. */
+    const again = () => {
+        const at = relocate(args.locate);
+        if (!at) return false;
+        relocs++;
+        log(`found again at ${at.map(Math.round)} (${Math.round(distTo(pos, at))} px from where it was put)`);
+        pos = at;
+        return true;
+    };
+
+    /** A fight: fought by `how`, then what the tracker says. @param {() => any} how */
+    const fight = (how) => {
+        fights++;
+        const f = how();
+        const tasks = progress(undefined, args.tracker);
+        legs.push({ fight: fights, f, tasks: { foes: tasks.foes, flowers: tasks.flowers } });
+        log(`fight ${fights}: ${JSON.stringify(f)}, tracker ${JSON.stringify(tasks.lines)}`);
+        return f;
+    };
+
+    /** Walk through the points `ks` (indexes), to the last. @param {number[]} ks */
+    const walk = (ks) => {
+        let rest = ks;
+        for (let tries = 0; ; ) {
+            const seg = rest.map((k) => P[k].at);
+            let length = 0;
+            seg.reduce((a, b) => ((length += distTo(a, b)), b), pos);
+            const ms = Math.round(Math.max(GOTO_MS[0], (GOTO_MS[1] * length * 1000) / V_RUN));
+            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, reach: args.reach ?? 2, ms, pickup: false });
+            const j = rest[rest.length - 1];
+            /** @type {Record<string, any>} */
+            const leg = { i: rest[0], j, why: r.why, ms: r.ms, fixes: r.fixes, misses: r.misses, maxMissRun: r.maxMissRun, stuck: r.stuck.length, at: r.at };
+            legs.push(leg);
+            if (r.at) pos = r.at;
+            if (r.why === "arrived") return leg;
+            if (r.why === "fight") {
+                log(`points ${rest[r.idx]}–${j}: fight`);
+                fight(() => runSkill("combat", { hp: 0.5, within: 20 }));
+                rest = rest.slice(r.idx);
+                again(); // not found: the reckoned position, looked for wide at the start of the next leg
+            } else {
+                if (++tries > RETRIES) fail(`points ${rest[0]}–${named(j)}: ${r.why} at ${pos.map(Math.round)}`);
+                log(`points ${rest[0]}–${j}: ${r.why} at ${pos.map(Math.round)}, finding it again`);
+                if (!again()) fail(`points ${rest[0]}–${named(j)}: ${r.why} at ${pos.map(Math.round)}, not found again`);
+            }
+            const n = rest.reduce((b, k, m) => (away(k) < away(rest[b]) ? m : b), 0);
+            rest = rest.slice(n);
+        }
+    };
+
+    /** Back to point `k` from wherever it is: along the route from the point nearest to it. @param {number} k */
+    const walkTo = (k) => {
+        if (!again()) log(`to point ${k}: not found again, going by where it was put`);
+        const near = range(from - 1, to).reduce((b, m) => (away(m) < away(b) ? m : b));
+        walk(near <= k ? range(near, k) : range(k, near).reverse());
+    };
+
+    /** At the chest point with no chest: do what the tracker says is left, come back, look again. @param {number} c */
+    const finish = (c) => {
+        /** @type {string | null} */
+        let done = "chest not offered";
+        for (let round = 1; round <= FINISH && done === "chest not offered"; round++) {
+            const tasks = progress(undefined, args.tracker);
+            log(`no chest (round ${round}): tracker ${JSON.stringify(tasks.lines)}`);
+            legs.push({ finish: round, tasks: { foes: tasks.foes, flowers: tasks.flowers } });
+            // the route's flowers not destroyed on this run, except those skipped on purpose; all of them again when the
+            // tracker counts fewer than were destroyed (one taken for destroyed was not); none once its line is gone
+            const all = range(from, to).filter((k) => P[k].do === "flower" && !args.skip?.includes(k));
+            let left = all.filter((k) => !flowers.get(k));
+            const destroyed = all.length - left.length;
+            if (tasks.lines.length && !tasks.flowers) left = [];
+            else if (tasks.flowers && tasks.flowers[0] < destroyed) left = all;
+            for (const k of left) {
+                walkTo(k);
+                const r = act(P[k], false).done;
+                flowers.set(k, r === "destroyed");
+                log(`flower ${named(k)} again: ${r}`);
+            }
+            if (!tasks.lines.length || tasks.foes) {
+                const r = runNode(args.clear ?? "StrongholdFight");
+                log(`clearing: ${JSON.stringify(r.nodes.slice(-3))}${r.hit ? "" : " (not cleared)"}`);
+                legs.push({ clear: r.hit, nodes: r.nodes.length });
+            }
+            walkTo(c);
+            done = act(P[c], true).done;
+        }
+        return done;
+    };
+
     for (let i = from; i <= to; ) {
         let j = i; // the next stop
-        while (j < to && !args.check && (args.nodo || !args.points[j].do)) j++;
-        const seg = args.points.slice(i, j + 1).map((p) => p.at);
-        let length = 0;
-        seg.reduce((a, b) => ((length += Math.hypot(b[0] - a[0], b[1] - a[1])), b), pos);
-        const ms = Math.round(Math.max(GOTO_MS[0], (GOTO_MS[1] * length * 1000) / V_RUN));
-        const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, reach: args.reach ?? 4, ms, pickup: false });
-        /** @type {Record<string, any>} */
-        const leg = { i, j, why: r.why, ms: r.ms, fixes: r.fixes, misses: r.misses, maxMissRun: r.maxMissRun, stuck: r.stuck.length, at: r.at };
-        legs.push(leg);
-        if (r.at) pos = r.at;
-        if (r.why === "fight") {
-            log(`points ${i}–${j}: fight`);
-            runSkill("combat", { hp: 0.5, within: 20 });
-            i += r.idx; // the points passed before it
-            continue;
-        }
-        if (r.why !== "arrived") fail(`points ${i}–${j} (${args.points[j].name ?? ""}): ${r.why} at ${pos.map(Math.round)}`);
-        const p = args.points[j];
+        while (j < to && !args.check && (args.nodo || !P[j].do)) j++;
+        const leg = walk(range(i, j));
+        const p = P[j];
         if (args.check) {
             const w = where();
             maps++;
@@ -176,12 +359,22 @@ function follow(args) {
                 pos = [w.x, w.y];
             }
         }
-        const { cam, done } = args.nodo ? { cam: null, done: null } : act(p, j === to);
+        let cam = null;
+        let done = null;
+        const nodo = args.nodo || args.skip?.includes(j);
+        if (nodo) {
+            // walked to only
+        } else if (p.do === "fight") {
+            done = fight(() => act(p, j === to).done);
+            again(); // the fight moved it
+        } else ({ cam, done } = act(p, j === to));
+        if (p.do === "flower" && !nodo) flowers.set(j, done === "destroyed");
+        if (p.do === "chest" && done === "chest not offered") done = finish(j);
         log(`point ${j} (${p.name ?? ""}) reached at ${pos.map(Math.round)}${leg.err != null ? ` (where() ${leg.where}, ${leg.err} px off)` : ""}${cam != null ? `, camera ${Math.round(cam)}°` : ""}${done ? `: ${done}` : ""}`);
         if (done) legs.push({ i: j, do: p.do, done });
         i = j + 1;
     }
-    const out = { at: pos.map((v) => Math.round(v * 10) / 10), maps, ms: Date.now() - t0, legs };
+    const out = { at: pos.map((v) => Math.round(v * 10) / 10), maps, fights, relocs, ms: Date.now() - t0, legs };
     log(JSON.stringify(out));
     return out;
 }
