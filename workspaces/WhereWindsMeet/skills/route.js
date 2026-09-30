@@ -107,8 +107,9 @@ function openChest() {
 
 /** An enemy waiting there: chase the nearest red mark until locked, then fight. */
 function seekFight() {
+    // move answers false instead of its report when run from a pipeline node and nobody was found
     const r = runSkill("move", { enemy: true, sprint: true, ms: 20000 });
-    if (!r.found && calm(screenshot())) return `no enemy (${r.why})`;
+    if (!r?.found && calm(screenshot())) return `no enemy (${r ? r.why : "none in sight"})`;
     runSkill("combat", { hp: 0.5, within: 20 });
     return "fought";
 }
