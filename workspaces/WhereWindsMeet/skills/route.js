@@ -10,6 +10,12 @@
 // everything is done) taps 据点宝箱, 确认领取 with the panel's defaults (领取三份, 扫荡 9, teacher's choice, message 227)
 // and 继续 through the 攻占 result pages.
 //   {points: [{at: [-108, 115], snap: "route/cixin/00.png"}, ...], from: 1, to: 4}
+//   locate: "locate/cixin_mosaic"  instead: no snapshots and no big map on the way; move's goto knows where the character
+//                            is on every frame (locate() of the minimap in that reference, dead reckoning between) and
+//                            runs through the points, stopping only where something is done and at the end.
+//                            start: where it starts (default: the point before `from`); check: true stops at every
+//                            point and reads where() there too (the arrival error, for trying references); nodo: true
+//                            skips the points' actions. Stuck, astray or lost ends the walk with an error.
 //   anchors: "teaching/survey/a"  surveying: before each look at the big map, wait until the character has stopped and
 //                            save the screenshot there (<anchors>/NNN.png); the result lists them with the frame number
 //                            and the position read ({n, seq, time, x, y, cam}), to line up frames grabbed meanwhile
@@ -108,9 +114,80 @@ function seekFight() {
 }
 
 const bearingTo = (from, to) => (Math.atan2(to[0] - from[0], -(to[1] - from[1])) * 180 / Math.PI + 360) % 360;
+const GOTO_MS = [8000, 3]; // a goto leg's time limit: at least, and this many times the time running would take
+const V_RUN = 4.6; // big map px per second running (move.js)
 
-/** @param {{points: {at: Point, name?: string, snap?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string}} args */
+/**
+ * The point's action, once there: look the recorded way first.
+ * @param {{cam?: number, do?: string}} p @param {boolean} last
+ */
+function act(p, last) {
+    const cam = p.cam != null && (last || p.do) ? faceTo(p.cam) : null;
+    const done = p.do === "flower" ? destroy() : p.do === "fight" ? seekFight() : p.do === "chest" ? openChest() : null;
+    return { cam, done };
+}
+
+/**
+ * Continuous mode (args.locate): legs of move's goto from stop to stop.
+ * @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, locate: string, start?: Point, check?: boolean, nodo?: boolean}} args
+ */
+function follow(args) {
+    const from = args.from ?? 1;
+    const to = args.to ?? args.points.length - 1;
+    /** @type {Point} */
+    let pos = args.start ?? args.points[from - 1].at;
+    /** @type {Record<string, any>[]} */
+    const legs = [];
+    let maps = 0;
+    const t0 = Date.now();
+    /** @param {string} msg */
+    const fail = (msg) => {
+        log(`legs ${JSON.stringify(legs)}`);
+        throw new Error(msg);
+    };
+    for (let i = from; i <= to; ) {
+        let j = i; // the next stop
+        while (j < to && !args.check && (args.nodo || !args.points[j].do)) j++;
+        const seg = args.points.slice(i, j + 1).map((p) => p.at);
+        let length = 0;
+        seg.reduce((a, b) => ((length += Math.hypot(b[0] - a[0], b[1] - a[1])), b), pos);
+        const ms = Math.round(Math.max(GOTO_MS[0], (GOTO_MS[1] * length * 1000) / V_RUN));
+        const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, reach: args.reach ?? 4, ms, pickup: false });
+        /** @type {Record<string, any>} */
+        const leg = { i, j, why: r.why, ms: r.ms, fixes: r.fixes, misses: r.misses, maxMissRun: r.maxMissRun, stuck: r.stuck.length, at: r.at };
+        legs.push(leg);
+        if (r.at) pos = r.at;
+        if (r.why === "fight") {
+            log(`points ${i}–${j}: fight`);
+            runSkill("combat", { hp: 0.5, within: 20 });
+            i += r.idx; // the points passed before it
+            continue;
+        }
+        if (r.why !== "arrived") fail(`points ${i}–${j} (${args.points[j].name ?? ""}): ${r.why} at ${pos.map(Math.round)}`);
+        const p = args.points[j];
+        if (args.check) {
+            const w = where();
+            maps++;
+            if (w) {
+                leg.where = [w.x, w.y];
+                leg.err = Math.round(Math.hypot(w.x - p.at[0], w.y - p.at[1]) * 10) / 10; // from the point
+                leg.off = Math.round(Math.hypot(w.x - pos[0], w.y - pos[1]) * 10) / 10; // from where locate put it
+                pos = [w.x, w.y];
+            }
+        }
+        const { cam, done } = args.nodo ? { cam: null, done: null } : act(p, j === to);
+        log(`point ${j} (${p.name ?? ""}) reached at ${pos.map(Math.round)}${leg.err != null ? ` (where() ${leg.where}, ${leg.err} px off)` : ""}${cam != null ? `, camera ${Math.round(cam)}°` : ""}${done ? `: ${done}` : ""}`);
+        if (done) legs.push({ i: j, do: p.do, done });
+        i = j + 1;
+    }
+    const out = { at: pos.map((v) => Math.round(v * 10) / 10), maps, ms: Date.now() - t0, legs };
+    log(JSON.stringify(out));
+    return out;
+}
+
+/** @param {{points: {at: Point, name?: string, snap?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string, locate?: string, start?: Point, check?: boolean, nodo?: boolean}} args */
 export default function (args) {
+    if (args.locate) return follow(/** @type {any} */ (args));
     const reach = args.reach ?? 6;
     const speed = args.speed ?? SPEED;
     const legs = [];
@@ -187,8 +264,7 @@ export default function (args) {
             legs.push({ i, bearing: Math.round(bearing), dist: Math.round(dist), ms, moved: Math.round(Math.hypot(pos.x - was.x, pos.y - was.y)), stuck: r.stuck.length });
         }
         // the last point, or one with something to do: look the way the teacher looked there
-        const cam = p.cam != null && (i === (args.to ?? args.points.length - 1) || p.do) ? faceTo(p.cam) : null;
-        const done = p.do === "flower" ? destroy() : p.do === "fight" ? seekFight() : p.do === "chest" ? openChest() : null;
+        const { cam, done } = act(p, i === (args.to ?? args.points.length - 1));
         log(`point ${i} (${p.name ?? ""}) reached at ${Math.round(pos.x)},${Math.round(pos.y)}${cam != null ? `, camera ${Math.round(cam)}° (wants ${p.cam}°)` : ""}${done ? `: ${done}` : ""}`);
         if (done) legs.push({ i, do: p.do, done });
     }

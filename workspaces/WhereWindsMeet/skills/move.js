@@ -21,6 +21,12 @@
 //   sprint: true             hold dodge until its icon turns gold (sprinting), then let go; again if it drops;
 //                            given up after two presses that did not start one (dungeons may not allow it)
 //   {turn: 150}              drag the camera by this many px (right: positive), report the heading before and after
+//   {goto: [[-80, 110], [-72, 84]], ref: "locate/cixin_mosaic", from: [-108, 115]}  run through the points and stop
+//                            at the last (positions: big map px from the stronghold icon), knowing where it is on
+//                            every frame without the big map: locate() finds the minimap in the reference near where
+//                            dead reckoning (camera heading, joystick direction, sprint / run speed) puts it, and a
+//                            good match resets the reckoning. Sprints while far, lets go and runs the last stretch
+//                            so it does not overshoot. Stuck: the reckoning moves, the matches do not. See goTo()
 import { angleDiff, bearingOf, cameraHeading, CENTER, enemies, onZone, zone } from "./lib/minimap.js";
 import { recognize as pickupPoint } from "./auto_pickup.js";
 import { calm } from "./lib/hud.js";
@@ -151,12 +157,232 @@ function locked(image) {
     return color({ ...GOLD, image, roi: LOCK_ROI, count: LOCK_PX }).hit;
 }
 
+// goto: where it is, frame by frame (route.js locate mode; measured on the 2026-09-30 survey, scripts/minimap_locate.py)
+const V_SPRINT = 8; // big map px per second sprinting (steady ~8)
+const V_RUN = 4.6; // running, not sprinting (12 px in 2.6 s)
+const COAST_MS = 500; // a sprint carries on ~3 px after the joystick is let go (up to ~7 outside)
+const V_COAST = 6;
+const FIX_MIN = 0.4; // a match counts from this score, and this far above the best elsewhere (on the survey's
+const FIX_MARGIN = 0.1; // frames: 2 wrong among 243 taken with the stitched reference)
+const SEARCH = [10, 8, 40]; // search radius around the reckoning: px, + px per second without a match, at most
+const LOST_MS = 3000; // no match this long: lost
+const PASS = 6; // a point on the way counts as passed this close
+const SPRINT_STOP = 12; // let go of a sprint this far from the last point, then run the rest
+const BRAKE_MS = 350; // how long the joystick is let go to end the sprint
+const GO_STUCK_MS = 2000; // not 1 px closer to the point this long: stuck
+const ASTRAY = 15; // this much farther from the point than the closest it got: astray
+const SETTLE_MS = 600; // at the end: coasting, then one more look
+const FIGHT_PX = 25; // the top right icons hidden and a red mark this close (minimap px): a fight
+
+/** @param {Point} from @param {Point} to */
+const bearingTo = (from, to) => (Math.atan2(to[0] - from[0], -(to[1] - from[1])) * 180 / Math.PI + 360) % 360;
+/** @param {Point} a @param {Point} b */
+const distTo = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
+
+/**
+ * locate() near `prior` (null: the whole reference); the match when it can be trusted, else null.
+ * @param {string} ref @param {Image} image @param {number | null} cam @param {Point | null} prior @param {number} radius
+ */
+function fix(ref, image, cam, prior, radius) {
+    const r = locate(ref, { image, cam, prior: prior ?? undefined, radius });
+    return r && r.score >= FIX_MIN && r.score - r.second >= FIX_MARGIN ? r : null;
+}
+
+/**
+ * Run through `args.goto` (big map px from the stronghold icon), stopping at the last point.
+ * Every frame: dead reckoning moves the position along the direction steered (camera + joystick) at the speed of the
+ * moment (sprinting: the dodge button is gold; running; coasting a moment after letting go), then locate() looks for
+ * the minimap near it, within a radius that grows while nothing matches; a trusted match replaces the position.
+ * Points on the way are passed within PASS; the last is run to within `reach`: sprinting (while more than
+ * SPRINT_STOP + 6 px off), letting go at SPRINT_STOP to end the sprint, running the rest.
+ * Ends: arrived | stuck (no closer for GO_STUCK_MS after every way out) | astray | lost (no match for LOST_MS) |
+ * fight (the top right icons hide) | time.
+ * @param {{goto: Point[], ref: string, from?: Point, reach?: number, ms?: number, sprint?: boolean, face?: boolean}} args
+ */
+function goTo(args) {
+    const path = args.goto;
+    const reach = args.reach ?? 4;
+    const ms = args.ms ?? 60000;
+    const t0 = Date.now();
+    let cam = cameraHeading(screenshot());
+    /** @type {Point | null} */
+    let pos = args.from ? [args.from[0], args.from[1]] : null;
+    let wide = !pos; // search the whole reference / the widest radius on the next look
+    let lastFix = t0;
+    let fixes = 0;
+    let misses = 0;
+    let missRun = 0;
+    let maxMissRun = 0;
+    let idx = 0;
+    let held = false; // the joystick is down
+    let holding = 0; // dodge pressed for a sprint since
+    let sprintFails = 0;
+    let fast = false;
+    let slow = false; // the sprint was let go near the end: run from here
+    let brakeAt = 0;
+    let releasedAt = 0;
+    let coastFast = false;
+    /** @type {number | null} */
+    let dir = null; // compass direction steered
+    let lastT = t0;
+    let closest = Infinity;
+    let since = t0;
+    let level = 0;
+    let lastHud = 0;
+    let hudMiss = 0;
+    let lastFace = 0;
+    let rel = 0;
+    let why = "time";
+    const stuck = [];
+    const trace = [];
+    const release = () => {
+        if (holding) touch.up(1);
+        holding = 0;
+        if (held) touch.up(0);
+        held = false;
+    };
+    const press = () => {
+        touch.down(STICK, 0);
+        sleep(50);
+        touch.move(stickAt(rel), 0);
+        held = true;
+    };
+    try {
+        while (Date.now() - t0 < ms) {
+            const image = screenshot();
+            const now = Date.now();
+            const dt = (now - lastT) / 1000;
+            lastT = now;
+            cam = cameraHeading(image, cam);
+            // dead reckoning
+            if (pos && dir != null) {
+                const v = held ? (fast ? V_SPRINT : V_RUN) : now - releasedAt < COAST_MS ? (coastFast ? V_COAST : 1) : 0;
+                const t = (dir * Math.PI) / 180;
+                pos = [pos[0] + v * dt * Math.sin(t), pos[1] - v * dt * Math.cos(t)];
+            }
+            const radius = wide ? SEARCH[2] : Math.min(SEARCH[2], SEARCH[0] + (SEARCH[1] * (now - lastFix)) / 1000);
+            const r = fix(args.ref, image, cam, pos ? pos : null, radius);
+            wide = false;
+            if (r) {
+                pos = [r.x, r.y];
+                lastFix = now;
+                fixes++;
+                missRun = 0;
+            } else {
+                misses++;
+                maxMissRun = Math.max(maxMissRun, ++missRun);
+                if (now - lastFix > LOST_MS || !pos) {
+                    why = "lost";
+                    break;
+                }
+            }
+            if (now - lastHud >= HUD_MS) {
+                lastHud = now;
+                // the icons also drop out against a bright sky: a fight needs an enemy close by too
+                if (!calm(image) && enemies(image).some((e) => e.dist <= FIGHT_PX)) {
+                    if (++hudMiss >= 2) {
+                        why = "fight";
+                        break;
+                    }
+                } else hudMiss = 0;
+            }
+            // the point to run to: points on the way are passed
+            while (idx < path.length - 1 && distTo(pos, path[idx]) <= PASS) {
+                idx++;
+                closest = Infinity;
+                level = 0;
+            }
+            const goal = path[idx];
+            const last = idx === path.length - 1;
+            const dist = distTo(pos, goal);
+            if (last && dist <= reach) {
+                why = "arrived";
+                break;
+            }
+            if (dist < closest - 1) {
+                closest = dist;
+                since = now;
+                level = 0;
+            } else if (dist > closest + ASTRAY) {
+                why = "astray";
+                break;
+            } else if (now - since > GO_STUCK_MS && held) {
+                if (level >= UNSTICK.length) {
+                    why = "stuck";
+                    break;
+                }
+                if (holding) {
+                    touch.up(1);
+                    holding = 0;
+                }
+                stuck.push([now - t0, level, Math.round(pos[0]), Math.round(pos[1])]);
+                unstick(UNSTICK[level++], rel);
+                since = Date.now();
+                lastT = Date.now(); // the way out's moves are not reckoned: look wide next
+                wide = true;
+                continue;
+            }
+            // near the end of a sprint: let go so it stops sprinting, then run the rest
+            if (last && fast && !slow && dist <= SPRINT_STOP) {
+                slow = true;
+                coastFast = true;
+                releasedAt = brakeAt = now;
+                release();
+                continue;
+            }
+            if (!held && (!brakeAt || now - brakeAt >= BRAKE_MS)) {
+                if (cam != null) rel = angleDiff(bearingTo(pos, goal), cam);
+                press();
+            }
+            const bearing = bearingTo(pos, goal);
+            if (cam != null) {
+                rel = angleDiff(bearing, cam);
+                dir = bearing;
+            }
+            if (held) touch.move(stickAt(rel), 0);
+            // keep the camera on the way ahead (not while dodge is held: the turn uses contact 1 too)
+            if (args.face !== false && cam != null && Math.abs(rel) > FACE_RUN && !holding && now - lastFace >= FACE_MS && held) {
+                const dx = Math.max(-300, Math.min(300, Math.round(rel / DEG_PX)));
+                turn(dx);
+                cam = (cam + dx * DEG_PX + 360) % 360;
+                lastFace = Date.now();
+                continue;
+            }
+            fast = sprinting(image);
+            const far = !slow && (!last || dist > SPRINT_STOP + 6);
+            if (args.sprint !== false && far && held && sprintFails < SPRINT_TRIES && !holding && !fast) {
+                touch.down(DODGE, 1);
+                holding = now;
+            } else if (holding && (fast || now - holding > HOLD_MS)) {
+                touch.up(1);
+                holding = 0;
+                if (fast) sprintFails = 0;
+                else sprintFails++;
+            }
+            if (trace.length === 0 || now - t0 - trace[trace.length - 1].t >= 250) {
+                trace.push({ t: now - t0, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}) });
+            }
+        }
+    } finally {
+        release();
+    }
+    if (why === "arrived" && pos) {
+        sleep(SETTLE_MS);
+        const r = fix(args.ref, screenshot(), cameraHeading(screenshot(), cam), pos, 12);
+        if (r) pos = [r.x, r.y];
+    }
+    const out = { ms: Date.now() - t0, why, at: pos && [Math.round(pos[0] * 10) / 10, Math.round(pos[1] * 10) / 10], idx, fixes, misses, maxMissRun, stuck, trace };
+    log(JSON.stringify(out));
+    return out;
+}
+
 /**
  * @param {{face?: boolean, bearing?: number, rel?: number, enemy?: boolean, zone?: boolean, zoneAt?: number, snap?: string, reachPx?: number, snapMin?: number, expect?: Point, lostMs?: number, near?: number, lockAt?: number, capture?: boolean, ms?: number, sprint?: boolean,
- *          pickup?: boolean, turn?: number, step?: number}} args
+ *          pickup?: boolean, turn?: number, step?: number, goto?: Point[], ref?: string, from?: Point, reach?: number}} args
  * @param {SkillContext} [ctx]
  */
 export default function (args, ctx) {
+    if (args.goto) return goTo(/** @type {any} */ (args));
     if (args.turn != null) {
         const before = cameraHeading(screenshot());
         turn(args.turn);
