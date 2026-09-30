@@ -60,8 +60,11 @@ class Teaching(private val app: App) {
     @Volatile private var aiSeen = 0L // last request from the AI (the PC client), and what it was
     @Volatile private var aiDid = ""
 
-    /** Thrown by AI actions while the teacher has stopped it; the API answers {"error": "stopped by teacher"}. */
-    class Stopped : IllegalStateException(STOPPED)
+    /**
+     * Thrown by AI actions while the teacher has stopped it, or has the device (remote control); the API answers
+     * {"error": "stopped by teacher"} or {"error": "teacher has control"}.
+     */
+    class Stopped(why: String = STOPPED) : IllegalStateException(why)
 
     val active: Boolean get() = workspace.isNotEmpty()
 
@@ -143,8 +146,9 @@ class Teaching(private val app: App) {
             val online = listeners > 0 || System.currentTimeMillis() - lastPoll < POLL_GAP_MS
             put("ai", if (online) "listening" else if (waiting) "busy" else "away")
             put("stopped", stopped)
-            // who has the device, for the top bar (arbitration comes with remote control)
+            // who has the device, for the top bar
             put("control", when {
+                app.remote.controlling -> "teacher"
                 stopped -> "stopped"
                 waiting -> "ai"
                 busy != null && !busy.startsWith("guard:") -> "task"
@@ -164,9 +168,25 @@ class Teaching(private val app: App) {
         aiDid = what
     }
 
-    /** AI actions (act, run, skill) call this first. */
+    /** AI actions (act, run, skill) call this first, and again once they have the device lock. */
     fun checkNotStopped() {
+        if (app.remote.controlling) throw Stopped(TEACHER_CONTROL)
         if (stopped) throw Stopped()
+    }
+
+    /**
+     * The teacher takes the device (remote control): what runs ends, and an AI in the middle of its turn is stopped
+     * as if the teacher had pressed stop (it explains itself with say once the teacher lets go).
+     */
+    fun interrupt() {
+        synchronized(lock) {
+            if (active && waiting() && !stopped) {
+                system("老师接管了设备，已叫停", "teacher")
+                stopped = true
+            }
+        }
+        app.skills.stop()
+        app.engine.stopTask()
     }
 
     fun shot(): JsonObject {
@@ -182,6 +202,7 @@ class Teaching(private val app: App) {
             JsonObject(action + ("package" to JsonPrimitive(app.workspaces.packageOf(workspace))))
         } else action
         return app.engine.exclusive("teach:$workspace/$task") {
+            checkNotStopped() // the teacher may have taken the device while this waited for it
             val before = last.ifEmpty { capture().optStr("screenshot")!! }
             val ok = app.engine.act(full)
             if (type != "wait") delay(waitMs) // a wait action already waited
@@ -221,6 +242,7 @@ class Teaching(private val app: App) {
         ensure()
         checkNotStopped()
         return app.engine.exclusive("teach:$workspace/$task") {
+            checkNotStopped()
             val r = app.engine.run(workspace, node, once)
             JsonObject(mapOf("node" to JsonPrimitive(node)) + r + capture())
         }
@@ -671,6 +693,7 @@ class Teaching(private val app: App) {
     companion object {
         const val PNG_URL = "data:image/png;base64,"
         const val STOPPED = "stopped by teacher"
+        const val TEACHER_CONTROL = "teacher has control"
         val KINDS = setOf("rect", "circle", "arrow", "click", "region")
         const val DEFAULT_TASK = "explore" // the scratch task: where teaching starts and ending a task returns to
         const val NOTICE_WINDOW_MS = 30 * 60_000L

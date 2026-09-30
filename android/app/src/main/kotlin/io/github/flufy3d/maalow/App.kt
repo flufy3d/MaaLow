@@ -7,6 +7,7 @@ import io.github.flufy3d.maalow.engine.Engine
 import io.github.flufy3d.maalow.record.Frames
 import io.github.flufy3d.maalow.record.Recorder
 import io.github.flufy3d.maalow.record.Recordings
+import io.github.flufy3d.maalow.remote.Remote
 import io.github.flufy3d.maalow.server.ApiServer
 import io.github.flufy3d.maalow.skill.Skills
 import io.github.flufy3d.maalow.store.Events
@@ -44,6 +45,8 @@ class App : Application() {
         private set
     lateinit var frames: Frames
         private set
+    lateinit var remote: Remote
+        private set
 
     /** Background work that outlives a request (e.g. a triggered run with wait=false). */
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -79,6 +82,24 @@ class App : Application() {
     fun settings(): Settings = Settings.load(settingsFile)
 
     fun updateSettings(change: (Settings) -> Settings): Settings = Settings.update(settingsFile, change)
+
+    private var extraMirror: String? = null
+
+    /**
+     * Besides recognition's, one more mirror of the display at a time: recording ("record") or the remote view
+     * ("remote"), whichever came first. Throws, saying why, when the other one has it.
+     */
+    fun claimMirror(owner: String) = synchronized(this) {
+        when (extraMirror) {
+            null, owner -> extraMirror = owner
+            "remote" -> error("远程画面开着，先关掉再录制")
+            else -> error("录制中，不能开远程画面")
+        }
+    }
+
+    fun releaseMirror(owner: String) = synchronized(this) {
+        if (extraMirror == owner) extraMirror = null
+    }
 
     /** The workspace used when a request names none: the configured one, else the first. */
     fun defaultWorkspace(): String? =
@@ -122,7 +143,8 @@ class App : Application() {
         frames = Frames()
         recordings = Recordings(this)
         recorder = Recorder(this)
-        engine.onPrivilegedGone = { recorder.stopAsync("engine") }
+        remote = Remote(this)
+        engine.onPrivilegedGone = { recorder.stopAsync("engine"); remote.engineGone() }
         guards = Guards(this)
         scheduler = Scheduler(this)
         server = ApiServer(this)

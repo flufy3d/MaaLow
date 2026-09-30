@@ -247,6 +247,7 @@ class Scheduler(private val app: App) {
         fun done(status: String, reason: String? = null, extra: JsonObjectBuilder.() -> Unit = {}) =
             record(ws, s, trigger, planned, start, status, reason, extra)
         try {
+            if (app.remote.controlling) return done("skipped", "teacher_control")
             ShizukuLink.settle()
             when (ShizukuLink.state()) {
                 ShizukuLink.State.NOT_RUNNING -> return done("skipped", "shizuku_not_running")

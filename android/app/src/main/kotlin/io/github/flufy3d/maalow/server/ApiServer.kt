@@ -37,6 +37,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.routing
+import io.ktor.server.websocket.WebSockets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -64,8 +65,9 @@ class ApiServer(private val app: App) {
             install(createApplicationPlugin("Token") {
                 onCall { call ->
                     val path = call.request.path()
-                    // the UI's page and scripts: no data in them, the page calls the API with the token it remembered
-                    if (path == "/" || path.startsWith("/web/")) return@onCall
+                    // the UI's page and scripts: no data in them, the page calls the API with the token it remembered;
+                    // the remote WebSocket takes the token in its first message (kept out of URLs and logs)
+                    if (path == "/" || path.startsWith("/web/") || path == REMOTE_PATH) return@onCall
                     val auth = call.request.headers["Authorization"]?.removePrefix("Bearer ")?.trim()
                     val token = auth ?: call.request.queryParameters["token"]
                     if (token != app.token) call.respondJson(HttpStatusCode.Unauthorized, errorBody("bad or missing token"))
@@ -74,6 +76,7 @@ class ApiServer(private val app: App) {
                 }
             })
             install(PartialContent) // video seeking in the replay page
+            install(WebSockets) // the remote stage
             install(StatusPages) {
                 exception<Throwable> { call, e ->
                     val code = when (e) {
@@ -82,7 +85,7 @@ class ApiServer(private val app: App) {
                         is IllegalStateException -> HttpStatusCode.Conflict
                         else -> HttpStatusCode.InternalServerError
                     }
-                    call.respondJson(code, errorBody(if (e is Teaching.Stopped) Teaching.STOPPED else "${e.javaClass.simpleName}: ${e.message}"))
+                    call.respondJson(code, errorBody(if (e is Teaching.Stopped) e.message.orEmpty() else "${e.javaClass.simpleName}: ${e.message}"))
                 }
             }
             routing {
@@ -93,6 +96,7 @@ class ApiServer(private val app: App) {
                 autoRoutes(app)
                 skillRoutes(app)
                 recordRoutes(app)
+                remoteRoutes(app)
                 webRoutes(app)
             }
         }.start(wait = false)
@@ -124,7 +128,7 @@ class ApiServer(private val app: App) {
             if (body.optBool("record") != false) {
                 call.respondJson(app.teaching.act(action, body.optStr("say").orEmpty(), body.optLong("wait") ?: 1500))
             } else {
-                val ok = maalow.exclusive("act") { maalow.act(action) }
+                val ok = maalow.exclusive("act") { app.teaching.checkNotStopped(); maalow.act(action) }
                 call.respondJson(buildJsonObject { put("ok", ok) })
             }
         }
@@ -140,7 +144,7 @@ class ApiServer(private val app: App) {
                 call.respondJson(app.teaching.run(node, once))
             } else {
                 val w = ws ?: app.defaultWorkspace() ?: error("no workspace")
-                call.respondJson(maalow.exclusive("task:$w/$node") { maalow.run(w, node, once) })
+                call.respondJson(maalow.exclusive("task:$w/$node") { app.teaching.checkNotStopped(); maalow.run(w, node, once) })
             }
         }
 
@@ -169,7 +173,7 @@ class ApiServer(private val app: App) {
 
         get("/api/v1/settings") { call.respondJson(settings()) }
 
-        // {workspace?, guards_enabled?, guard_interval_ms?, record_bitrate?}
+        // {workspace?, guards_enabled?, guard_interval_ms?, record_bitrate?, https_url?}
         put("/api/v1/settings") {
             val body = call.body()
             body.optStr("workspace")?.let { if (it.isEmpty()) app.updateSettings { s -> s.copy(workspace = "") } else app.useWorkspace(it) }
@@ -179,6 +183,9 @@ class ApiServer(private val app: App) {
                     guardIntervalMs = body.optLong("guard_interval_ms") ?: s.guardIntervalMs,
                     recordBitrate = body.optInt("record_bitrate")?.also { require(it in 250_000..50_000_000) { "record_bitrate out of range" } }
                         ?: s.recordBitrate,
+                    httpsUrl = body.optStr("https_url")?.trim()?.trimEnd('/')
+                        ?.also { require(it.isEmpty() || it.startsWith("https://")) { "https_url 要以 https:// 开头" } }
+                        ?: s.httpsUrl,
                 )
             }
             call.respondJson(settings())
@@ -212,6 +219,7 @@ class ApiServer(private val app: App) {
         put("guards_enabled", s.guardsEnabled)
         put("guard_interval_ms", s.guardIntervalMs)
         put("record_bitrate", s.recordBitrate)
+        put("https_url", s.httpsUrl)
     }
 
     private fun status(): JsonObject = buildJsonObject {
@@ -223,6 +231,7 @@ class ApiServer(private val app: App) {
         put("busy", maalow.busy)
         put("skills", JsonArray(app.skills.running.map { JsonPrimitive(it) }))
         put("record", app.recorder.state())
+        put("remote", app.remote.json())
         put("workspace", app.defaultWorkspace())
         put("frame", buildJsonObject {
             put("width", maalow.width)

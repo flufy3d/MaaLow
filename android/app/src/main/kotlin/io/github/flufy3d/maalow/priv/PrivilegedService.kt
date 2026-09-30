@@ -72,6 +72,14 @@ class PrivilegedService(private val context: Context) : IPrivileged.Stub() {
         inputThread = thread(name = "maalow-input", isDaemon = true) { readInput(socket, width, height) }
     }
 
+    override fun remoteTouch(action: Int, contact: Int, x: Int, y: Int, width: Int, height: Int): Boolean {
+        val (px, py) = toDisplay(x, y, width, height)
+        return injector.touch(TOUCH_DOWN + action.coerceIn(0, 2), contact, px, py)
+    }
+
+    override fun remoteKey(code: Int): Boolean =
+        injector.key(KeyEvent.ACTION_DOWN, code) && injector.key(KeyEvent.ACTION_UP, code)
+
     override fun exec(cmd: String): String {
         val p = ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start()
         val out = p.inputStream.bufferedReader().readText()
@@ -219,7 +227,7 @@ private class Injector {
         }
         val props = Array(active.size) { i ->
             MotionEvent.PointerProperties().apply {
-                id = active[i]
+                id = pointerId(active[i])
                 toolType = MotionEvent.TOOL_TYPE_FINGER
             }
         }
@@ -236,6 +244,10 @@ private class Injector {
         return ok
     }
 
+    /** Pointer ids go up to 31: Maa's contacts keep theirs, remote ones (100 and up) take 16 and up. */
+    private fun pointerId(contact: Int) = if (contact < 16) contact else 16 + (contact - 100).mod(16)
+
+    @Synchronized
     fun key(action: Int, code: Int): Boolean {
         val now = SystemClock.uptimeMillis()
         val event = KeyEvent(

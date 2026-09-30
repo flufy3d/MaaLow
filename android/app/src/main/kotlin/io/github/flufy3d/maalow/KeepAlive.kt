@@ -39,17 +39,46 @@ object KeepAlive {
             context.getSystemService(NotificationManager::class.java).areNotificationsEnabled().let {
                 Check("notifications", "通知", it, if (it) "允许" else "未允许")
             },
+            tailSocksCheck(context),
         )
+    }
+
+    /** TailSocks publishes the web UI as HTTPS (the remote stage needs it); it has to stay alive too. */
+    private fun tailSocksCheck(context: Context): Check {
+        val pkg = tailSocks(context) ?: return Check("tailsocks", "TailSocks（远程访问）", null, "未安装：只有远程画面用得到")
+        val battery = context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(pkg)
+        val auto = autoStart(context, pkg)
+        return Check(
+            "tailsocks", "TailSocks（远程访问）", battery && auto != false,
+            "电池${if (battery) "无限制" else "受限"} · 自启动${if (auto == null) "未知" else if (auto) "允许" else "未允许"}",
+        )
+    }
+
+    @Volatile private var tailSocksAt = 0L
+    @Volatile private var tailSocksPkg: String? = null
+
+    /** The installed TailSocks' package (found by name, looked up again every half minute), or null. */
+    fun tailSocks(context: Context): String? {
+        val now = System.currentTimeMillis()
+        if (now - tailSocksAt < 30_000) return tailSocksPkg
+        val pm = context.packageManager
+        val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        tailSocksPkg = pm.queryIntentActivities(main, 0).map { it.activityInfo }.firstOrNull {
+            it.packageName.contains("tailsocks", ignoreCase = true) || it.loadLabel(pm).toString().contains("TailSocks", ignoreCase = true)
+        }?.packageName
+        tailSocksAt = now
+        return tailSocksPkg
     }
 
     fun json(context: Context): JsonObject = buildJsonObject {
         for (c in checks(context)) put(c.key, c.ok)
     }
 
-    private fun autoStart(context: Context): Boolean? = runCatching {
+    private fun autoStart(context: Context, pkg: String = context.packageName): Boolean? = runCatching {
         val ops = context.getSystemService(AppOpsManager::class.java)
+        val uid = if (pkg == context.packageName) Process.myUid() else context.packageManager.getApplicationInfo(pkg, 0).uid
         val mode = HiddenApiBypass.invoke(
-            AppOpsManager::class.java, ops, "checkOpNoThrow", OP_AUTO_START, Process.myUid(), context.packageName,
+            AppOpsManager::class.java, ops, "checkOpNoThrow", OP_AUTO_START, uid, pkg,
         ) as Int
         mode == AppOpsManager.MODE_ALLOWED
     }.getOrNull()
@@ -66,6 +95,10 @@ object KeepAlive {
             ).putExtra("package_name", pkg).putExtra("package_label", "MaaLow")
             "exact_alarm" -> Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$pkg"))
             "notifications" -> Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, pkg)
+            "tailsocks" -> tailSocks(context)?.let {
+                Intent().setComponent(ComponentName("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"))
+                    .putExtra("package_name", it).putExtra("package_label", "TailSocks")
+            }
             else -> null
         }?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
@@ -75,7 +108,7 @@ object KeepAlive {
         Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
-    /** Grant what shell can grant: autostart, battery whitelist, background running. Returns command outputs. */
+    /** Grant what shell can grant: autostart, battery whitelist, background running (TailSocks too). Returns command outputs. */
     suspend fun fix(context: Context, engine: Engine): JsonObject {
         val pkg = context.packageName
         val cmds = listOf(
@@ -83,7 +116,9 @@ object KeepAlive {
             "dumpsys deviceidle whitelist +$pkg",
             "appops set $pkg RUN_ANY_IN_BACKGROUND allow",
             "appops set $pkg SCHEDULE_EXACT_ALARM allow",
-        )
+        ) + tailSocks(context)?.let {
+            listOf("appops set $it $OP_AUTO_START allow", "dumpsys deviceidle whitelist +$it", "appops set $it RUN_ANY_IN_BACKGROUND allow")
+        }.orEmpty()
         return buildJsonObject {
             for (c in cmds) put(c, engine.shell(c).let { (code, out) -> "exit=$code ${out.trim()}" })
         }

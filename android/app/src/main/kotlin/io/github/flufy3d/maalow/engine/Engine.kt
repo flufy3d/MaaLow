@@ -13,6 +13,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -98,6 +99,22 @@ class Engine(private val context: Context) {
             busy = null
             device.unlock()
         }
+    }
+
+    /**
+     * Take the device lock and keep it past this call (remote control), waiting at most timeoutMs; false if it stayed
+     * busy. [unhold] gives it back.
+     */
+    suspend fun hold(owner: String, timeoutMs: Long): Boolean {
+        withTimeoutOrNull(timeoutMs) { device.lock() } ?: return false
+        busy = owner
+        return true
+    }
+
+    fun unhold(owner: String) {
+        if (busy != owner) return
+        busy = null
+        device.unlock()
     }
 
     suspend fun start() {

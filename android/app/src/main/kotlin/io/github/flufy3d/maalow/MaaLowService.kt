@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
@@ -51,6 +52,7 @@ class MaaLowService : Service() {
         app.guards.start(scope)
         scope.launch { supervise(app) }
         scope.launch { app.scheduler.reschedule() }
+        scope.launch { app.remote.status.collect { update(app) } }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -61,6 +63,7 @@ class MaaLowService : Service() {
                 update(app)
             }
             ACTION_ALARM -> scope.launch { app.scheduler.onAlarm() }
+            ACTION_RECLAIM -> app.remote.reclaim()
         }
         return START_STICKY
     }
@@ -122,17 +125,24 @@ class MaaLowService : Service() {
         )
     }
 
+    /** The notification's text: what the web page does remotely, while it does; else the engine's state. */
+    @Synchronized
     private fun update(app: App) {
         val e = app.engine
-        val t = e.error?.let { "引擎 ${e.state}：$it" } ?: listOfNotNull(
-            "引擎 ${e.state}", e.busy?.let { "忙：$it" }, "端口 ${App.PORT}",
-        ).joinToString(" · ")
+        val r = app.remote.status.value
+        val t = when {
+            r.controlled -> "网页正在操控"
+            r.viewers > 0 -> "网页正在观看（${r.viewers} 人）"
+            else -> e.error?.let { "引擎 ${e.state}：$it" } ?: listOfNotNull(
+                "引擎 ${e.state}", e.busy?.let { "忙：$it" }, "端口 ${App.PORT}",
+            ).joinToString(" · ")
+        }
         if (t == text) return
         text = t
-        getSystemService(NotificationManager::class.java).notify(ID_SERVICE, notification(t))
+        getSystemService(NotificationManager::class.java).notify(ID_SERVICE, notification(t, reclaim = r.controlled))
     }
 
-    private fun notification(text: String): Notification {
+    private fun notification(text: String, reclaim: Boolean = false): Notification {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
@@ -142,6 +152,17 @@ class MaaLowService : Service() {
             .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
+            .apply {
+                if (reclaim) addAction(
+                    Notification.Action.Builder(
+                        Icon.createWithResource(this@MaaLowService, R.drawable.ic_stat_maalow), "收回",
+                        PendingIntent.getService(
+                            this@MaaLowService, 3, Intent(this@MaaLowService, MaaLowService::class.java).setAction(ACTION_RECLAIM),
+                            PendingIntent.FLAG_IMMUTABLE,
+                        ),
+                    ).build(),
+                )
+            }
             .build()
     }
 
@@ -162,6 +183,7 @@ class MaaLowService : Service() {
         const val ID_ALERT = 2
         const val ACTION_RESTART_ENGINE = "restart_engine"
         const val ACTION_ALARM = "alarm"
+        const val ACTION_RECLAIM = "remote_reclaim" // the notification's 收回: take control back from the web page
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         const val SUPERVISE_MS = 3000L
         const val RETRY_MS = 15_000L

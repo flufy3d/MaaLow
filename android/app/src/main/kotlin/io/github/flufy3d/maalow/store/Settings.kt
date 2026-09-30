@@ -13,6 +13,8 @@ data class Settings(
     @SerialName("guard_interval_ms") val guardIntervalMs: Long = 2000,
     /** H.264 bit rate of screen recordings, bits per second. */
     @SerialName("record_bitrate") val recordBitrate: Int = 3_000_000,
+    /** The web UI's HTTPS address (TailSocks Serve), e.g. https://maalow-pad.tailea818a.ts.net; the remote stage needs it. */
+    @SerialName("https_url") val httpsUrl: String = "",
 ) {
     companion object {
         private val lock = Any()

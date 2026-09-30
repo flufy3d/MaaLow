@@ -23,4 +23,11 @@ interface IPrivileged {
     int[] displayInfo() = 5;
 
     int pid() = 6;
+
+    // Remote control from the web UI, straight to the injector (not through Maa): action 0 down, 1 move, 2 up;
+    // contacts 100 and up, coordinates in a width x height frame like attachInput's.
+    boolean remoteTouch(int action, int contact, int x, int y, int width, int height) = 7;
+
+    // A key press (down and up).
+    boolean remoteKey(int code) = 8;
 }

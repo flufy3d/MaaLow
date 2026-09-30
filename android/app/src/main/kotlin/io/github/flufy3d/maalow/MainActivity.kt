@@ -179,28 +179,33 @@ private fun read(app: App): Snap {
         nextAlarm = app.scheduler.nextAlarm,
         recording = app.recorder.recording,
         checks = KeepAlive.checks(app),
-        links = links(app.token),
+        links = links(app.token, app.settings().httpsUrl),
         token = app.token,
     )
 }
 
-/** IPv4 addresses, the LAN first; each labeled by the network it is on. */
-private fun links(token: String): List<Link> =
-    NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback }.flatMap { ni ->
-        ni.inetAddresses.toList().filterIsInstance<Inet4Address>().map { a ->
+/**
+ * The HTTPS address if set (TailSocks: remote access and the remote stage), then IPv4 addresses, the LAN first; each
+ * labeled by its network. Tailscale / VPN addresses are left out: from afar the page is opened over HTTPS.
+ */
+private fun links(token: String, https: String): List<Link> {
+    val lan = NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback }.flatMap { ni ->
+        ni.inetAddresses.toList().filterIsInstance<Inet4Address>().mapNotNull { a ->
             val ip = a.hostAddress.orEmpty()
             val n = ni.name.lowercase()
             val (rank, label) = when {
                 n.startsWith("wlan") -> 0 to "局域网 Wi‑Fi"
                 n.startsWith("eth") -> 1 to "有线网络"
                 n.startsWith("ap") || n.startsWith("swlan") || n.contains("softap") -> 2 to "本机热点"
-                n.startsWith("tun") || n.contains("tailscale") || isCgnat(ip) -> 3 to "Tailscale / VPN"
+                n.startsWith("tun") || n.contains("tailscale") || isCgnat(ip) -> return@mapNotNull null
                 n.startsWith("rmnet") || n.startsWith("ccmni") -> 5 to "移动网络"
                 else -> 4 to ni.name
             }
             rank to Link(label, "http://$ip:${App.PORT}/?token=$token")
         }
     }.sortedBy { it.first }.map { it.second }
+    return listOfNotNull(https.takeIf { it.isNotEmpty() }?.let { Link("HTTPS（远程访问）", "$it/?token=$token") }) + lan
+}
 
 private fun isCgnat(ip: String): Boolean {
     val p = ip.split('.').mapNotNull { it.toIntOrNull() }
@@ -580,10 +585,10 @@ private fun KeepAliveCard(app: App, s: Snap) {
     Section("后台保活（HyperOS）", Icons.Outlined.Shield) {
         for (c in s.checks) {
             StatusRow(c.ok, c.label, c.detail) {
-                if (c.ok != true) TextButton(onClick = { open(c.key) }) { Text("去设置") }
+                if (c.ok != true && KeepAlive.settingsIntent(context, c.key) != null) TextButton(onClick = { open(c.key) }) { Text("去设置") }
             }
         }
-        if (s.checks.any { it.ok != true }) {
+        if (s.checks.any { it.ok == false || (it.ok == null && it.key != "tailsocks") }) { // not installed: nothing to fix
             Button(
                 onClick = {
                     app.scope.launch {

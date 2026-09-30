@@ -68,6 +68,7 @@ class Recorder(private val app: App) {
             note.orEmpty(), bitrate ?: app.settings().recordBitrate,
         )
         try {
+            app.claimMirror("record") // released in halt
             s.begin()
         } catch (e: Throwable) {
             s.halt()
@@ -363,6 +364,7 @@ class Recorder(private val app: App) {
             }
             if (mirrorId > 0) runCatching { app.engine.privilegedOrNull()?.release(mirrorId) }
             mirrorId = -1
+            app.releaseMirror("record")
             codec?.let { c ->
                 runCatching { c.signalEndOfInputStream() }
                 drain?.join(3000)
