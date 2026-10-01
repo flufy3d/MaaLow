@@ -24,7 +24,7 @@
 import { calm } from "./lib/hud.js";
 import { angleDiff, bearingOf, cameraHeading, CENTER, enemies } from "./lib/minimap.js";
 import { relocate, turn } from "./move.js";
-import { progress, where } from "./stronghold.js";
+import { lines, progress, where } from "./stronghold.js";
 
 /** @type {SkillMeta} */
 export const meta = { description: "walk a recorded route through a stronghold", timeout: 1_800_000 };
@@ -71,10 +71,12 @@ const LIST_ROI = [690, 360, 130, 220]; // the interaction list on the right (aut
 const FLOWER = { lower: [118, 70, 80], upper: [160, 255, 255], method: 40 };
 /** @type {Box} */
 const FLOWER_ROI = [40, 200, 860, 390]; // the scene around the character, under the tracker, above the chat box
-const FLOWER_PX = 400;
+const FLOWER_PX = [400, 8000]; // a flower a step or two away (up close it fills ~1000–6000; more is something else)
 const FLOWER_NEAR = 90; // blobs this close to the biggest are petals of the same flower
+/** @type {Box} */
+const FLOWER_AT = [30, 230, 810, 360]; // where a flower that close shows: around the character (at 第四个毒花 low left)
 const SCREEN_DEG = 0.08; // steering: degrees per screen px off the middle (the view is ~85° wide)
-const STEPS = 8; // steps toward the flower before giving up
+const STEPS = 3; // steps toward the flower before giving up (the route comes back for it at the chest)
 
 /** The flower on screen (its purple blobs' middle), or null. @param {Image} image */
 function flowerAt(image) {
@@ -93,7 +95,10 @@ function flowerAt(image) {
         sx += x * (m.count ?? 0);
         sy += y * (m.count ?? 0);
     }
-    return n >= FLOWER_PX ? { x: sx / n, y: sy / n, n } : null;
+    const [x, y] = [sx / n, sy / n];
+    const [ax, ay, aw, ah] = FLOWER_AT;
+    // anything else purple (a fight's effects, flowers farther off) is not walked to: a wrong step can lead into a hall
+    return n >= FLOWER_PX[0] && n <= FLOWER_PX[1] && x >= ax && x <= ax + aw && y >= ay && y <= ay + ah ? { x, y, n } : null;
 }
 
 const BLIND = 2; // steps straight ahead with no flower in sight (already destroyed, or behind something)
@@ -120,9 +125,13 @@ function destroy() {
                 sleep(BAR_MS);
                 return match("interact_destroy.png", { image: screenshot(), roi: LIST_ROI, threshold: 0.8 }).hit ? "still offered" : "destroyed";
             }
+            // the count going up; for the last flower its line goes instead, which a misread line also looks like, so
+            // that takes two reads in a row
+            let gone = 0;
             const up = waitFor(() => {
                 const now = progress().flowers;
-                return !now || now[0] > before[0]; // its line goes with the last one
+                if (now) return now[0] > before[0];
+                return before[0] + 1 >= before[1] && ++gone >= 2;
             }, { timeout: BAR_MS, interval: 500 });
             return up ? "destroyed" : "still offered";
         }
@@ -175,10 +184,24 @@ function toChest() {
     return false;
 }
 
-/** Open the stronghold chest and take the reward. */
+/** @type {Box} */
+const REWARD_ROI = [790, 470, 280, 190]; // 据点奖励: 领取三份, 剩余避战符, 扫荡次数, 消耗心力
+
+/**
+ * Open the stronghold chest and take the reward with the panel's defaults, as the teacher agreed (领取三份, 扫荡 as
+ * many as the 避战符 left, up to 9; 240 心力): what the panel says is logged, and a panel not on 领取三份 is left open
+ * for a person rather than confirmed.
+ */
 function openChest() {
     if (!tapWhen("interact_chest.png", LIST_ROI, 1500, 10) && !(toChest() && tapWhen("interact_chest.png", LIST_ROI, 2000, 10))) return "chest not offered";
-    if (!tapWhen("reward_confirm.png", [800, 640, 280, 80], 5000)) return "no reward panel";
+    const panel = waitFor(() => {
+        const read = lines(ocr({ image: screenshot(), roi: REWARD_ROI }).results);
+        return read.some((l) => l.includes("领取")) ? read : null;
+    }, { timeout: 5000, interval: 500 });
+    if (!panel) return "no reward panel";
+    log(`reward panel: ${panel.join(" / ")}`);
+    if (!panel.some((l) => l.includes("三份"))) return `reward panel not on 领取三份 (${panel.join(" / ")}): left open`;
+    if (!tapWhen("reward_confirm.png", [800, 640, 280, 80], 3000)) return "no 确认领取";
     let pages = 0;
     while (pages < 6 && tapWhen("result_continue.png", [900, 640, 180, 80], pages ? 3000 : 8000)) {
         pages++;
@@ -265,10 +288,11 @@ function follow(args) {
         return true;
     };
 
-    /** A fight: fought by `how`, then what the tracker says. @param {() => any} how */
+    /** A fight: fought by `how`, what it dropped picked up, then what the tracker says. @param {() => any} how */
     const fight = (how) => {
         fights++;
         const f = how();
+        runSkill("auto_pickup", {});
         const tasks = progress(undefined, args.tracker);
         legs.push({ fight: fights, f, tasks: { foes: tasks.foes, flowers: tasks.flowers } });
         log(`fight ${fights}: ${JSON.stringify(f)}, tracker ${JSON.stringify(tasks.lines)}`);
@@ -283,10 +307,10 @@ function follow(args) {
             let length = 0;
             seg.reduce((a, b) => ((length += distTo(a, b)), b), pos);
             const ms = Math.round(Math.max(GOTO_MS[0], (GOTO_MS[1] * length * 1000) / V_RUN));
-            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, reach: args.reach ?? 2, ms, pickup: false });
+            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, reach: args.reach ?? 2, ms });
             const j = rest[rest.length - 1];
             /** @type {Record<string, any>} */
-            const leg = { i: rest[0], j, why: r.why, ms: r.ms, fixes: r.fixes, misses: r.misses, maxMissRun: r.maxMissRun, stuck: r.stuck.length, at: r.at };
+            const leg = { i: rest[0], j, why: r.why, ms: r.ms, fixes: r.fixes, misses: r.misses, maxMissRun: r.maxMissRun, stuck: r.stuck.length, taps: r.taps, at: r.at };
             legs.push(leg);
             if (r.at) pos = r.at;
             if (r.why === "arrived") return leg;

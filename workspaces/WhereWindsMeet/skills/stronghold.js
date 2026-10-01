@@ -5,8 +5,9 @@
 //              tapping the minimap opens the big map centered on the character (the arrow at PLAYER); the icon is
 //              template matched (templates/map_stronghold.png ~0.97; map_stronghold_done.png, the gray icon with an
 //              hourglass once taken, ~0.99 / ~0.91 on the live one; positions in taken-icon terms, LIVE_AT); null
-//              when not found, which includes standing on it (the arrow hides it): then the name label (慈心山院) above it, a fixed step from the icon, is read
-//              instead; no guessing otherwise, a wrong position sends a route off in a wrong direction;
+//              when not found, which includes standing on it (the arrow hides it): then the name label (慈心山院)
+//              above it, a fixed step from the icon, is read instead; no guessing otherwise, a wrong position sends a
+//              route off in a wrong direction;
 //              also the camera heading (compass degrees, from the minimap before opening the map)
 //   {where: true}  just report that
 //   {locate: ["locate/cixin_mosaic", "locate/cixin_bigmap"], n: 5}  compare locate() (minimap in a reference image,
@@ -80,7 +81,7 @@ export function where() {
  * OCR results as lines of text: grouped by their middles (within 10 px of height), left to right, joined.
  * @param {Match[]} results
  */
-function lines(results) {
+export function lines(results) {
     /** @type {{y: number, parts: Match[]}[]} */
     const rows = [];
     for (const m of results) {
@@ -149,6 +150,7 @@ function toStone() {
     const teleport = () => match("teleport_button.png", { image: screenshot(), roi: TELEPORT_ROI, threshold: 0.8 }).hit;
     click(PANEL_TAP);
     sleep(1500);
+    let missed = "the stronghold icon never matched (zoomed out)";
     for (let i = 0; i < STONE_TRIES; i++) {
         if (teleport()) return "stone";
         const image = screenshot();
@@ -159,22 +161,32 @@ function toStone() {
             continue;
         }
         const c = middle(icon.box);
-        const near = match("map_teleport_stone.png", { image, roi: MAP_LEFT, threshold: 0.7 }).results
-            .map((m) => ({ box: m.box, d: Math.hypot(middle(m.box)[0] - c[0], middle(m.box)[1] - c[1]) }))
-            .filter((s) => s.d >= STONE_PX[0] && s.d <= STONE_PX[1])
-            .sort((a, b) => a.d - b.d);
-        if (!near.length) throw new Error(`big map: no teleport stone near the stronghold icon at ${c.map(Math.round)}`);
+        const stones = match("map_teleport_stone.png", { image, roi: MAP_LEFT, threshold: 0.7 }).results
+            .map((m) => ({ box: m.box, score: m.score ?? 0, d: Math.hypot(middle(m.box)[0] - c[0], middle(m.box)[1] - c[1]) }));
+        const near = stones.filter((s) => s.d >= STONE_PX[0] && s.d <= STONE_PX[1]).sort((a, b) => a.d - b.d);
+        const seen = stones.map((s) => `${middle(s.box).map(Math.round)} ${Math.round(s.score * 100) / 100} ${Math.round(s.d)} px`).join("; ");
+        log(`stone: icon at ${c.map(Math.round)}, stones: ${seen || "none"}`);
+        if (!near.length) {
+            missed = `no teleport stone near the stronghold icon at ${c.map(Math.round)} (${seen || "none"})`;
+            sleep(1000); // the map's icons fade in a while after it opens
+            continue;
+        }
         click(near[0].box);
         if (waitFor(teleport, { timeout: 3000, interval: 300 })) return "stone";
+        missed = "no 传送 after tapping the stone";
     }
-    throw new Error(`big map: no 传送 after ${STONE_TRIES} tries`);
+    throw new Error(`big map: ${missed} (${STONE_TRIES} tries)`);
 }
 
 /** Close popups and teleport to the stone; an error if the stronghold has not come back yet. @param {string} node */
 function start(node) {
     runSkill("clear_popups", {});
     memory.delete(WAIT_KEY);
-    const r = runNode(node);
+    let r = runNode(node);
+    if (!r.hit && !r.nodes.includes(NOT_BACK)) {
+        log(`${node} did not get there (${r.nodes.slice(-3).join(" → ")}), once more from this page`);
+        r = runNode(node); // a page that did not come up in time (the menu, 江湖行): the teleport goes on from any of them
+    }
     if (r.nodes.includes(NOT_BACK)) throw new Error(`stronghold not refreshed yet (${memory.get(WAIT_KEY, "")}), stopped at the stone`);
     if (!r.hit) throw new Error(`${node} did not get to the stone: ${r.nodes.slice(-4).join(" → ")}`);
     return { nodes: r.nodes };

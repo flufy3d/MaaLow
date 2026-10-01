@@ -172,15 +172,17 @@ const LOST_MS = 3000; // no match this long: lost
 const PASS = 2.5; // a point on the way counts as passed this close,
 const PASS_SIDE = 6; // or once past it (over the line across the way there) no farther than this to the side
 const REACH_BACK = 3; // the last point: within this and getting farther again (it went by), arrived too
-const FRESH_MS = 400; // arriving takes a match this recent; there by the reckoning alone (up stairs it runs slower
-const LOOK_MS = 1500; // than reckoned, 2 px/s at the chest), it stops and looks this long first
+const LOOK_MS = 1500; // at the last point with no match this long (the reckoning alone is no arrival: up stairs it
+// runs slower than reckoned, 2 px/s at the chest; after a fight matches can drop out): look wider
 const SPRINT_STOP = 12; // let go of a sprint this far from the last point, then run the rest
 const BRAKE_MS = 350; // how long the joystick is let go to end the sprint
 const GO_STUCK_MS = 2000; // not 1 px closer to the point this long: stuck
 const ASTRAY = 15; // this much farther from the point than the closest it got: astray
-const SETTLE_MS = 600; // at the end: coasting, then one more look
-const SETTLE_PX = 6; // ... taken if this close
-const FIGHT_PX = 25; // the top right icons hidden and a red mark this close (minimap px): a fight
+const SETTLE_MS = 600; // at the end: coasting, then the match that says it is there
+const FIGHT_BIG = 30; // the top right icons hidden and a red mark this close (big map px): a fight; in minimap px
+// that is ~26 in the courtyard but ~13 outside, so the enemies behind the wall that spot it at the gate do not stop it
+/** @type {Record<string, number>} */
+const ZOOM_K = { out: 2.3, in: 1.15 }; // big map px per minimap px at the reference's zoom levels
 
 /** @param {Point} from @param {Point} to */
 const bearingTo = (from, to) => (Math.atan2(to[0] - from[0], -(to[1] - from[1])) * 180 / Math.PI + 360) % 360;
@@ -232,9 +234,10 @@ export function relocate(ref, ms = 4000) {
  * Points on the way are passed within PASS, or once past them (turning early cut the corners: into the statue by the
  * steps at 石像旁); the last is run to within `reach` (or went by it within REACH_BACK): sprinting (while more than
  * SPRINT_STOP + 6 px off), letting go at SPRINT_STOP to end the sprint, running the rest.
+ * Picks up what it passes (pickup: false to leave it).
  * Ends: arrived | stuck (no closer for GO_STUCK_MS after every way out) | astray | lost (no match for LOST_MS) |
  * fight (the top right icons hide) | time.
- * @param {{goto: Point[], ref: string | string[], from?: Point, reach?: number, ms?: number, sprint?: boolean, face?: boolean}} args
+ * @param {{goto: Point[], ref: string | string[], from?: Point, reach?: number, ms?: number, sprint?: boolean, face?: boolean, pickup?: boolean}} args
  */
 function goTo(args) {
     const path = args.goto;
@@ -265,6 +268,9 @@ function goTo(args) {
     let closest = Infinity;
     let nearest = Infinity; // the last point: closest so far, to the fraction
     let lookSince = 0; // stopped at the last point to see it matched
+    let lastPickup = 0;
+    let taps = 0; // pickups on the way
+    let k = ZOOM_K.out; // big map px per minimap px, from the last match's zoom level
     let since = t0;
     let level = 0;
     let lastHud = 0;
@@ -316,6 +322,7 @@ function goTo(args) {
             wide = false;
             if (r) {
                 pos = [r.x, r.y];
+                k = ZOOM_K[r.zoom] ?? k;
                 lastFix = now;
                 fixes++;
                 missRun = 0;
@@ -330,7 +337,7 @@ function goTo(args) {
             if (now - lastHud >= HUD_MS) {
                 lastHud = now;
                 // the icons also drop out against a bright sky: a fight needs an enemy close by too
-                if (!calm(image) && enemies(image).some((e) => e.dist <= FIGHT_PX)) {
+                if (!calm(image) && enemies(image).some((e) => e.dist * k <= FIGHT_BIG)) {
                     if (++hudMiss >= 2) {
                         why = "fight";
                         break;
@@ -346,11 +353,10 @@ function goTo(args) {
             const goal = path[idx];
             const last = idx === path.length - 1;
             const dist = distTo(pos, goal);
-            if (last && (dist <= reach || (nearest <= REACH_BACK && dist > nearest + 1))) {
-                if (now - lastFix <= FRESH_MS || (lookSince && now - lookSince >= LOOK_MS)) {
-                    why = "arrived";
-                    break;
-                }
+            if (last && (dist <= reach || (dist <= REACH_BACK && dist > nearest + 1))) {
+                // there: stop, and take it once a match after it has stood still (coasting) says so; a match that puts
+                // it elsewhere goes on from there, none for a while looks wider, none for LOST_MS is lost (the route
+                // finds it on the whole reference then)
                 if (!lookSince) {
                     lookSince = now;
                     if (held) {
@@ -359,10 +365,15 @@ function goTo(args) {
                         release();
                     }
                 }
+                if (r && now - lookSince >= SETTLE_MS) {
+                    why = "arrived";
+                    break;
+                }
+                if (now - lastFix > LOOK_MS) wide = true;
                 continue;
             }
             lookSince = 0;
-            if (last) nearest = Math.min(nearest, dist);
+            if (last && r) nearest = Math.min(nearest, dist); // by matches only: the reckoning can be off by more
             if (dist < closest - 1) {
                 closest = dist;
                 since = now;
@@ -423,6 +434,16 @@ function goTo(args) {
                 if (fast) sprintFails = 0;
                 else sprintFails++;
             }
+            // pick up what lies on the way (a tap above the list on the right, contact 1: not while dodge is held)
+            if (args.pickup !== false && !holding && now - lastPickup >= PICKUP_MS) {
+                lastPickup = now;
+                const hit = pickupPoint({}, /** @type {SkillContext} */ ({ image }));
+                if (hit) {
+                    const [x, y, w, h] = hit.box;
+                    tap([x + w / 2, y + h / 2]);
+                    taps++;
+                }
+            }
             if (trace.length === 0 || now - t0 - trace[trace.length - 1].t >= 250) {
                 trace.push({ t: now - t0, seq: image.seq, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}) });
             }
@@ -430,13 +451,7 @@ function goTo(args) {
     } finally {
         release();
     }
-    if (why === "arrived" && pos) {
-        sleep(SETTLE_MS);
-        const r = fix(args.ref, screenshot(), cameraHeading(screenshot(), cam), pos, 12);
-        // it only coasts a few px; farther is a wrong match (seen where the minimap is zooming in, by the gate)
-        if (r && distTo(pos, [r.x, r.y]) <= SETTLE_PX) pos = [r.x, r.y];
-    }
-    const out = { ms: Date.now() - t0, why, at: pos && [Math.round(pos[0] * 10) / 10, Math.round(pos[1] * 10) / 10], idx, fixes, misses, maxMissRun, stuck, trace };
+    const out = { ms: Date.now() - t0, why, at: pos && [Math.round(pos[0] * 10) / 10, Math.round(pos[1] * 10) / 10], idx, fixes, misses, maxMissRun, stuck, taps, trace };
     log(JSON.stringify(out));
     return out;
 }
