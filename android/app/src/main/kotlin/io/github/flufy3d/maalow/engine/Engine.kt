@@ -80,8 +80,21 @@ class Engine(private val context: Context) {
     @Volatile var busy: String? = null
         private set
 
+    /** Numbers the holds of the device lock: the current one while busy. */
+    @Volatile var lease = 0L
+        private set
+    @Volatile private var ended: Pair<Long, String>? = null
+
+    /** Someone else ended what holds the device now (the teacher's stop): its holder finds out with [endedWhy]. */
+    fun endLease(why: String) {
+        if (busy != null) ended = lease to why
+    }
+
+    fun endedWhy(lease: Long): String? = ended?.takeIf { it.first == lease }?.second
+
     suspend fun <T> exclusive(owner: String, block: suspend () -> T): T = device.withLock {
         busy = owner
+        lease++
         try {
             block()
         } finally {
@@ -93,6 +106,7 @@ class Engine(private val context: Context) {
     suspend fun <T> tryExclusive(owner: String, block: suspend () -> T): T? {
         if (!device.tryLock()) return null
         busy = owner
+        lease++
         try {
             return block()
         } finally {
@@ -108,6 +122,7 @@ class Engine(private val context: Context) {
     suspend fun hold(owner: String, timeoutMs: Long): Boolean {
         withTimeoutOrNull(timeoutMs) { device.lock() } ?: return false
         busy = owner
+        lease++
         return true
     }
 

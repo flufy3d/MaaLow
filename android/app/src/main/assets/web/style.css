@@ -108,6 +108,21 @@ button.chip { border:0; font:inherit; font-size:12px; }
 #ctlpill.task { background:rgba(63,166,107,.14); color:var(--green); }
 #ctlpill.stopped { background:rgba(217,83,79,.12); color:var(--red); }
 #ctlpill.teacher { background:rgba(254,135,90,.2); color:var(--accent-text); }
+#ctlpill .what { font-weight:700; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+#ctlpill .what:empty { display:none; }
+#ctlpill .what::before { content:"·"; margin-right:6px; opacity:.5; font-weight:400; }
+/* stop in the pill while something runs: a small inset button, solid red on hover */
+#stoptask { display:none; align-items:center; justify-content:center; gap:4px; min-width:66px; height:24px; margin:-1px -8px -1px 4px; padding:0 10px 0 8px; border:0; border-radius:999px;
+            background:var(--panel); color:var(--red); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;
+            box-shadow:inset 0 0 0 1px rgba(217,83,79,.35), 0 1px 2px rgba(40,41,45,.08); transition:background .12s, color .12s, box-shadow .12s, transform .06s; }
+#stoptask svg.i { width:12px; height:12px; vertical-align:0; }
+#stoptask:hover { background:var(--red); color:#fff; box-shadow:inset 0 0 0 1px var(--red), 0 2px 8px rgba(217,83,79,.35); }
+#stoptask:active { transform:scale(.95); }
+#stoptask:disabled { cursor:default; transform:none; background:var(--panel); color:var(--red); box-shadow:inset 0 0 0 1px rgba(217,83,79,.25); }
+#stoptask:disabled svg.i { animation:pulse 1s infinite; }
+#ctlpill.can-stop { padding-right:11px; }
+#ctlpill.can-stop #stoptask { display:inline-flex; animation:pop-in .18s ease-out; }
+@keyframes pop-in { from { opacity:0; transform:scale(.8); } }
 #recbadge { display:none; color:#fff; background:var(--red); border-radius:999px; padding:3px 10px; font-size:12.5px; font-variant-numeric:tabular-nums; white-space:nowrap; }
 #recbadge.show { display:inline-flex; align-items:center; gap:6px; }
 #recbadge::before { content:""; width:7px; height:7px; border-radius:50%; background:#fff; animation:pulse 1.2s infinite; }
@@ -439,7 +454,8 @@ kbd { background:var(--panel-2); border:1px solid var(--line-2); border-bottom-w
   #brand span, #wsbtn .lbl { display:none; }
 }
 @media (max-width: 1200px) {
-  #ctlpill .t { display:none; }
+  #ctlpill .t, #ctlpill .what::before { display:none; }
+  #ctlpill .what { max-width:110px; }
   #tabs .tab { padding:5px 10px; }
 }
 /* narrow (a tablet held upright): the chat becomes a drawer */

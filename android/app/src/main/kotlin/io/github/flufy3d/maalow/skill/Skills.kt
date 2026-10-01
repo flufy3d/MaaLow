@@ -52,6 +52,7 @@ class Skills(private val app: App) : Maa.Custom {
     /** Options of the standalone run in progress, picked up by the custom action of its one-node task. */
     private class Request(val timeoutMs: Long?, val trigger: String) {
         @Volatile var outcome: JsonObject? = null
+        @Volatile var stopped = false // a stop can end the task before the skill reports back
     }
 
     @Volatile private var request: Request? = null
@@ -95,10 +96,14 @@ class Skills(private val app: App) : Maa.Custom {
         return list
     }
 
-    /** Run a skill on its own (API, schedule): takes the device lock, waiting while it is busy. */
-    suspend fun run(ws: String, name: String, args: JsonElement, timeoutMs: Long? = null, trigger: String = "api"): JsonObject {
+    /**
+     * Run a skill on its own (API, schedule): takes the device lock, waiting while it is busy. ai: the AI asked (the PC
+     * client), so a teacher's stop shows in the result ([io.github.flufy3d.maalow.teach.Teaching.ended]).
+     */
+    suspend fun run(ws: String, name: String, args: JsonElement, timeoutMs: Long? = null, trigger: String = "api", ai: Boolean = false): JsonObject {
         if (name !in names(ws)) throw NoSuchElementException("no skill $name in $ws")
         return app.engine.exclusive("skill:$ws/$name") {
+            val lease = app.engine.lease
             val req = Request(timeoutMs, trigger)
             request = req
             val task = try {
@@ -106,19 +111,20 @@ class Skills(private val app: App) : Maa.Custom {
             } finally {
                 request = null
             }
-            req.outcome ?: buildJsonObject {
+            (req.outcome ?: buildJsonObject {
                 put("workspace", ws)
                 put("skill", name)
                 put("trigger", trigger)
                 put("ok", false)
-                put("reason", "not_run")
-                put("error", buildJsonObject { put("message", "the skill did not run (task ${task["status"]})") })
-            }
+                put("reason", if (req.stopped) "stopped" else "not_run")
+                put("error", buildJsonObject { put("message", if (req.stopped) "stopped" else "the skill did not run (task ${task["status"]})") })
+            }).let { if (ai) app.teaching.ended(lease, it) else it }
         }
     }
 
     /** Stop every running skill (they end at their next step); returns how many there were. */
     fun stop(): Int {
+        request?.stopped = true
         val runs = active.toList()
         runs.forEach { it.stop() }
         return runs.size

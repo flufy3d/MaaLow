@@ -240,11 +240,20 @@ window.teach = (() => {
     const since = Date.now() - polledAt;
     return st.ai_idle_ms != null ? Math.min(st.ai_idle_ms + since, Date.now() - waitingSince) : Date.now() - waitingSince;
   }
+  let stopping = null, stoppingAt = 0; // what the top bar's stop was pressed for, until it is gone
   function renderStatus() {
     const [ct, cc] = CONTROL[st.control] || CONTROL.idle, pill = $("ctlpill");
+    const running = (st.control === "task" || st.control === "ai") && st.running || "";
+    if (stopping && running !== stopping) { toast(`已停止 ${stopping}`); stopping = null; }
+    const halting = !!stopping && Date.now() - stoppingAt < 10_000; // after that it may be pressed again
     pill.querySelector(".t").textContent = ct;
+    pill.querySelector(".what").textContent = running;
     pill.querySelector(".dot").className = "dot " + cc;
-    pill.className = st.control || "";
+    pill.className = (st.control || "") + (running ? " can-stop" : "");
+    const stop = $("stoptask");
+    stop.disabled = halting;
+    stop.querySelector(".l").textContent = halting ? "停止中" : "停止";
+    stop.title = running ? `停止 ${running}（MaaLow 正在跑的话，它会知道是老师停的）` : "";
     const el = $("status"), force = $("force");
     let dot = "", text = "", canForce = false;
     const secs = ms => ms < 60_000 ? `${Math.round(ms / 1000)} 秒` : `${Math.floor(ms / 60_000)} 分 ${Math.round(ms % 60_000 / 1000)} 秒`;
@@ -256,7 +265,7 @@ window.teach = (() => {
       dot = "warn pulse"; text = `等待 MaaLow 回复 · ${secs(Date.now() - waitingSince)}${did}`;
       canForce = idleMs() >= FORCE_AFTER_MS;
     } else if (st.ai === "listening") { dot = "ok"; text = "MaaLow 在线，发消息就会处理"; }
-    else { dot = "bad"; text = "MaaLow 未在监听：消息会排队。在 PC 上让 Claude “开始指导”"; }
+    else { dot = "bad"; text = "MaaLow 未在监听：消息会排队。在 PC 上让 AI 助手“开始指导”"; }
     el.querySelector(".dot").className = "dot " + dot;
     el.querySelector(".t").textContent = text;
     el.className = st.waiting ? "waiting" : "";
@@ -485,6 +494,19 @@ window.teach = (() => {
       st = await post("/teach/stop");
       toast("已叫停：MaaLow 接下来的操作都会被拒绝，等它说明做到哪一步", 3500);
     } catch (e) { ui.alert(e.message, "停止失败"); }
+    renderStatus(); poll();
+  };
+  $("stoptask").onclick = async () => {
+    const what = st.running;
+    if (!what || $("stoptask").disabled) return;
+    stopping = what; stoppingAt = Date.now();
+    renderStatus();
+    try {
+      st = await post("/stop");
+    } catch (e) {
+      stopping = null;
+      ui.alert(e.message, "停止失败");
+    }
     renderStatus(); poll();
   };
   $("force").onclick = async () => {

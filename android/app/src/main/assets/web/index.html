@@ -15,7 +15,7 @@ try { const m = localStorage.getItem("maalow-theme") || "auto";
 <header id="topbar">
   <div id="brand"><img src="web/mascot.png" alt=""><span>MaaLow</span></div>
   <button class="btn" id="wsbtn" title="切换工作区"></button>
-  <span id="ctlpill" title="现在谁在用设备"><span class="dot"></span><span class="t">空闲</span></span>
+  <span id="ctlpill" title="现在谁在用设备"><span class="dot"></span><span class="t">空闲</span><span class="what"></span><button id="stoptask" title="停止正在运行的任务（定时任务、规则、Skill 都算）"><i data-i="stop"></i><span class="l">停止</span></button></span>
   <nav id="tabs">
     <button class="tab" data-mode="overview"><i data-i="home"></i>概览</button>
     <button class="tab" data-mode="teach"><i data-i="chat"></i>指导</button>

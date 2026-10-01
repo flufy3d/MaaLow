@@ -144,12 +144,21 @@ class ApiServer(private val app: App) {
                 call.respondJson(app.teaching.run(node, once))
             } else {
                 val w = ws ?: app.defaultWorkspace() ?: error("no workspace")
-                call.respondJson(maalow.exclusive("task:$w/$node") { app.teaching.checkNotStopped(); maalow.run(w, node, once) })
+                call.respondJson(maalow.exclusive("task:$w/$node") {
+                    app.teaching.checkNotStopped()
+                    val lease = maalow.lease
+                    app.teaching.ended(lease, maalow.run(w, node, once))
+                })
             }
         }
 
-        // Stops the running task and any running skill; the device lock is released as they end.
+        // Stops the running task and any running skill; the device lock is released as they end. From the web UI
+        // (the top bar) it is the teacher's stop: an AI run it ends answers "stopped by teacher".
         post("/api/v1/stop") {
+            if (call.request.headers[CLIENT_HEADER] != "cli") {
+                call.respondJson(app.teaching.stopTask())
+                return@post
+            }
             val skills = app.skills.stop()
             maalow.stopTask()
             call.respondJson(buildJsonObject {

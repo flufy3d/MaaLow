@@ -7,6 +7,7 @@
 
 #include <android/log.h>
 #include <pthread.h>
+#include <unistd.h>
 
 #include <fstream>
 #include <iterator>
@@ -666,6 +667,8 @@ FN(jstring, taskerRun)(JNIEnv* env, jobject, jlong h, jstring entry, jstring ove
 {
     auto* t = ptr<MaaTasker>(h);
     std::string ov = str(env, override_json);
+    // a stop is asynchronous: while the tasker is still stopping it refuses new tasks (id 0); wait it out, up to 5 s
+    for (int i = 0; i < 250 && MaaTaskerStopping(t); i++) usleep(20'000);
     MaaTaskId id = MaaTaskerPostTask(t, str(env, entry).c_str(), ov.empty() ? "{}" : ov.c_str());
     MaaTaskerWait(t, id);
     return jstr(env, task_detail(t, id));

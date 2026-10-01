@@ -284,7 +284,8 @@ class Scheduler(private val app: App) {
             if (s.skill.isNotEmpty()) {
                 val result = app.skills.run(ws, s.skill, s.args, trigger = "schedule")
                 val ok = result["ok"]!!.jsonPrimitive.boolean
-                return done(if (ok) "ok" else "failed", if (ok) null else "skill_${result["reason"]!!.jsonPrimitive.content}") {
+                val reason = result["reason"]?.jsonPrimitive?.content
+                return done(if (ok) "ok" else if (reason == "stopped") "stopped" else "failed", if (ok) null else "skill_$reason") {
                     put("woke", woke)
                     put("launched", launched)
                     put("ms", result["ms"]!!)
@@ -292,9 +293,13 @@ class Scheduler(private val app: App) {
                     result["error"]?.let { put("error", it) }
                 }
             }
-            val result = engine.exclusive("task:$ws/${s.node}") { engine.run(ws, s.node, once = false) }
+            var ended: String? = null // the teacher stopped it (top bar, remote control)
+            val result = engine.exclusive("task:$ws/${s.node}") {
+                val lease = engine.lease
+                engine.run(ws, s.node, once = false).also { ended = engine.endedWhy(lease) }
+            }
             val hit = result["hit"]!!.jsonPrimitive.boolean
-            done(if (hit) "ok" else "failed", if (hit) null else "task_failed") {
+            done(if (hit) "ok" else if (ended != null) "stopped" else "failed", if (hit) null else if (ended != null) "teacher_stopped" else "task_failed") {
                 put("woke", woke)
                 put("launched", launched)
                 put("nodes", result["nodes"]!!)

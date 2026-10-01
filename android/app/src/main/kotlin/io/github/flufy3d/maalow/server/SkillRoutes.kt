@@ -52,7 +52,7 @@ fun Route.skillRoutes(app: App) {
             app.scope.launch { app.skills.run(ws, name, args, timeout) }
             call.respondJson(buildJsonObject { put("started", true) }, HttpStatusCode.Accepted)
         } else {
-            call.respondJson(app.skills.run(ws, name, args, timeout))
+            call.respondJson(app.skills.run(ws, name, args, timeout, ai = call.request.headers[CLIENT_HEADER] == "cli"))
         }
     }
 }

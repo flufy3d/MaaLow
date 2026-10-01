@@ -60,6 +60,7 @@ class Teaching(private val app: App) {
     @Volatile private var used = 0L // last request from the teacher or the AI
     @Volatile private var aiSeen = 0L // last request from the AI (the PC client), and what it was
     @Volatile private var aiDid = ""
+    @Volatile private var runNode: String? = null // the node the AI is running (do run)
 
     /**
      * Thrown by AI actions while the teacher has stopped it, or has the device (remote control); the API answers
@@ -147,6 +148,7 @@ class Teaching(private val app: App) {
             val online = listeners > 0 || System.currentTimeMillis() - lastPoll < POLL_GAP_MS
             put("ai", if (online) "listening" else if (waiting) "busy" else "away")
             put("stopped", stopped)
+            running(busy)?.let { put("running", it) }
             // who has the device, for the top bar
             put("control", when {
                 app.remote.controlling -> "teacher"
@@ -186,6 +188,7 @@ class Teaching(private val app: App) {
                 stopped = true
             }
         }
+        app.engine.endLease(TEACHER_CONTROL)
         app.skills.stop()
         app.engine.stopTask()
     }
@@ -244,9 +247,35 @@ class Teaching(private val app: App) {
         checkNotStopped()
         return app.engine.exclusive("teach:$workspace/$task") {
             checkNotStopped()
-            val r = app.engine.run(workspace, node, once)
-            JsonObject(mapOf("node" to JsonPrimitive(node)) + r + capture())
+            val lease = app.engine.lease
+            runNode = node
+            val r = try {
+                app.engine.run(workspace, node, once)
+            } finally {
+                runNode = null
+            }
+            ended(lease, JsonObject(mapOf("node" to JsonPrimitive(node)) + r + capture()))
         }
+    }
+
+    /**
+     * The result of an AI run (node, skill) that held device lease [lease]. If the teacher ended it, it says so
+     * ({"error": "stopped by teacher"}), so the AI does not take it for a failure to debug; and its further actions are
+     * refused until it explains itself with say, as after the chat's stop.
+     */
+    fun ended(lease: Long, result: JsonObject): JsonObject {
+        val why = app.engine.endedWhy(lease) ?: return result
+        synchronized(lock) { stopped = true }
+        return JsonObject(mapOf("error" to JsonPrimitive(why)) + (result - "error")) // a skill's {message: "stopped"}
+    }
+
+    /** What holds the device, for the top bar: "Cixin", "Skill route"; null when idle or a guard checks. */
+    private fun running(busy: String?): String? = when {
+        busy == null -> null
+        busy.startsWith("task:") -> busy.substringAfter('/')
+        busy.startsWith("skill:") -> "Skill ${busy.substringAfter('/')}"
+        busy.startsWith("teach:") -> runNode
+        else -> null
     }
 
     /**
@@ -547,8 +576,25 @@ class Teaching(private val app: App) {
             if (!stopped) system("老师叫停了", "teacher")
             stopped = true
         }
+        app.engine.endLease(STOPPED)
         app.skills.stop()
         app.engine.stopTask()
+        return state()
+    }
+
+    /**
+     * The top bar's stop: whatever runs ends (a schedule, a rule, a skill, or the AI's run, which then answers
+     * "stopped by teacher", see [ended]). A listening AI hears of it as a system message.
+     */
+    fun stopTask(): JsonObject {
+        val what = running(app.engine.busy)
+        app.engine.endLease(STOPPED)
+        app.skills.stop()
+        app.engine.stopTask()
+        if (what != null) synchronized(lock) {
+            ensure()
+            system("老师停止了正在运行的 $what", "teacher")
+        }
         return state()
     }
 
@@ -556,7 +602,7 @@ class Teaching(private val app: App) {
     fun unlock(): JsonObject {
         synchronized(lock) {
             ensure()
-            check(waiting()) { "没有在等 MaaLow 回复" }
+            check(waiting() || stopped) { "没有在等 MaaLow 回复" }
             stopped = false
             system("老师跳过了等待", "teacher", unlock = true)
         }
@@ -673,6 +719,7 @@ class Teaching(private val app: App) {
                         system("MaaLow 没有回复就回去等消息了，已自动解锁", "app", unlock = true)
                         delivered = messages.size
                     }
+                    if (first) stopped = false // a stopped AI that went back to listening has stopped acting
                     first = false
                 }
                 val left = end - System.currentTimeMillis()

@@ -92,9 +92,10 @@ window.overview = (() => {
   }
 
   function runCard() {
-    const status = r => r.status === "ok" ? true : r.status === "skipped" ? null : false;
-    const what = { ok: "完成", skipped: "跳过", failed: "失败", error: "出错" };
-    const why = { teacher_control: "老师操控中", missed: "错过了时间", keyguard_secure: "有锁屏密码", engine_not_running: "引擎没有运行",
+    const status = r => r.status === "ok" ? true : r.status === "skipped" || r.status === "stopped" ? null : false;
+    const what = { ok: "完成", skipped: "跳过", failed: "失败", error: "出错", stopped: "已停止" };
+    const why = { teacher_control: "老师操控中", teacher_stopped: "老师按了停止", skill_stopped: "中途被停止",
+      missed: "错过了时间", keyguard_secure: "有锁屏密码", engine_not_running: "引擎没有运行",
       shizuku_not_running: "Shizuku 未运行", shizuku_no_permission: "Shizuku 未授权", launch_timeout: "游戏没打开" };
     return `<h2>${svg("bolt")}最近运行</h2>
       ${runs.length ? `<div class="rows">${runs.map(r => row(status(r),

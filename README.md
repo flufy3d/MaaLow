@@ -195,6 +195,11 @@ MaaLow
   2. “已停止”期间，AI 的操作类命令（`click` / `swipe` / `back` / `run` / `skill` 等）一律返回 `{"error": "stopped by teacher"}`，不执行；`shot`、`screen`、`rec` 这类只读命令照常可用
   3. AI 看到这个错误后不再继续操作，先用 `say` 说明刚才做到哪一步。`say` 之后状态清除，网页解锁，老师接着更正
 * **控制权指示位**：顶栏显示“空闲 / AI 执行中 / 任务运行中 / 已停止 / 老师操控中”。仲裁见“远程操控”
+* **顶栏停止**：有规则、Skill 或定时任务在跑时，指示位里带上名字和一个“停止”按钮，任何页面、任何时候都能按（网页发 `POST /api/v1/stop`，不带 `X-MaaLow-Client: cli`，就算老师停的）：
+  1. 正在跑的节点或 Skill 停下，对话里记一条 `system` 消息“老师停止了正在运行的 X”，正在 listen 的 AI 会收到
+  2. 停掉的若是 AI 发起的 `do run` / `do skill`，它的返回带 `"error": "stopped by teacher"`（其余字段照旧，能看到停在哪个节点），不会和“没认到、没跑通”混在一起；之后 AI 照“已停止”处理：操作被拒，`say` 说明做到哪一步（或直接回去 listen）就恢复
+  3. 定时任务被停，在“最近运行”里记成“已停止”
+  * 聊天区的“停止”和远程接管也一样：被它们打断的 AI 运行同样返回 `stopped by teacher` / `teacher has control`。AI 自己 `maalow do stop` 不算老师停的
 
 ### 协议
 
@@ -205,7 +210,7 @@ MaaLow
 * 托盘：`GET /api/v1/tray` → `{rev, items}`；`POST /api/v1/tray {附件}` 加一项（录像；截图带 `copy: true` 是另存一份最新画面）；`PUT /api/v1/tray/{id} {annotations | focus | text}` 改一项；`DELETE /api/v1/tray/{id}`、`DELETE /api/v1/tray` 删一项或全部。`/state` 带 `tray_rev`，变了就重新取
 * `/teach` 的附件是托盘项（带 `id`），发出后从托盘里拿掉
 * `POST /api/v1/teach/stop`：老师叫停；`POST /api/v1/teach/unlock`：强制解锁
-* `/state` 还带 `stopped`、`control`（idle / ai / task / stopped）、`ai_idle_ms` 和 `ai_did`（AI 最后一次活动离现在多久、是什么）。PC 端每个请求都带 `X-MaaLow-Client: cli`，App 靠它认出 AI 的活动
+* `/state` 还带 `stopped`、`control`（idle / ai / task / stopped）、`running`（在跑的规则节点或 `Skill 名`，顶栏停止按钮看它）、`ai_idle_ms` 和 `ai_did`（AI 最后一次活动离现在多久、是什么）。PC 端每个请求都带 `X-MaaLow-Client: cli`，App 靠它认出 AI 的活动
 
 App → AI（`maalow do listen`）：每个附件展开成本地文件和摘要，其他帧由 AI 用 `maalow rec frame` 按需取；`role: system` 的消息照旧，不用回。
 
