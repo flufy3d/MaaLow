@@ -180,7 +180,6 @@ class Remote(private val app: App) {
             "release" -> release(c, null)
             "touch" -> touch(c, m)
             "key" -> key(c, m.optStr("code").orEmpty())
-            "dark" -> dark(m.optBool("on") == true)
             "keyframe" -> { // the page's decoder failed: start it again from a key frame
                 c.waitKey = true
                 stream?.requestKey()
@@ -489,13 +488,7 @@ class Remote(private val app: App) {
     // ---- the password pad: drawn from its controls, since the picture of it is black
 
     private val pad = Any() // the fields below
-    private var padNodes: List<JsonObject> = emptyList() // what the pages are shown: [read], or [guess] until a read
-    private var read: List<JsonObject> = emptyList() // the last read
-    private var known: List<JsonObject>? = null // the pad as last read (fresh, if ever), for [guess]
-    private var knownSize: List<Int>? = null // the display size it was read at
-    private var guess: List<JsonObject>? = null // the picture went black while locked: most likely the pad came up
-    private var darkSince = 0L // when it went black (0: it is not)
-    private var misses = 0 // reads since then that found no pad
+    private var padNodes: List<JsonObject> = emptyList() // as last read
     private var typed = 0 // digits tapped from the pages since the field was last seen empty: the pad does not show them
     private var lastPadTap = 0L
     private val padDown = HashMap<Int, Pair<JsonObject, Long>>() // contact -> the control it went down on, and when
@@ -539,49 +532,18 @@ class Remote(private val app: App) {
         val end = out.lastIndexOf("</hierarchy>")
         if (start < 0 || end < start) return null
         val (lw, lh) = app.engine.privileged().displayInfo()
-        val nodes = padNodes(out.substring(start, end + "</hierarchy>".length), lw, lh, app.engine.width, app.engine.height)
-        if (nodes.isNotEmpty()) synchronized(pad) {
-            if (known == null || knownSize != listOf(lw, lh) || nodes.any { it.optStr("id") == "cancel_button" }) {
-                known = nodes
-                knownSize = listOf(lw, lh)
-            }
-        }
-        return nodes
+        return padNodes(out.substring(start, end + "</hierarchy>".length), lw, lh, app.engine.width, app.engine.height)
     }
 
     /**
-     * A page saw the picture turn all black (or come back). Locked and on, that is the pad coming up nearly always: show
-     * it as last read at once instead of a dump later, until a read says otherwise. A black lock screen wallpaper would
-     * fool it, until two reads begun a second after it went black find no pad (about 4 s).
-     */
-    private fun dark(on: Boolean) {
-        synchronized(pad) {
-            if (on == (darkSince > 0)) return
-            darkSince = if (on) SystemClock.elapsedRealtime() else 0L
-            misses = 0
-            val size = runCatching { app.engine.privilegedOrNull()?.displayInfo()?.take(2) }.getOrNull()
-            guess = if (on && size == knownSize) known else null
-            show()
-        }
-    }
-
-    /**
-     * A new read of the pad. One begun a while after the last tap can also tell the field is empty: no pad, or cancel
-     * instead of delete. While the picture is black the pad is most likely up and a read finding none is not believed
-     * (the pad slides in, so one right away misses it, and now and then a later one does too) unless it is the second
-     * in a row begun once it settled; then the [guess] goes too. A read finishing just after the unlock is dropped
-     * (checked under the lock [clearPad] runs under).
+     * A new read of the pad. Not guessed ahead from the last one: the pad sits left, middle or right depending on where
+     * the swipe up began. One begun a while after the last tap can also tell the field is empty: no pad, or cancel
+     * instead of delete. A read finishing just after the unlock is dropped (checked under the lock [clearPad] runs under).
      */
     private fun setPad(nodes: List<JsonObject>, started: Long) {
         synchronized(pad) {
-            if (nodes.isNotEmpty()) {
-                if (!screen().let { (on, locked) -> on && locked }) return
-                misses = 0
-            } else if (darkSince > 0) {
-                if (started <= darkSince + DARK_SETTLE_MS || ++misses < 2) return
-                guess = null
-            }
-            read = nodes
+            if (nodes.isNotEmpty() && !screen().let { (on, locked) -> on && locked }) return
+            padNodes = nodes
             val settled = started > lastPadTap + PAD_SETTLE_MS // the pad had time to take the last tap in
             if (settled && (nodes.isEmpty() || nodes.any { it.optStr("id") == "cancel_button" })) typed = 0
             show()
@@ -591,8 +553,7 @@ class Remote(private val app: App) {
     /** Unlocked, off, or no page left: no pad. */
     private fun clearPad() {
         synchronized(pad) {
-            read = emptyList()
-            guess = null
+            padNodes = emptyList()
             typed = 0
             show()
         }
@@ -600,7 +561,6 @@ class Remote(private val app: App) {
 
     /** Under [pad]. */
     private fun show() {
-        padNodes = read.ifEmpty { guess?.takeIf { screen().let { (on, locked) -> on && locked } }.orEmpty() }
         if (padNodes.isEmpty()) padDown.clear()
         sendPad()
     }
@@ -734,7 +694,6 @@ class Remote(private val app: App) {
         const val LAYOUT_MS = 300L
         const val LONG_PRESS_MS = 500L
         const val PAD_SETTLE_MS = 500L
-        const val DARK_SETTLE_MS = 1000L
         val DIGIT_KEY = Regex("key\\d")
 
         /** Key names from the page -> Android key codes. */

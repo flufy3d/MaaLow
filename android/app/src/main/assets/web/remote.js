@@ -9,8 +9,6 @@ window.remote = (() => {
   const cv = $("scr-remote"), ctx = cv.getContext("2d"), padCtx = $("scr-pad").getContext("2d");
   let active = false, ws = null, conn = "off", retryTimer = 0, pingTimer = 0, statsTimer = 0; // conn: off | connecting | open | closed
   let decoder = null, cfg = null, waitKey = true, fails = 0, shown = false, st = {}, settings = null, lastOver = null;
-  let dark = false; // the last frame was all black (sampled only while locked): the password pad, most likely
-  const probe = new OffscreenCanvas(32, 21), probeCtx = probe.getContext("2d", { willReadFrequently: true });
   let pad = [], typed = 0, pressed = null, unpress = 0; // the password pad's controls (frame coordinates), digits tapped, the id of the key held
   const stats = { frames: 0, bytes: 0, since: 0, fps: 0, mbps: 0, rtt: null };
 
@@ -60,7 +58,6 @@ window.remote = (() => {
     cfg = null;
     st = {};
     pad = [];
-    dark = false;
     drawPad();
   }
   const ping = () => send({ t: "ping", ts: performance.now() });
@@ -92,7 +89,6 @@ window.remote = (() => {
     decoder = new VideoDecoder({
       output: f => {
         ctx.drawImage(f, 0, 0, W, H);
-        sampleDark(f);
         f.close();
         stats.frames++;
         fails = 0;
@@ -137,19 +133,6 @@ window.remote = (() => {
     stats.frames = 0; stats.bytes = 0; stats.since = now;
     if (!active) return;
     stage.status(conn === "open" ? `${Math.round(stats.fps)} fps · ${stats.mbps.toFixed(1)} Mbps · 往返 ${stats.rtt == null ? "—" : Math.round(stats.rtt) + " ms"}` : "");
-  }
-
-  // the pad's window is secure, so the whole picture turns black the moment it comes up: the app shows the pad as it
-  // last read it right away, rather than after its next read (about 2 s)
-  function sampleDark(f) {
-    let now = false;
-    if (st.locked) {
-      probeCtx.drawImage(f, 0, 0, 32, 21);
-      const d = probeCtx.getImageData(0, 0, 32, 21).data;
-      now = true;
-      for (let i = 0; i < d.length; i += 4) if (d[i] > 24 || d[i + 1] > 24 || d[i + 2] > 24) { now = false; break; }
-    }
-    if (now !== dark) { dark = now; send({ t: "dark", on: dark }); }
   }
 
   // on its own layer over the picture, redrawn whole when the pad, the count or the pressed key changes
