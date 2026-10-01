@@ -277,6 +277,8 @@ kbd { background:var(--panel-2); border:1px solid var(--line-2); border-bottom-w
 /* the remote stage: its own canvas takes the picture and the pointer; a frame around it while this page has control */
 #screen #scr-remote { display:none; touch-action:none; } /* beats "#screen canvas" above: only the remote stage shows it */
 #teach[data-stage=remote] #scr-remote { display:block; }
+#screen #scr-pad { display:none; pointer-events:none; } /* the password pad, over the picture; taps go through to it */
+#teach[data-stage=remote] #scr-pad { display:block; }
 #teach[data-stage=remote] #scr-cv { display:none; }
 #screen.ctl #scr-remote { cursor:crosshair; }
 #screen.ctl::after { content:""; position:absolute; inset:0; border:3px solid var(--orange); border-radius:8px; pointer-events:none; z-index:3; }

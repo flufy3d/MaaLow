@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import android.util.Xml
 import android.view.Surface
 import io.github.flufy3d.maalow.App
 import io.github.flufy3d.maalow.engine.Engine
@@ -24,6 +25,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,9 +38,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import org.xmlpull.v1.XmlPullParser
+import java.io.StringReader
 import java.nio.ByteBuffer
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
@@ -61,6 +66,9 @@ import kotlin.math.roundToInt
  * Its touches go straight to the privileged process's injector as contacts [CONTACT_BASE] and up, not through Maa.
  * Released by the page, the tablet's notification, the connection closing, two missed heartbeats' worth of silence
  * ([HEARTBEAT_MS]) or [IDLE_MS] without input; every release lifts the remote touches still down.
+ *
+ * The lock screen's password pad is a secure window, black in any mirror; while it may be up, the pages get its controls
+ * from the accessibility tree instead ([readLayout]) and draw them where they are, so it can be tapped blind.
  */
 class Remote(private val app: App) {
     private val clients = CopyOnWriteArrayList<Client>() // changed under [frames]
@@ -70,6 +78,9 @@ class Remote(private val app: App) {
     @Volatile private var blocked: String? = null // why there is no picture
     private var watcher: Job? = null
     private var look: List<Any?> = emptyList() // what the pages were last told about the device
+    @Volatile private var layout: JsonObject = emptyLayout() // {t: "layout", nodes, typed}: the password pad, for the pages
+    private var layoutJob: Job? = null
+    private val dumping = Mutex()
 
     private val ctl = Mutex()
     @Volatile private var controller: Client? = null
@@ -169,6 +180,7 @@ class Remote(private val app: App) {
             "release" -> release(c, null)
             "touch" -> touch(c, m)
             "key" -> key(c, m.optStr("code").orEmpty())
+            "dark" -> dark(m.optBool("on") == true)
             "keyframe" -> { // the page's decoder failed: start it again from a key frame
                 c.waitKey = true
                 stream?.requestKey()
@@ -180,6 +192,7 @@ class Remote(private val app: App) {
         synchronized(frames) {
             clients.add(c)
             stream?.let { s -> s.config?.let { c.json(it); s.replay(c) } }
+            if (layout != emptyLayout()) c.json(layout)
         }
         stream?.requestKey()
         synchronized(this) { if (watcher == null) watcher = app.scope.launch { watch() } }
@@ -453,6 +466,7 @@ class Remote(private val app: App) {
             if (action != 2 && controller !== c) return@withContext // released meanwhile: its touches were lifted
             if (action == 0) down.add(contact) else if (action == 2 && !down.remove(contact)) return@withContext
             runCatching { app.engine.privilegedOrNull()?.remoteTouch(action, contact, x, y, app.engine.width, app.engine.height) }
+            padTouch(action, contact, x, y)
         }
     }
 
@@ -471,6 +485,158 @@ class Remote(private val app: App) {
 
     private fun num(m: JsonObject, k: String): Int =
         (m[k] as? JsonPrimitive)?.content?.toDoubleOrNull()?.roundToInt() ?: throw IllegalArgumentException("touch needs $k")
+
+    // ---- the password pad: drawn from its controls, since the picture of it is black
+
+    private val pad = Any() // the fields below
+    private var padNodes: List<JsonObject> = emptyList() // what the pages are shown: [read], or [guess] until a read
+    private var read: List<JsonObject> = emptyList() // the last read
+    private var known: List<JsonObject>? = null // the pad as last read (fresh, if ever), for [guess]
+    private var knownSize: List<Int>? = null // the display size it was read at
+    private var guess: List<JsonObject>? = null // the picture went black while locked: most likely the pad came up
+    private var darkSince = 0L // when it went black (0: it is not)
+    private var misses = 0 // reads since then that found no pad
+    private var typed = 0 // digits tapped from the pages since the field was last seen empty: the pad does not show them
+    private var lastPadTap = 0L
+    private val padDown = HashMap<Int, Pair<JsonObject, Long>>() // contact -> the control it went down on, and when
+
+    /**
+     * Every tick: while the screen is on and locked with a password, read the pad's controls. Once it is not (unlocked,
+     * off), the pages drop the pad at once; the dump under way is thrown away when it returns (its job is cancelled).
+     */
+    private fun ensureLayout(on: Boolean, locked: Boolean) {
+        synchronized(this) {
+            if (on && locked && app.engine.state == Engine.State.RUNNING) {
+                if (layoutJob?.isActive != true) layoutJob = app.scope.launch { readLayout() }
+                return
+            }
+            layoutJob?.cancel()
+            layoutJob = null
+        }
+        clearPad()
+    }
+
+    private suspend fun readLayout() {
+        val me = currentCoroutineContext()[Job]
+        try {
+            while (clients.isNotEmpty() && screen().let { (on, locked) -> on && locked }) {
+                val started = SystemClock.elapsedRealtime()
+                runCatching { padLayout() }.getOrNull()?.let { setPad(it, started) } // a failed dump keeps what the pages have
+                delay(LAYOUT_MS)
+            }
+        } finally { // cancelled, its dump may end seconds later (it cannot be stopped): by then a newer job may show a pad
+            if (synchronized(this) { (layoutJob === me).also { if (it) layoutJob = null } }) clearPad()
+        }
+    }
+
+    /**
+     * One uiautomator dump (about 2 s, longer while the screen turns off or on): the pad's controls in frame coordinates,
+     * none when it is not up; null if it failed. One at a time: a cancelled job's dump still running holds up the next.
+     */
+    private suspend fun padLayout(): List<JsonObject>? {
+        val (_, out) = dumping.withLock { app.engine.shell("timeout 8 uiautomator dump /dev/stdout") }
+        val start = out.indexOf("<hierarchy")
+        val end = out.lastIndexOf("</hierarchy>")
+        if (start < 0 || end < start) return null
+        val (lw, lh) = app.engine.privileged().displayInfo()
+        val nodes = padNodes(out.substring(start, end + "</hierarchy>".length), lw, lh, app.engine.width, app.engine.height)
+        if (nodes.isNotEmpty()) synchronized(pad) {
+            if (known == null || knownSize != listOf(lw, lh) || nodes.any { it.optStr("id") == "cancel_button" }) {
+                known = nodes
+                knownSize = listOf(lw, lh)
+            }
+        }
+        return nodes
+    }
+
+    /**
+     * A page saw the picture turn all black (or come back). Locked and on, that is the pad coming up nearly always: show
+     * it as last read at once instead of a dump later, until a read says otherwise. A black lock screen wallpaper would
+     * fool it, until two reads begun a second after it went black find no pad (about 4 s).
+     */
+    private fun dark(on: Boolean) {
+        synchronized(pad) {
+            if (on == (darkSince > 0)) return
+            darkSince = if (on) SystemClock.elapsedRealtime() else 0L
+            misses = 0
+            val size = runCatching { app.engine.privilegedOrNull()?.displayInfo()?.take(2) }.getOrNull()
+            guess = if (on && size == knownSize) known else null
+            show()
+        }
+    }
+
+    /**
+     * A new read of the pad. One begun a while after the last tap can also tell the field is empty: no pad, or cancel
+     * instead of delete. While the picture is black the pad is most likely up and a read finding none is not believed
+     * (the pad slides in, so one right away misses it, and now and then a later one does too) unless it is the second
+     * in a row begun once it settled; then the [guess] goes too. A read finishing just after the unlock is dropped
+     * (checked under the lock [clearPad] runs under).
+     */
+    private fun setPad(nodes: List<JsonObject>, started: Long) {
+        synchronized(pad) {
+            if (nodes.isNotEmpty()) {
+                if (!screen().let { (on, locked) -> on && locked }) return
+                misses = 0
+            } else if (darkSince > 0) {
+                if (started <= darkSince + DARK_SETTLE_MS || ++misses < 2) return
+                guess = null
+            }
+            read = nodes
+            val settled = started > lastPadTap + PAD_SETTLE_MS // the pad had time to take the last tap in
+            if (settled && (nodes.isEmpty() || nodes.any { it.optStr("id") == "cancel_button" })) typed = 0
+            show()
+        }
+    }
+
+    /** Unlocked, off, or no page left: no pad. */
+    private fun clearPad() {
+        synchronized(pad) {
+            read = emptyList()
+            guess = null
+            typed = 0
+            show()
+        }
+    }
+
+    /** Under [pad]. */
+    private fun show() {
+        padNodes = read.ifEmpty { guess?.takeIf { screen().let { (on, locked) -> on && locked } }.orEmpty() }
+        if (padNodes.isEmpty()) padDown.clear()
+        sendPad()
+    }
+
+    /** A remote touch (input thread) on the pad: digits and deletes counted as the pad will, on the way up like a click. */
+    private fun padTouch(action: Int, contact: Int, x: Int, y: Int) {
+        synchronized(pad) {
+            if (padNodes.isEmpty() || action == 1) return
+            val now = SystemClock.elapsedRealtime()
+            lastPadTap = now
+            if (action == 0) {
+                padNodes.firstOrNull { it.optStr("kind") == "tap" && x in it.span("x", "w") && y in it.span("y", "h") }
+                    ?.let { padDown[contact] = it to now }
+                return
+            }
+            val (n, at) = padDown.remove(contact) ?: return
+            val id = n.optStr("id").orEmpty()
+            typed = when {
+                DIGIT_KEY.matches(id) -> typed + 1
+                id == "delete_button" -> if (now - at >= LONG_PRESS_MS) 0 else maxOf(0, typed - 1)
+                id == "key_enter" -> 0
+                else -> return
+            }
+            sendPad()
+        }
+    }
+
+    private fun JsonObject.span(at: String, len: String): IntRange = (optInt(at) ?: 0).let { it until it + (optInt(len) ?: 0) }
+
+    /** Under [pad]. */
+    private fun sendPad() {
+        val l = layoutOf(padNodes, typed)
+        if (l == layout) return
+        layout = l
+        broadcast(Frame.Text(l.toString()))
+    }
 
     // ---- state for the pages and the notification
 
@@ -540,6 +706,7 @@ class Remote(private val app: App) {
         }
         val (on, locked) = screen()
         if (listOf(on, locked, app.engine.state, app.engine.busy) != look) broadcastState()
+        ensureLayout(on, locked)
     }
 
     companion object {
@@ -564,9 +731,74 @@ class Remote(private val app: App) {
         const val IDLE_MS = 2 * 60_000L
         const val TAKE_WAIT_MS = 3_000L
         const val HEADER = 10
+        const val LAYOUT_MS = 300L
+        const val LONG_PRESS_MS = 500L
+        const val PAD_SETTLE_MS = 500L
+        const val DARK_SETTLE_MS = 1000L
+        val DIGIT_KEY = Regex("key\\d")
 
         /** Key names from the page -> Android key codes. */
         val KEYS = mapOf("back" to 4, "home" to 3, "recents" to 187, "wakeup" to 224)
+
+        private val BOUNDS = Regex("""\[(-?\d+),(-?\d+)]\[(-?\d+),(-?\d+)]""")
+
+        fun emptyLayout() = layoutOf(emptyList(), 0)
+
+        private fun layoutOf(nodes: List<JsonObject>, typed: Int) = buildJsonObject {
+            put("t", "layout")
+            put("nodes", buildJsonArray { nodes.forEach { add(it) } })
+            put("typed", typed)
+        }
+
+        /**
+         * The controls under the keyguard's security container in a uiautomator dump, mapped like the mirror (aspect
+         * fit of the lw x lh display into w x h): {x, y, w, h, id, label, kind}, kind "tap" (keys and buttons, labelled
+         * by their content description or the first text inside), "text" (messages) or "field" (the password field).
+         */
+        fun padNodes(xml: String, lw: Int, lh: Int, w: Int, h: Int): List<JsonObject> {
+            val scale = minOf(w.toFloat() / lw, h.toFloat() / lh)
+            val ox = (w - lw * scale) / 2
+            val oy = (h - lh * scale) / 2
+            fun node(kind: String, id: String, label: String, b: List<Int>) = buildJsonObject {
+                put("x", (b[0] * scale + ox).roundToInt())
+                put("y", (b[1] * scale + oy).roundToInt())
+                put("w", ((b[2] - b[0]) * scale).roundToInt())
+                put("h", ((b[3] - b[1]) * scale).roundToInt())
+                put("id", id)
+                put("label", label)
+                put("kind", kind)
+            }
+            class Open(val inside: Boolean, val tap: Boolean, val id: String, var label: String, val box: List<Int>?)
+            val open = ArrayList<Open>()
+            val nodes = ArrayList<JsonObject>()
+            val p = Xml.newPullParser().apply { setInput(StringReader(xml)) }
+            while (true) {
+                when (p.next()) {
+                    XmlPullParser.END_DOCUMENT -> break
+                    XmlPullParser.START_TAG -> if (p.name == "node") {
+                        val a = { k: String -> p.getAttributeValue(null, k).orEmpty() }
+                        val inside = open.lastOrNull()?.inside == true || a("resource-id").endsWith(":id/keyguard_security_container")
+                        val box = BOUNDS.find(a("bounds"))?.groupValues?.drop(1)?.map(String::toInt)
+                        val tap = inside && box != null && a("clickable") == "true"
+                        val text = a("content-desc").ifEmpty { a("text") }.trim()
+                        val field = a("password") == "true"
+                        val id = a("resource-id").substringAfterLast('/')
+                        val owner = open.lastOrNull { it.tap }
+                        if (owner != null) {
+                            if (owner.label.isEmpty()) owner.label = text
+                        } else if (inside && !tap && box != null && (text.isNotEmpty() || field)) {
+                            nodes.add(node(if (field) "field" else "text", id, text, box))
+                        }
+                        open.add(Open(inside, tap, id, text, box))
+                    }
+                    XmlPullParser.END_TAG -> if (p.name == "node") {
+                        val o = open.removeAt(open.size - 1)
+                        if (o.tap && o.box != null) nodes.add(node("tap", o.id, o.label, o.box))
+                    }
+                }
+            }
+            return nodes
+        }
 
         /** [type 1 = video][flags: 1 = key frame][timestamp µs, 8 bytes big-endian] + Annex-B data. */
         fun packet(data: ByteArray, key: Boolean, ptsUs: Long): ByteArray =

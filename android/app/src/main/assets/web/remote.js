@@ -1,13 +1,17 @@
 // The remote stage: the tablet's screen live and, after taking control, the mouse or a finger on it acting as touches
 // on the tablet. Not teaching: nothing of it goes into the chat. Video is H.264 over the WebSocket /api/v1/remote,
 // decoded with WebCodecs, which browsers only offer on HTTPS pages (see README: TailSocks). The connection is open only
-// while this stage is shown and the tab is visible; closing it gives control back at once.
+// while this stage is shown and the tab is visible; closing it gives control back at once. The lock screen's password
+// pad is black in the stream (a secure window): the app sends its controls instead, drawn over the picture.
 "use strict";
 window.remote = (() => {
   const W = 1080, H = 720, HEADER = 10, MOVE_MS = 16, PING_MS = 2000, WHEEL_ID = 9;
-  const cv = $("scr-remote"), ctx = cv.getContext("2d");
+  const cv = $("scr-remote"), ctx = cv.getContext("2d"), padCtx = $("scr-pad").getContext("2d");
   let active = false, ws = null, conn = "off", retryTimer = 0, pingTimer = 0, statsTimer = 0; // conn: off | connecting | open | closed
   let decoder = null, cfg = null, waitKey = true, fails = 0, shown = false, st = {}, settings = null, lastOver = null;
+  let dark = false; // the last frame was all black (sampled only while locked): the password pad, most likely
+  const probe = new OffscreenCanvas(32, 21), probeCtx = probe.getContext("2d", { willReadFrequently: true });
+  let pad = [], typed = 0, pressed = null, unpress = 0; // the password pad's controls (frame coordinates), digits tapped, the id of the key held
   const stats = { frames: 0, bytes: 0, since: 0, fps: 0, mbps: 0, rtt: null };
 
   const supported = () => window.isSecureContext && "VideoDecoder" in window;
@@ -55,6 +59,9 @@ window.remote = (() => {
     closeDecoder();
     cfg = null;
     st = {};
+    pad = [];
+    dark = false;
+    drawPad();
   }
   const ping = () => send({ t: "ping", ts: performance.now() });
 
@@ -66,6 +73,12 @@ window.remote = (() => {
       if (m.control !== "me") touches.clear(); // the app lifted them
       if (m.control === "me" && was !== "me") toast("已接管：正在跑的已停下，AI 的操作会被拒绝", 3000);
       render();
+    } else if (m.t === "layout") {
+      const had = pad.length > 0;
+      pad = m.nodes;
+      typed = m.typed;
+      drawPad();
+      if (had !== pad.length > 0) render(); // only the badge depends on it: taps leave the toolbar alone
     } else if (m.t === "pong") stats.rtt = performance.now() - m.ts;
     else if (m.t === "error" || m.t === "notice") toast(m.message, 4000);
   }
@@ -79,6 +92,7 @@ window.remote = (() => {
     decoder = new VideoDecoder({
       output: f => {
         ctx.drawImage(f, 0, 0, W, H);
+        sampleDark(f);
         f.close();
         stats.frames++;
         fails = 0;
@@ -125,6 +139,66 @@ window.remote = (() => {
     stage.status(conn === "open" ? `${Math.round(stats.fps)} fps · ${stats.mbps.toFixed(1)} Mbps · 往返 ${stats.rtt == null ? "—" : Math.round(stats.rtt) + " ms"}` : "");
   }
 
+  // the pad's window is secure, so the whole picture turns black the moment it comes up: the app shows the pad as it
+  // last read it right away, rather than after its next read (about 2 s)
+  function sampleDark(f) {
+    let now = false;
+    if (st.locked) {
+      probeCtx.drawImage(f, 0, 0, 32, 21);
+      const d = probeCtx.getImageData(0, 0, 32, 21).data;
+      now = true;
+      for (let i = 0; i < d.length; i += 4) if (d[i] > 24 || d[i + 1] > 24 || d[i + 2] > 24) { now = false; break; }
+    }
+    if (now !== dark) { dark = now; send({ t: "dark", on: dark }); }
+  }
+
+  // on its own layer over the picture, redrawn whole when the pad, the count or the pressed key changes
+  function drawPad() {
+    const ctx = padCtx;
+    ctx.clearRect(0, 0, W, H);
+    for (const n of pad) {
+      const cx = n.x + n.w / 2, cy = n.y + n.h / 2;
+      ctx.save();
+      if (n.kind === "tap") {
+        ctx.beginPath();
+        ctx.roundRect(n.x + 3, n.y + 3, n.w - 6, n.h - 6, 10);
+        ctx.fillStyle = n.id === pressed ? "rgba(255,255,255,.45)" : "rgba(255,255,255,.1)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,255,255,.5)";
+        ctx.stroke();
+      } else if (n.kind === "field") {
+        ctx.setLineDash([6, 4]);
+        ctx.strokeStyle = "rgba(255,255,255,.4)";
+        ctx.strokeRect(n.x, n.y, n.w, n.h);
+      }
+      ctx.fillStyle = n.kind === "tap" ? "#fff" : "rgba(255,255,255,.7)";
+      ctx.font = `${Math.round(Math.max(12, Math.min(n.h * (n.kind === "tap" ? .45 : .6), 30)))}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      if (n.kind !== "field") ctx.fillText(n.label, cx, cy, n.w);
+      else if (!typed) ctx.fillText("还没输入", cx, cy);
+      else for (let i = 0; i < typed; i++) { // counted by the app: the pad does not show them
+        ctx.beginPath();
+        ctx.arc(cx + (i - (typed - 1) / 2) * 22, cy, 6, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+  // lit while held and a little after, like a key; by id, since every count or read brings new node objects
+  function press([x, y]) {
+    const n = pad.find(n => n.kind === "tap" && x >= n.x && x < n.x + n.w && y >= n.y && y < n.y + n.h);
+    if (!n) return;
+    clearTimeout(unpress);
+    pressed = n.id;
+    drawPad();
+  }
+  function release() {
+    if (pressed == null) return;
+    clearTimeout(unpress);
+    unpress = setTimeout(() => { pressed = null; drawPad(); }, 100);
+  }
+
   // ---- input: only while this page has control (the app drops anything else)
 
   const touches = new Map(); // pointerId -> {id, p, at, timer}
@@ -143,6 +217,7 @@ window.remote = (() => {
     const t = { id, p: canvasPos(cv, e), at: performance.now(), timer: 0 };
     touches.set(e.pointerId, t);
     touch("down", id, t.p);
+    press(t.p);
   });
   cv.addEventListener("pointermove", e => { // about 60 a second: the latest position when the next one is due
     const t = touches.get(e.pointerId);
@@ -159,6 +234,7 @@ window.remote = (() => {
     clearTimeout(t.timer);
     touches.delete(e.pointerId);
     touch("up", t.id, t.p);
+    release();
   };
   cv.addEventListener("pointerup", lift);
   cv.addEventListener("pointercancel", lift);
@@ -273,7 +349,8 @@ window.remote = (() => {
 
     const html = overlay();
     if (html !== lastOver) { lastOver = html; stage.over(html, !supported()); }
-    stage.badge(!open || !shown ? "" : me ? "操控中" : st.locked ? "观看中 · 平板锁着，要在平板上解锁" : "观看中", me ? "tray" : "latest");
+    const lock = pad.length ? "锁屏密码界面看不到画面，按读出的位置画了按键" : st.locked ? "平板锁着" : "";
+    stage.badge(!open || !shown ? "" : [me ? "操控中" : "观看中", lock, !me && st.locked ? "接管后可以解锁" : ""].filter(Boolean).join(" · "), me ? "tray" : "latest");
 
     const dot = $("rm-dot");
     dot.className = "dot " + (open ? "ok" : conn === "off" ? "" : "warn pulse");
