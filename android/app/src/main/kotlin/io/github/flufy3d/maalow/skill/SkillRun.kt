@@ -62,6 +62,7 @@ internal class SkillRun(
     @Volatile private var stopped = false
     @Volatile private var inNode = false
     private var closed = false
+    private val held = HashSet<Int>() // contacts this run pressed and has not lifted: lifted when it ends
 
     /** "workspace/skill" of the outermost call, for /status. */
     @Volatile var label = workspace
@@ -94,6 +95,10 @@ internal class SkillRun(
     }
 
     override fun close() {
+        // a stopped or failed script never reaches its touch.up: a contact left down turns every later tap into a
+        // second finger the game ignores (2026-10-01: the idle slideshow guard tapping on, unheard)
+        if (controller != 0L) held.forEach { runCatching { Maa.controllerTouch(controller, 2, it, 0, 0) } }
+        held.clear()
         frames.toList().forEach { it.cancel() }
         synchronized(this) {
             closed = true
@@ -293,7 +298,10 @@ internal class SkillRun(
                     "up" -> 2
                     else -> throw IllegalArgumentException("touch op must be down, move or up")
                 }
-                done(Maa.controllerTouch(device(), type, i("contact"), i("x"), i("y")), "touch ${a.optStr("op")}")
+                val contact = i("contact")
+                done(Maa.controllerTouch(device(), type, contact, i("x"), i("y")), "touch ${a.optStr("op")}")
+                if (type == 0) held += contact else if (type == 2) held -= contact
+                null
             }
             "key" -> when (a.optStr("op")) {
                 "down" -> done(Maa.controllerKeyState(device(), 0, i("code")), "key down")
