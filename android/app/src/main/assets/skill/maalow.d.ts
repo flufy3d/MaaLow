@@ -120,6 +120,9 @@ interface LocateOptions {
     cam?: number | null;
     /** Only this zoom level of the reference. */
     zoom?: string;
+    /** Skip the levels of other layers (a level's optional `layer`, e.g. "live" / "taken"); levels without one are
+     * always tried. */
+    layer?: string;
     /** Over the reference's, key by key: center (on screen), size (px, square). */
     crop?: { center?: Point; size?: number };
     /** Over the reference's, key by key: circle [inner, outer], wedge {r, half}, drop (HSV ranges {h, s, v: [lo, hi]},
@@ -140,6 +143,10 @@ interface Located {
     second: number;
     /** The zoom level that matched best. */
     zoom: string;
+    /** Its layer, if it has one. */
+    layer?: string;
+    /** Its scale: position units per reference px (e.g. big map px per minimap px). */
+    k: number;
     /** Crop pixels compared. */
     used: number;
     ms: number;

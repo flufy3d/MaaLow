@@ -649,6 +649,8 @@ def zone_fixes(root: Path, pos: dict, k: dict, before: int = 300, search: float 
         return []
     switch = in_fr[0]
     last_out = [n for n in out_fr if switch - before <= n < switch][::2]
+    if not last_out:  # zoomed in from the start (a survey begun inside)
+        return []
     xs = [pos[n][0] for n in last_out]
     ys = [pos[n][1] for n in last_out]
     box = (min(xs) - 110, min(ys) - 110, int(max(xs) - min(xs) + 220), int(max(ys) - min(ys) + 220))
@@ -1030,20 +1032,28 @@ def cmd_eval(root: Path) -> None:
 
 def write_levels(name: str, levels: list[tuple[str, str, ml.Ref]], desc: str, templates: Path = T) -> Path:
     """The app's reference (map_locate.write_reference, but levels may share a zoom): templates/<name>.json and a
-    PNG per level (alpha: where the mosaic is known)."""
+    PNG per level (alpha: where the mosaic is known). Levels from before / after the stronghold was taken get a
+    `layer` (live / taken): the app's goto only tries the one that fits the minimap (orange zone in sight or not)."""
     out = []
     for zm, tag, ref in levels:
         png = f"{name}_{tag}.png"
         bgra = cv2.cvtColor(ref.img, cv2.COLOR_BGR2BGRA)
         bgra[:, :, 3] = np.where(ref.valid, 255, 0)
         ml.imwrite(templates / png, bgra)
-        out.append({"zoom": zm, "image": png, "k": round(ref.k, 4), "origin": [round(float(v), 2) for v in ref.origin],
-                    "off": [round(float(v), 2) for v in ref.off]})
+        layer = tag.rsplit("_", 1)[1] if tag.endswith(("_live", "_taken")) else None
+        out.append({"zoom": zm, **({"layer": layer} if layer else {}), "image": png, "k": round(ref.k, 4),
+                    "origin": [round(float(v), 2) for v in ref.origin], "off": [round(float(v), 2) for v in ref.off]})
     path = templates / f"{name}.json"
     cfg = wl.look(kind=MATCH.prep.kind, pre=MATCH.prep.pre, sigma=MATCH.prep.sigma).json()
     json.dump({"desc": desc, "levels": out, **cfg}, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=4)
     print("wrote", path)
     return path
+
+
+def mosaic_ref(name: str) -> str:
+    """The app's reference for a stronghold: lower case (nodes are Jiurou…, files jiurou_…; the device's file system tells
+    case apart, the PC's does not, so a JSON naming Jiurou_mosaic_out.png works here and not there)."""
+    return f"locate/{name.lower()}_mosaic"
 
 
 def cmd_mosaic(root: Path, name: str | None = None, rec: str | None = None) -> None:
@@ -1056,7 +1066,7 @@ def cmd_mosaic(root: Path, name: str | None = None, rec: str | None = None) -> N
         ml.save_ref(root / "mosaic", tag, ref)
         track_png(root, ref, pos, zm, root / "mosaic" / f"track_{tag}.png")
     if name:
-        write_levels(f"locate/{name}_mosaic", lv, f"{name}: minimap reference stitched from recording {rec or '?'} "
+        write_levels(mosaic_ref(name), lv, f"{name.lower()}: minimap reference stitched from recording {rec or '?'} "
                      f"(levels: zoom out / in, before and after the stronghold was taken), made by tools/rec_route.py mosaic")
 
 
@@ -1457,14 +1467,14 @@ def cmd_emit(root: Path, name: str, title: str | None, rec: str | None) -> None:
         "desc": (f"{title}：从传送石碑照老师录像里的顺序走到据点宝箱，途经录像里每次任务计数涨时人在的地方（点名写着第几个、录像第几帧）。"
                  f"路点由 tools/rec_route.py 从{src}全自动生成：录像里人走到过的地方（打架被推开的也算）"
                  f"是可走区域，在上面用 A* 规划（离边缘越远越好），再简化成直线段（偏离规划 ≤ {SIMPLIFY} px、每段离未走过的地方 ≥ {MIN_CLEAR} px，原本就窄的地方不比原路窄）。"
-                 f"连续定位：每帧在小地图拼图 locate/{name}_mosaic 里找位置（院外 / 院内两档，院内分攻占前（有橙色区域）和攻占后各一张），"
+                 f"连续定位：每帧在小地图拼图 {mosaic_ref(name)} 里找位置（院外 / 院内两档，院内分攻占前（有橙色区域）和攻占后各一张），"
                  f"中间航位推算，不开大地图。比例：院外 1 小地图像素 = {k['out']:.3f} 大地图像素（小地图上石碑和据点图标的距离对大地图上的量出来的），"
                  f"院内 {k['in']:.3f}（院外的一半）。任务：{words}；任务栏按 tracker 读。路上遇敌交给 combat，到宝箱点没有宝箱、头陀没清完就跑 "
                  f"StrongholdFight 清场再回宝箱；宝箱默认领取三份（老师同意）。技能 skills/route.js"),
         "recognition": "DirectHit",
         "action": "Custom",
         "custom_action": "route",
-        "custom_action_param": {"locate": [f"locate/{name}_mosaic"], "tracker": tracker, "points": pts},
+        "custom_action_param": {"locate": [mosaic_ref(name)], "tracker": tracker, "points": pts},
     }
     nodes[f"{N}Route"] = route
     nodes[N] = {

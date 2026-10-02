@@ -18,6 +18,8 @@
 //                            skips the points' actions; skip: [14] only those points' (leaving one flower for last
 //                            keeps the stronghold from finishing, so a run can be tried again). A fight on the way,
 //                            or a leg that lost its way, finds the character on the whole reference and goes on.
+//                            layer: "live" | "taken", the stronghold's state if known at the start (otherwise goto
+//                            finds it on the minimap: lib/minimap.js strongholdState()); picks the reference's levels
 //   anchors: "teaching/survey/a"  surveying: before each look at the big map, wait until the character has stopped and
 //                            save the screenshot there (<anchors>/NNN.png); the result lists them with the frame number
 //                            and the position read ({n, seq, time, x, y, cam}), to line up frames grabbed meanwhile
@@ -252,7 +254,7 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, n) => a + n);
  * At the chest point with no chest offered, what the tracker says is left is done first (FINISH rounds): flowers not
  * destroyed on the way are walked back to along the route, enemies left are cleared with the `clear` node (zone mode,
  * StrongholdFight), then back to the chest.
- * @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, locate: string | string[], start?: Point, check?: boolean, nodo?: boolean, skip?: number[], clear?: string, tracker?: Record<string, string>}} args
+ * @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, locate: string | string[], start?: Point, check?: boolean, nodo?: boolean, skip?: number[], clear?: string, tracker?: Record<string, string>, layer?: string}} args
  */
 function follow(args) {
     const P = args.points;
@@ -265,6 +267,10 @@ function follow(args) {
     let maps = 0;
     let fights = 0;
     let relocs = 0;
+    /** @type {number | undefined} */
+    let k; // the scale of the reference level matched last, for goto's fight check before a leg's first match
+    /** @type {string | undefined} */
+    let layer = args.layer; // the stronghold's state, live | taken, as goto saw it last (picks the reference's levels)
     /** @type {Map<number, boolean>} */
     const flowers = new Map(); // flower point → destroyed
     const t0 = Date.now();
@@ -280,7 +286,7 @@ function follow(args) {
 
     /** Find the character on the whole reference; false when it cannot tell. */
     const again = () => {
-        const at = relocate(args.locate);
+        const at = relocate(args.locate, undefined, layer);
         if (!at) return false;
         relocs++;
         log(`found again at ${at.map(Math.round)} (${Math.round(distTo(pos, at))} px from where it was put)`);
@@ -307,7 +313,9 @@ function follow(args) {
             let length = 0;
             seg.reduce((a, b) => ((length += distTo(a, b)), b), pos);
             const ms = Math.round(Math.max(GOTO_MS[0], (GOTO_MS[1] * length * 1000) / V_RUN));
-            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, reach: args.reach ?? 2, ms });
+            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, k, layer, reach: args.reach ?? 2, ms });
+            k = r.k ?? k;
+            layer = r.layer ?? layer;
             const j = rest[rest.length - 1];
             /** @type {Record<string, any>} */
             const leg = { i: rest[0], j, why: r.why, ms: r.ms, fixes: r.fixes, misses: r.misses, maxMissRun: r.maxMissRun, stuck: r.stuck.length, taps: r.taps, at: r.at };

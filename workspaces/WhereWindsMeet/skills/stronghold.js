@@ -9,7 +9,8 @@
 //              above it, a fixed step from the icon, is read instead, or (no label: 酒肉山林) the teleport stone, also a
 //              fixed step away, when it puts the icon under the arrow; no guessing otherwise, a wrong position sends a
 //              route off in a wrong direction;
-//              also the camera heading (compass degrees, from the minimap before opening the map)
+//              also the camera heading (compass degrees, from the minimap before opening the map; null when the fan
+//              is not found, over a bright day sky: the minimap's gold arrow says it is the world screen then)
 //   {where: true}  just report that
 //   {locate: ["locate/cixin_mosaic", "locate/cixin_bigmap"], n: 5}  compare locate() (minimap in a reference image,
 //                  no big map) with where(): each reference n times, with the time each look took
@@ -23,7 +24,7 @@
 //   {teleport: "CixinTeleport"}  one-click start (node Cixin): close popups, run the teleport node to the stone, and
 //                  stop with an error if on the way the card said the stronghold has not come back yet (its marker node
 //                  Teleport_NotRefreshed, recognition waiting); the route node goes on from there
-import { cameraHeading, enemies, onZone, zone } from "./lib/minimap.js";
+import { arrowShows, cameraHeading, enemies, onZone, zone } from "./lib/minimap.js";
 import { relocate } from "./move.js";
 
 /** @type {SkillMeta} */
@@ -77,17 +78,19 @@ function nearestIcon(cands, to = PLAYER) {
 /**
  * Open the big map, read the character's position from the stronghold icon nearest it, close it. Standing on or next
  * to the icon, the arrow hides it: then the stronghold's name label is read instead (LABELS, each a fixed step from its
- * icon). null: neither found, or not on the world screen (no camera fan: a menu, a loading screen,
+ * icon). null: neither found, or not on the world screen (no camera fan and no minimap arrow: a menu, a loading screen,
  * where tapping the minimap's place opens no map and the icons could be matched on something else).
  */
 export function where() {
     let c = cameraHeading(screenshot());
     if (c == null) {
         sleep(300);
-        c = cameraHeading(screenshot());
-        if (c == null) return null;
+        const image = screenshot();
+        c = cameraHeading(image);
+        // over a bright day sky the fan can be missed (cam null then); the arrow says it is the world screen
+        if (c == null && !arrowShows(image)) return null;
     }
-    const cam = Math.round(c);
+    const cam = c == null ? null : Math.round(c);
     click(MINIMAP);
     const t0 = Date.now();
     const hit = waitFor(() => {

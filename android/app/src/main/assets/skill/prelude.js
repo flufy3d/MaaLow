@@ -49,7 +49,7 @@
         locate: (ref, o = {}) =>
             call("locate", {
                 ref,
-                ...pick(o, ["prior", "radius", "wedge", "cam", "zoom", "crop", "mask", "regions", "prep"]),
+                ...pick(o, ["prior", "radius", "wedge", "cam", "zoom", "layer", "crop", "mask", "regions", "prep"]),
                 image: o.image ? o.image.id : undefined,
             }),
 

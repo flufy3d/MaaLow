@@ -1,5 +1,5 @@
 {
-    "desc": "jiurou: minimap reference stitched from recording ? (levels: zoom out / in, before and after the stronghold was taken), made by tools/rec_route.py mosaic",
+    "desc": "jiurou: minimap reference stitched from recording 20261002-025629 (levels: zoom out / in, before and after the stronghold was taken), made by tools/rec_route.py mosaic",
     "levels": [
         {
             "zoom": "out",
@@ -16,6 +16,7 @@
         },
         {
             "zoom": "in",
+            "layer": "live",
             "image": "locate/jiurou_mosaic_in_live.png",
             "k": 1.1196,
             "origin": [
@@ -29,11 +30,12 @@
         },
         {
             "zoom": "in",
+            "layer": "taken",
             "image": "locate/jiurou_mosaic_in_taken.png",
             "k": 1.1196,
             "origin": [
                 74.37,
-                78.91
+                86.06
             ],
             "off": [
                 0.0,

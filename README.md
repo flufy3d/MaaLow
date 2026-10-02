@@ -424,9 +424,9 @@ const r = locate("locate/cixin_mosaic", { image, prior: [x, y], radius: 30, wedg
 if (r && r.score >= 0.4 && r.score - r.second >= 0.1) pos = [r.x, r.y]; // 可信
 ```
 
-* 选项：`image`（默认最新截图）、`prior` + `radius`（只在先验位置附近搜；不给就搜整张图）、`wedge`（扇形遮罩的朝向，旧名 `cam`）、`zoom`（只试某一档），`crop` / `mask` / `regions` / `prep` 按键覆盖参考图里的设置
-* 返回 `{x, y, score, second, zoom, used, ms, levels}`：`second` 是离最好位置 4 像素以外的最高分，`score` 比它高得多才说明没有歧义；一档都匹配不上返回 `null`
-* 参考图是 `templates/<ref>.json` 加每档一张 PNG（alpha 标出参考图里哪些地方是已知的）。一个参考图可以有好几档（`levels`：比如小地图在某些地方会放大），每档都试，取分数最高的；每档有自己的换算：`位置 = (像素 - origin) × k + off`
+* 选项：`image`（默认最新截图）、`prior` + `radius`（只在先验位置附近搜；不给就搜整张图）、`wedge`（扇形遮罩的朝向，旧名 `cam`）、`zoom`（只试某一档）、`layer`（只试这一层和没标层的档），`crop` / `mask` / `regions` / `prep` 按键覆盖参考图里的设置
+* 返回 `{x, y, score, second, zoom, layer, k, used, ms, levels}`（`layer`、`k` 是匹配到的那档的）：`second` 是离最好位置 4 像素以外的最高分，`score` 比它高得多才说明没有歧义；一档都匹配不上返回 `null`
+* 参考图是 `templates/<ref>.json` 加每档一张 PNG（alpha 标出参考图里哪些地方是已知的）。一个参考图可以有好几档（`levels`：比如小地图在某些地方会放大），每档都试，取分数最高的；每档有自己的换算：`位置 = (像素 - origin) × k + off`。档可以标 `layer`（比如据点攻占前有橙色区域的 `live`、攻占后的 `taken`），调用时传 `layer` 就只试这一层和没标层的档
 * JSON 里还写着截哪块、丢掉哪些像素、怎么预处理，这些都随游戏而定：
   * `crop`：`center`（屏幕坐标）、`size`（正方形边长），要找的点是它的正中
   * `mask`：`circle`（只用内外半径之间的环）、`wedge`（按每次传入的朝向挖掉一个扇形，比如镜头视野）、`drop`（丢掉的 HSV 颜色范围，OpenCV 的 H 0–180，再向外扩 `grow` 像素）、`sat_max`（丢掉饱和度更高的像素，比如透出来的背景）

@@ -72,10 +72,40 @@ export function zone(image) {
     return { box: /** @type {Box} */ ([x, y, w, h]), x: mid[0], y: mid[1], bearing: bearingOf(mid), dist: Math.hypot(mid[0] - CENTER[0], mid[1] - CENTER[1]) };
 }
 
+/** @type {Box} */
+const INNER_ROI = [108, 34, 72, 72]; // the square inside the disc: its corners stay within RADIUS
+/** @type {Box} */
+const DISC_ROI = [92, 18, 105, 105]; // the disc and its rim, where the stronghold icon shows or is pinned when far
+const DONE_MIN = 0.65; // the taken icon: 0.62–0.9 (median 0.74) over a taken stronghold, ≤ 0.62 elsewhere
+
+/**
+ * The stronghold's state as the minimap shows it: "live" when the orange patch is inside the disc (never in 5700
+ * frames of a taken stronghold; MAP_ROI's corners show the scenery around the disc, yellow grass and a sunset sky
+ * read as orange there), "taken" when its gray icon shows (templates/minimap_stronghold_done.png; on the rim when far
+ * away), null when neither: no orange is no sign of taken (75% of a live 酒肉山林's courtyard frames show it, the
+ * patch is paler at the bonfire field and the west yard).
+ * @param {Image} image @returns {"live" | "taken" | null}
+ */
+export function strongholdState(image) {
+    if (color({ ...ZONE, image, roi: INNER_ROI, count: ZONE_PX, connected: true }).hit) return "live";
+    return match("minimap_stronghold_done.png", { image, roi: DISC_ROI, threshold: DONE_MIN }).hit ? "taken" : null;
+}
+
 /** Whether an enemy mark (from enemies()) sits on the stronghold patch. */
 export function onZone(image, e) {
     const roi = /** @type {Box} */ ([Math.round(e.x) - 6, Math.round(e.y) - 6, 13, 13]);
     return color({ ...ZONE, image, roi, count: ON_ZONE }).hit;
+}
+
+// The gold arrow in the middle of the minimap: on the world screen always (~55–67 px in ARROW_ROI), on menus, loading
+// screens and the big map not (0). The fan can be missed over a bright day sky (~0.36 against its 0.4), the arrow not.
+const ARROW = { lower: [18, 60, 180], upper: [32, 170, 255], method: 40 };
+/** @type {Box} */
+const ARROW_ROI = [135, 61, 19, 19];
+
+/** Whether the minimap's arrow shows: the world screen. @param {Image} image */
+export function arrowShows(image) {
+    return color({ ...ARROW, image, roi: ARROW_ROI, count: 30 }).hit;
 }
 
 /** Score of the fan template at `deg` (a multiple of 10). */

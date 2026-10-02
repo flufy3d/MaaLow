@@ -25,7 +25,7 @@
 //                            (camera heading, joystick direction, sprint / run speed) puts it, and a good match resets
 //                            the reckoning. Sprints while far, lets go and runs the last stretch so it does not
 //                            overshoot. Stuck: the reckoning moves, the matches do not. See goTo()
-import { angleDiff, cameraHeading, enemies, onZone, zone } from "./lib/minimap.js";
+import { angleDiff, cameraHeading, enemies, onZone, strongholdState, zone } from "./lib/minimap.js";
 import { recognize as pickupPoint } from "./auto_pickup.js";
 import { calm } from "./lib/hud.js";
 
@@ -166,13 +166,16 @@ const LOOK_MS = 1500; // at the last point with no match this long (the reckonin
 // runs slower than reckoned, 2 px/s at the chest; after a fight matches can drop out): look wider
 const SPRINT_STOP = 12; // let go of a sprint this far from the last point, then run the rest
 const BRAKE_MS = 350; // how long the joystick is let go to end the sprint
+const SPRINT_AFTER = 300; // the joystick held this long before dodge is pressed for a sprint: pressed with it, before
+// the character runs, dodge is a roll that sets it 2–3 px off the way (酒肉山林 point 11→12, into a wall's corner)
 const GO_STUCK_MS = 2000; // not 1 px closer to the point this long: stuck
 const ASTRAY = 15; // this much farther from the point than the closest it got: astray
 const SETTLE_MS = 600; // at the end: coasting, then the match that says it is there
 const FIGHT_BIG = 30; // the top right icons hidden and a red mark this close (big map px): a fight; in minimap px
-// that is ~26 in the courtyard but ~13 outside, so the enemies behind the wall that spot it at the gate do not stop it
-/** @type {Record<string, number>} */
-const ZOOM_K = { out: 2.3, in: 1.15 }; // big map px per minimap px at the reference's zoom levels
+// (by the k of the level matched last) that is ~26 in the courtyard but ~13 outside, so the enemies behind the wall
+// that spot it at the gate do not stop it
+const STATE_MS = 500; // between looks at the stronghold's state (strongholdState()), which picks the reference's
+// layer; it changes once two looks in a row agree
 
 /** @param {Point} from @param {Point} to */
 const bearingTo = (from, to) => (Math.atan2(to[0] - from[0], -(to[1] - from[1])) * 180 / Math.PI + 360) % 360;
@@ -181,12 +184,16 @@ const distTo = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
 
 /**
  * locate() near `prior` (null: the whole reference) in each reference in turn (a stitched one where it was surveyed,
- * the big map where not); the first match that can be trusted, else null.
- * @param {string | string[]} ref @param {Image} image @param {number | null} cam @param {Point | null} prior @param {number} radius
+ * the big map where not), only the levels of `layer` and those with none (no layer: all); the first match that can
+ * be trusted, else null. A mosaic's zoomed-in levels can be split by the stronghold's state, "live" (its orange zone
+ * over most of it) and "taken"; frames of either state match their own much better (酒肉山林's held-out live frames:
+ * live level only 75% trusted, 0.52 px median, 23 over 4 px; both levels, best score 77%, 1.15 px, 181; taken level
+ * only 54%). Levels with no layer are tried either way, so one-layer references are not affected.
+ * @param {string | string[]} ref @param {Image} image @param {number | null} cam @param {Point | null} prior @param {number} radius @param {string} [layer]
  */
-function fix(ref, image, cam, prior, radius) {
+function fix(ref, image, cam, prior, radius, layer) {
     for (const one of Array.isArray(ref) ? ref : [ref]) {
-        const r = locate(one, { image, wedge: cam, prior: prior ?? undefined, radius });
+        const r = locate(one, { image, wedge: cam, prior: prior ?? undefined, radius, layer });
         if (r && r.score >= FIX_MIN && r.score - r.second >= FIX_MARGIN) return r;
     }
     return null;
@@ -197,16 +204,17 @@ const RELOCATE_PX = 4; // relocate: two looks in a row this close agree
 /**
  * Where the character is from the minimap alone, with nothing to go by (a fight pulled it around, the track was
  * lost): locate() over the whole of each reference, taken once two looks in a row agree; null if none do in `ms`.
- * @param {string | string[]} ref @param {number} [ms]
+ * `layer`: the stronghold's state if known (see fix()).
+ * @param {string | string[]} ref @param {number} [ms] @param {string} [layer]
  * @returns {Point | null}
  */
-export function relocate(ref, ms = 4000) {
+export function relocate(ref, ms = 4000, layer) {
     const t0 = Date.now();
     /** @type {Point | null} */
     let last = null;
     while (Date.now() - t0 < ms) {
         const image = screenshot();
-        const r = fix(ref, image, cameraHeading(image), null, SEARCH[2]);
+        const r = fix(ref, image, cameraHeading(image), null, SEARCH[2], layer);
         if (r) {
             if (last && distTo(last, [r.x, r.y]) <= RELOCATE_PX) return [r.x, r.y];
             last = [r.x, r.y];
@@ -227,7 +235,10 @@ export function relocate(ref, ms = 4000) {
  * Picks up what it passes (pickup: false to leave it).
  * Ends: arrived | stuck (no closer for GO_STUCK_MS after every way out) | astray | lost (no match for LOST_MS) |
  * fight (the top right icons hide) | time.
- * @param {{goto: Point[], ref: string | string[], from?: Point, reach?: number, ms?: number, sprint?: boolean, face?: boolean, pickup?: boolean}} args
+ * `k`: the scale matched last (the result's `k`, carried from leg to leg) for the fight check until this leg matches.
+ * `layer`: the stronghold's state known so far ("live" | "taken", carried from leg to leg like `k`); it changes when
+ * the minimap shows the other (strongholdState(), two looks in a row), and picks the reference levels tried (fix()).
+ * @param {{goto: Point[], ref: string | string[], from?: Point, k?: number, layer?: string, reach?: number, ms?: number, sprint?: boolean, face?: boolean, pickup?: boolean}} args
  */
 function goTo(args) {
     const path = args.goto;
@@ -245,6 +256,7 @@ function goTo(args) {
     let maxMissRun = 0;
     let idx = 0;
     let held = false; // the joystick is down
+    let heldAt = 0; // since
     let holding = 0; // dodge pressed for a sprint since
     let sprintFails = 0;
     let fast = false;
@@ -260,7 +272,14 @@ function goTo(args) {
     let lookSince = 0; // stopped at the last point to see it matched
     let lastPickup = 0;
     let taps = 0; // pickups on the way
-    let k = ZOOM_K.out; // big map px per minimap px, from the last match's zoom level
+    let k = args.k ?? null; // big map px per minimap px, of the level matched last (none yet: no fight check)
+    /** @type {string | undefined} */
+    let layer = args.layer;
+    /** @type {string | null} */
+    let seen = null; // the last look's state
+    let lastState = 0;
+    /** @type {[number, string][]} */
+    const layers = []; // [ms, layer] each time it changed
     let since = t0;
     let level = 0;
     let lastHud = 0;
@@ -269,8 +288,15 @@ function goTo(args) {
     let rel = 0;
     let why = "time";
     const stuck = [];
+    /** @type {Record<string, any>[]} */
     const trace = [];
     const start = pos;
+    /** One line of the trace every 250 ms. @param {Image} image @param {Located | null} r @param {number} dist */
+    const note = (image, r, dist) => {
+        const now = Date.now();
+        if (!pos || (trace.length && now - t0 - trace[trace.length - 1].t < 250)) return;
+        trace.push({ t: now - t0, seq: image.seq, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, ...(r ? { lv: r.layer ?? r.zoom } : {}), i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}) });
+    };
     /**
      * Point k is behind: close to it, or past the line across the way at it (and not far off to the side).
      * @param {Point} at @param {number} k
@@ -293,6 +319,7 @@ function goTo(args) {
         sleep(50);
         touch.move(stickAt(rel), 0);
         held = true;
+        heldAt = Date.now();
     };
     try {
         while (Date.now() - t0 < ms) {
@@ -308,11 +335,20 @@ function goTo(args) {
                 pos = [pos[0] + v * dt * Math.sin(t), pos[1] - v * dt * Math.cos(t)];
             }
             const radius = wide ? SEARCH[2] : Math.min(SEARCH[2], SEARCH[0] + (SEARCH[1] * (now - lastFix)) / 1000);
-            const r = fix(args.ref, image, cam, pos, radius);
+            if (now - lastState >= STATE_MS) {
+                lastState = now;
+                const look = strongholdState(image);
+                if (look && look !== layer && look === seen) {
+                    layer = look;
+                    layers.push([now - t0, look]);
+                }
+                seen = look;
+            }
+            const r = fix(args.ref, image, cam, pos, radius, layer);
             wide = false;
             if (r) {
                 pos = [r.x, r.y];
-                k = ZOOM_K[r.zoom] ?? k;
+                k = r.k;
                 lastFix = now;
                 fixes++;
                 missRun = 0;
@@ -327,7 +363,7 @@ function goTo(args) {
             if (now - lastHud >= HUD_MS) {
                 lastHud = now;
                 // the icons also drop out against a bright sky: a fight needs an enemy close by too
-                if (!calm(image) && enemies(image).some((e) => e.dist * k <= FIGHT_BIG)) {
+                if (k != null && !calm(image) && enemies(image).some((e) => e.dist * /** @type {number} */ (k) <= FIGHT_BIG)) {
                     if (++hudMiss >= 2) {
                         why = "fight";
                         break;
@@ -360,6 +396,7 @@ function goTo(args) {
                     break;
                 }
                 if (now - lastFix > LOOK_MS) wide = true;
+                note(image, r, dist);
                 continue;
             }
             lookSince = 0;
@@ -415,7 +452,7 @@ function goTo(args) {
             }
             fast = sprinting(image);
             const far = !slow && (!last || dist > SPRINT_STOP + 6);
-            if (args.sprint !== false && far && held && sprintFails < SPRINT_TRIES && !holding && !fast) {
+            if (args.sprint !== false && far && held && now - heldAt >= SPRINT_AFTER && sprintFails < SPRINT_TRIES && !holding && !fast) {
                 touch.down(DODGE, 1);
                 holding = now;
             } else if (holding && (fast || now - holding > HOLD_MS)) {
@@ -434,21 +471,19 @@ function goTo(args) {
                     taps++;
                 }
             }
-            if (trace.length === 0 || now - t0 - trace[trace.length - 1].t >= 250) {
-                trace.push({ t: now - t0, seq: image.seq, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}) });
-            }
+            note(image, r, dist);
         }
     } finally {
         release();
     }
-    const out = { ms: Date.now() - t0, why, at: pos && [Math.round(pos[0] * 10) / 10, Math.round(pos[1] * 10) / 10], idx, fixes, misses, maxMissRun, stuck, taps, trace };
+    const out = { ms: Date.now() - t0, why, at: pos && [Math.round(pos[0] * 10) / 10, Math.round(pos[1] * 10) / 10], k, layer, layers, idx, fixes, misses, maxMissRun, stuck, taps, trace };
     log(JSON.stringify(out));
     return out;
 }
 
 /**
  * @param {{face?: boolean, bearing?: number, rel?: number, enemy?: boolean, zone?: boolean, untilFight?: boolean, zoneAt?: number, near?: number, lockAt?: number, capture?: boolean, ms?: number, sprint?: boolean,
- *          pickup?: boolean, turn?: number, step?: number, goto?: Point[], ref?: string | string[], from?: Point, reach?: number}} args
+ *          pickup?: boolean, turn?: number, step?: number, goto?: Point[], ref?: string | string[], from?: Point, k?: number, layer?: string, reach?: number}} args
  * @param {SkillContext} [ctx]
  */
 export default function (args, ctx) {

@@ -33,8 +33,10 @@ import java.io.File
  *      "prep": {"kind": "dog", "pre": 1, "sigma": 4}}
  *
  * levels: one per zoom of what is matched (a minimap may zoom in inside some places): image (alpha: where the map is
- * known), k (position units per image px), origin (image px of the position origin), off (added to the result).
- * Every level is tried and the best score wins. crop: the screen square of `size` px around `center` that is
+ * known), k (position units per image px), origin (image px of the position origin), off (added to the result),
+ * layer (optional: levels that only fit one state of the place, e.g. "live" / "taken" for a stronghold with and
+ * without its orange zone; a call passing `layer` skips the levels of other layers, those without one are always
+ * tried). Every level is tried and the best score wins. crop: the screen square of `size` px around `center` that is
  * matched; the point located is its middle. mask (all optional, left out: the whole square): circle keeps
  * inner < r <= outer from the middle; wedge leaves out r <= wedge.r within ±half degrees of the heading passed per
  * call (no heading: all of r <= wedge.r); drop leaves out pixels in these HSV ranges (OpenCV's, H 0-180), grown by
@@ -45,7 +47,7 @@ import java.io.File
  * canny, pre, sigma). Images are decoded and preprocessed once, kept while their files stay the same.
  */
 internal class Locator(private val app: App) {
-    private class Level(val zoom: String, val k: Double, val ox: Double, val oy: Double, val offX: Double, val offY: Double, val handle: Long)
+    private class Level(val zoom: String, val layer: String?, val k: Double, val ox: Double, val oy: Double, val offX: Double, val offY: Double, val handle: Long)
 
     private class Loaded(val stamp: Long, val levels: List<Level>)
 
@@ -58,8 +60,8 @@ internal class Locator(private val app: App) {
     }
 
     /**
-     * {ref, image?, prior?: [x, y], radius?, wedge? (cam: its old name), zoom?, crop?, mask?, regions?, prep?} -> {x,
-     * y, score, second, zoom, used, ms, levels: {zoom: score}}, or null when no level could be matched. crop, mask,
+     * {ref, image?, prior?: [x, y], radius?, wedge? (cam: its old name), zoom?, layer?, crop?, mask?, regions?, prep?}
+     * -> {x, y, score, second, zoom, layer?, k, used, ms, levels: {zoom: score}}, or null when no level could be matched. crop, mask,
      * regions and prep are laid over the reference's, key by key.
      */
     @Synchronized
@@ -79,11 +81,13 @@ internal class Locator(private val app: App) {
         val radius = num(a, "radius") ?: DEFAULT_RADIUS
         val wedge = num(a, "wedge") ?: num(a, "cam") ?: Double.NaN
         val only = a.optStr("zoom")
+        val layer = a.optStr("layer")
         var best: FloatArray? = null
         var bestLevel: Level? = null
         val scores = LinkedHashMap<String, Float>()
         for (lv in ref.levels) {
             if (only != null && lv.zoom != only) continue
+            if (layer != null && lv.layer != null && lv.layer != layer) continue
             val pu = if (prior != null) lv.ox + (prior[0] - lv.offX) / lv.k else 0.0
             val pv = if (prior != null) lv.oy + (prior[1] - lv.offY) / lv.k else 0.0
             val r = if (prior != null) radius / lv.k else -1.0
@@ -104,6 +108,8 @@ internal class Locator(private val app: App) {
             put("score", round3(b[2].toDouble()))
             put("second", round3(b[3].toDouble()))
             put("zoom", lv.zoom)
+            lv.layer?.let { put("layer", it) }
+            put("k", lv.k)
             put("used", b[4].toInt())
             put("ms", Math.round(ms * 10) / 10.0)
             put("levels", buildJsonObject { scores.forEach { (z, s) -> put(z, round3(s.toDouble())) } })
@@ -121,7 +127,7 @@ internal class Locator(private val app: App) {
             val o = e.jsonObject
             val origin = o["origin"]!!.jsonArray.map { it.jsonPrimitive.doubleOrNull ?: 0.0 }
             val off = (o["off"] as? JsonArray)?.map { it.jsonPrimitive.doubleOrNull ?: 0.0 } ?: listOf(0.0, 0.0)
-            Level(o.optStr("zoom") ?: "$i", num(o, "k") ?: 1.0, origin[0], origin[1], off[0], off[1], reference(files[i], params))
+            Level(o.optStr("zoom") ?: "$i", o.optStr("layer"), num(o, "k") ?: 1.0, origin[0], origin[1], off[0], off[1], reference(files[i], params))
         }
         return Loaded(stamp, loaded).also { cache[key] = it }
     }
