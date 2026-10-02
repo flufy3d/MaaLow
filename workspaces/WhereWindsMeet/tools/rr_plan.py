@@ -495,26 +495,43 @@ def card_template(root: Path, title: str, name: str) -> tuple[str, list]:
     raise ValueError(f"{title}: not found on the 据点挑战 page")
 
 
+SWITCH_CLEAR = 3.0  # big map px: a dry run's look before / after the zoom switch is at least this far out of it
+
+
 def checks_of(root: Path, pts: list[dict], legs: list[dict]) -> list[int]:
-    """The points a dry run looks at the big map at: both ends of the minimap's zoom switch (the first zoomed-in frame
-    of the recording: the point before it and the one after), the ends of uncertain legs (part of them bridged over
-    frames left out), and the last point. Not the rest: every look costs ~9 s, and a leg that loses its way says so
-    itself (lost, astray, stuck)."""
+    """The points a dry run looks at the big map at: both ends of the minimap's zoom switch, the ends of uncertain legs
+    (part of them bridged over frames left out), and the last point. Not the rest: every look costs ~9 s, and a leg
+    that loses its way says so itself (lost, astray, stuck).
+    The switch's ends: the last zoomed-out frame of the recording before it and the first zoomed-in one after (the
+    animation between has no place); the look before is the point before it at least SWITCH_CLEAR from the first, the
+    one after the point after it at least that far from the second. A look right where it zooms does not settle: on
+    酒肉山林's daytime dry run (2026-10-03) point 13 sat on the last zoomed-out place, the character shuffled 1–2 px
+    around it with the minimap switching zoom, was taken for stuck 5 times and jumped (the unstick moves)."""
     out = {len(pts) - 1}
     pos = load_track(root)
-    first_in = next((v for n, v in sorted(pos.items()) if v[2] == "in"), None)
-    if first_in is not None:
-        q = np.array(first_in[:2])
+    seq = sorted(pos)
+    n_in = next((n for n in seq if pos[n][2] == "in"), None)
+    if n_in is not None:
+        n_out = max((n for n in seq if n < n_in and pos[n][2] == "out"), default=n_in)
+        qa, qb = np.array(pos[n_out][:2]), np.array(pos[n_in][:2])
 
-        def seg(i):  # how far the leg from point i to i + 1 passes from where the minimap zoomed in
+        def seg(i, q):  # how far the leg from point i to i + 1 passes from q
             a_, b_ = np.array(pts[i]["at"], float), np.array(pts[i + 1]["at"], float)
             t = np.clip(np.dot(q - a_, b_ - a_) / max(np.dot(b_ - a_, b_ - a_), 1e-9), 0, 1)
             return float(np.hypot(*(a_ + t * (b_ - a_) - q)))
 
-        k = min(range(len(pts) - 1), key=seg)
-        out |= {max(1, k), k + 1}
+        far = lambda i, q: float(np.hypot(*(np.array(pts[i]["at"], float) - q))) >= SWITCH_CLEAR
+        i = min(range(len(pts) - 1), key=lambda j: seg(j, qa))
+        while i > 1 and not far(i, qa):
+            i -= 1
+        j = min(range(len(pts) - 1), key=lambda m: seg(m, qb)) + 1
+        while j < len(pts) - 1 and not far(j, qb):
+            j += 1
+        out |= {max(1, i), j}
     for i, lg in enumerate(legs, start=1):
-        if lg.get("unsure", 0) > 0:
+        # the leg bridged over the switch itself is looked at from both sides of it (above), not at its ends
+        across = n_in is not None and min(seg(i - 1, qa), seg(i - 1, qb)) < SWITCH_CLEAR
+        if lg.get("unsure", 0) > 0 and not across:
             out.add(i)
     return sorted(out)
 

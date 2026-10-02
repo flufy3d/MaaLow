@@ -11,6 +11,9 @@
 export const meta = { description: "set the game's time of day (时辰)", timeout: 90_000 };
 
 const ORDER = "子丑寅卯辰巳午未申酉戌亥";
+// OCR's look-alikes on the wheel (卯 came back as 卵 on 2026-10-03)
+/** @type {Record<string, string>} */
+const ALIKE = { 卵: "卯", 戍: "戌", 戊: "戌", 已: "巳", 己: "巳", 末: "未", 甲: "申", 由: "申", 西: "酉", 于: "子" };
 /** @type {Point} */
 const MENU = [1039, 22]; // world: the menu button
 /** @type {Point} */
@@ -42,7 +45,7 @@ function read(roi, image) {
 function selected() {
     const image = screenshot();
     const s = read(SELECTED_ROI, image);
-    const ch = [...s].find((c) => ORDER.includes(c)) ?? null;
+    const ch = [...s].map((c) => ALIKE[c] ?? c).find((c) => ORDER.includes(c)) ?? null;
     return { ch, raw: s, day: read(DAY_ROI, image) };
 }
 
