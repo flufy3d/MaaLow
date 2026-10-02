@@ -25,6 +25,11 @@ the interaction list, a task count going up) is planned (A*, kept off the edges)
     check      the walkable map and the planner tried on another survey (e.g. 佛爷寨's) against the teacher's route
     anchors    a dry run's where() readings (route_seg.py ... check=true out=RUN.json) into device_anchors.json
 
+On the device (the stronghold taken; tell the teacher first, these open the big map a lot):
+    dryrun     the route with check: true; how far it got (each point's where() within CHECK_OFF)
+    survey     walk points a-b the old way (big map, step, look again) grabbing frames: survey<N>/, placed by its looks
+    auto       dry run → survey from where it went wrong → mosaic, plan, view, emit, push → again, until it passes
+
 After a dry run with check: true, `anchors --run RUN.json` puts its where() readings into <root>/device_anchors.json
 (device_fixes); then locate / mosaic / plan / emit again.
 
@@ -408,12 +413,12 @@ ANIM = (10, 30)  # frames left out before / after a zoom switch's first / last l
 
 def segments(root: Path, track) -> list[dict]:
     """Stretches of good world frames at one zoom: split at the zoom switches (their animation left out); the first
-    one is zoomed out (the character starts outside, at the teleport stone)."""
+    one is zoomed out (the character starts outside, at the teleport stone; a survey's survey.json says otherwise)."""
     z = wl.frames_of(root / REC)
     good = good_world(root)
     sw = zoom_switches(track)
     cuts = [(s["from"] - ANIM[0], s["to"] + ANIM[1], s["way"]) for s in sw]
-    zoom, out, cur = "out", [], []
+    zoom, out, cur = survey_conf(root).get("zoom0", "out"), [], []
     for i in np.nonzero(good)[0]:
         n = int(z["seq"][i])
         if cur and n - cur[-1] > GAP:  # menus, the big map, a teleport: a new stretch (maybe somewhere else)
@@ -501,9 +506,11 @@ def cmd_register(root: Path) -> None:
     out = []
     for s in segments(root, icon_track(root)):
         fr = s["frames"]
-        for lag in LAGS:
+        step = float(np.median(np.diff(fr))) if len(fr) > 1 else 1.0  # 1 for a recording, ~4 for a survey
+        lags = sorted({max(1, round(lag / step)) for lag in LAGS})
+        for lag in lags:
             for a, b in zip(fr, fr[lag:]):
-                if b - a > 3 * lag + 6:  # a gap (menus, a flicker of the fan)
+                if b - a > (3 * lag + 6) * step:  # a gap (menus, a flicker of the fan)
                     continue
                 dx, dy, sc = register(prepped(z, idx[a]), prepped(z, idx[b]))
                 out.append([int(a), int(b), round(float(dx), 3), round(float(dy), 3), round(float(sc), 3)])
@@ -694,14 +701,15 @@ LOOK_MOSAIC = wl.look(zone="flat")  # the zone's pixels kept (filtered apart whe
 MATCH = wl.PREPS[wl.APP_PREPS["mosaic"]]  # what the app matches a mosaic with (dog 1/4)
 
 
-def build_mosaic(root: Path, pos: dict, zoom: str, k: float, skip=lambda n: False) -> ml.Ref:
-    z = wl.frames_of(root / REC)
-
+def build_mosaic(root: Path, pos: dict, zoom: str, k: float, skip=lambda n: False, extra=()) -> ml.Ref:
+    """A mosaic of the frames at `zoom` (not skipped), and of `extra` [(survey dir, its positions)] too."""
     def samples():
-        for n, (x, y, zm) in sorted(pos.items()):
-            if zm == zoom and not skip(n):
-                i = z["idx"][n]
-                yield z["disc"][i], x, y, None if np.isnan(z["cam"][i]) else float(z["cam"][i])
+        for src, ps, sk in [(root, pos, skip)] + [(d, q, lambda n: False) for d, q in extra]:
+            z = wl.frames_of(src / REC)
+            for n, (x, y, zm) in sorted(ps.items()):
+                if zm == zoom and not sk(n):
+                    i = z["idx"][n]
+                    yield z["disc"][i], x, y, None if np.isnan(z["cam"][i]) else float(z["cam"][i])
 
     ref, spread, _ = ml.mosaic(samples(), wl.MINIMAP.size, LOOK_MOSAIC, k, 0.7)
     ref.name = f"mosaic-{zoom}"
@@ -767,7 +775,7 @@ def stone_k(root: Path) -> dict | None:
     """k zoomed out, measured: the stone's step from the stronghold icon on the big map (its shots: big map px) over
     the same step on the minimap (frames where both show, the stone away from the arrow: minimap px). The bearings
     of the two are compared too (the minimap is north-up)."""
-    if not (T / STONE).exists():
+    if not (T / STONE).exists() or not (root / "bigmap" / "shots.json").exists():
         return None
     st = ml.imread(T / STONE)
     bst = _tpl("map_teleport_stone.png")
@@ -834,7 +842,8 @@ DEVICE_SIGMA = 0.7
 
 def device_fixes(root: Path) -> list[tuple[int, float, float, float]]:
     """<root>/device_anchors.json, optional: where() on the device against what locate() said there with the mosaic
-    made from this track ([{locate: [x, y], where: [x, y]}], e.g. a dry run with check: true). The recording's frames
+    made from this track ([{locate: [x, y], where: [x, y], layer?: live | taken}], e.g. a dry run with check: true;
+    layer: the reading was of that level, only frames of that kind are moved). The recording's frames
     that were at that place in the mosaic (within DEVICE_NEAR) are moved by the difference and held there. They are
     worked out once, against the track the mosaic came from, and kept in the file (`frames`), so a rerun is the same."""
     f = root / "device_anchors.json"
@@ -842,12 +851,16 @@ def device_fixes(root: Path) -> list[tuple[int, float, float, float]]:
         return []
     anchors = json.load(open(f))
     pos = load_track(root) if (root / "track.json").exists() else {}
+    t = taken_at(root)
     changed = False
     for a in anchors:
         if "frames" not in a:
             L, W = np.array(a["locate"]), np.array(a["where"])
+            # layer: a level of the reference (live / taken) the reading was matched in: only that level's frames
+            lay = a.get("layer")
+            keep = lambda n: lay is None or t is None or (n <= t) == (lay == "live")
             a["frames"] = [[n, round(float(x + W[0] - L[0]), 2), round(float(y + W[1] - L[1]), 2)]
-                           for n, (x, y, _) in pos.items() if math.hypot(x - L[0], y - L[1]) <= DEVICE_NEAR]
+                           for n, (x, y, _) in pos.items() if keep(n) and math.hypot(x - L[0], y - L[1]) <= DEVICE_NEAR]
             changed = True
     if changed:
         json.dump(anchors, open(f, "w"), indent=1)
@@ -858,7 +871,7 @@ def locate_all(root: Path, k_out: float | None = None, k_in: float | None = None
     """Every world frame's position: see cmd_locate. Frames `skip` says are left out of the mosaics and are not placed
     in them (an evaluation's held-out frames: their positions then come from the icon and the shifts alone)."""
     info = {}
-    sk = stone_k(root)
+    sk = None if k_out else stone_k(root)
     info["stone_k"] = sk
     ko = k_out or (sk["k"] if sk else K0["out"])
     k = {"out": ko, "in": k_in or ko / ZOOM_RATIO}
@@ -870,9 +883,10 @@ def locate_all(root: Path, k_out: float | None = None, k_in: float | None = None
     info["zone_before"] = zone_check(root, pos, k)
     fixes = []
     for it in range(ROUNDS):
-        refs = {zm: build_mosaic(root, pos, zm, k[zm], skip=skip) for zm in ("out", "in")}
+        zooms = [zm for zm in ("out", "in") if sum(1 for n, v in pos.items() if v[2] == zm and not skip(n)) >= 10]
+        refs = {zm: build_mosaic(root, pos, zm, k[zm], skip=skip) for zm in zooms}
         fixes = list(dev)
-        for zm in ("out", "in"):
+        for zm in zooms:
             fixes += [(n, x, y, 1.0) for n, (x, y, s) in place(root, pos, refs[zm], zm).items() if not skip(n)]
         if not quiet:
             print(f"round {it}: {len(fixes)} frames placed in the mosaics")
@@ -949,20 +963,23 @@ def taken_at(root: Path) -> int | None:
 def levels_of(root: Path, pos: dict, k: dict, skip=lambda n: False) -> list[tuple[str, str, ml.Ref]]:
     """The reference's levels: (zoom, tag, mosaic). Zoomed in, one from before the stronghold was taken (its orange
     zone over most of it) and one after (the bare map): a frame of either kind matches its own much better (bare
-    frames in the zone mosaic: 61% trusted, the other way round 38%; 酒肉山林, 2026-10-02)."""
+    frames in the zone mosaic: 61% trusted, the other way round 38%; 酒肉山林, 2026-10-02). Surveys (survey<N>/, made
+    with the stronghold taken) go into the after level, or into the only one."""
     t = taken_at(root)
+    sv = [(d, load_track(d)) for d in surveys_of(root)]  # surveyed on the device: the stronghold taken
     out = []
     for zm in ("out", "in"):
         n_zm = [n for n, v in pos.items() if v[2] == zm and not skip(n)]
+        ex = [(d, q) for d, q in sv if any(v[2] == zm for v in q.values())]
         if t is None or not n_zm or min(n_zm) > t or max(n_zm) < t:
-            out.append((zm, zm, build_mosaic(root, pos, zm, k[zm], skip=skip)))
+            out.append((zm, zm, build_mosaic(root, pos, zm, k[zm], skip=skip, extra=ex)))
             continue
         before = [n for n in n_zm if n <= t]
         after = [n for n in n_zm if n > t + 20]
         if len(before) > 50:
             out.append((zm, f"{zm}_live", build_mosaic(root, pos, zm, k[zm], skip=lambda n: skip(n) or n > t)))
-        if len(after) > 50:
-            out.append((zm, f"{zm}_taken", build_mosaic(root, pos, zm, k[zm], skip=lambda n: skip(n) or n <= t + 20)))
+        if len(after) > 50 or ex:
+            out.append((zm, f"{zm}_taken", build_mosaic(root, pos, zm, k[zm], skip=lambda n: skip(n) or n <= t + 20, extra=ex)))
     return out
 
 
@@ -1111,6 +1128,7 @@ BODY = 1.5  # big map px around each place the character stood that counts as wa
 EDGE_W = 2.0  # A*: a step's cost is its length times 1 + EDGE_W / (clearance + 0.5): the middle of the way is cheaper
 SIMPLIFY = 1.5  # big map px: a leg may leave the planned way by this much
 MIN_CLEAR = 1.0  # big map px: every point of a leg this far inside what was walked
+VIA_NEAR = 12.0  # big map px: a task count going up this close to the stop before is the same place
 BRIDGE = (60, 15)  # frames, big map px: a step over frames left out that is still walked (straight)
 
 
@@ -1192,16 +1210,19 @@ class Walk:
             path.append(prev[path[-1]])
         return path[::-1]
 
-    def leg_ok(self, p, q) -> tuple[bool, float]:
-        """A straight leg p-q: all of it at least MIN_CLEAR inside what was walked; and its least clearance."""
+    def leg_ok(self, p, q, need: float = MIN_CLEAR) -> tuple[bool, float]:
+        """A straight leg p-q: all of it at least `need` inside what was walked; and its least clearance."""
         n = max(2, int(math.hypot(q[0] - p[0], q[1] - p[1]) / (GRID / 2)))
         cl = min(self.clearance((p[0] + (q[0] - p[0]) * t / n, p[1] + (q[1] - p[1]) * t / n)) for t in range(n + 1))
-        return cl >= MIN_CLEAR, cl
+        return cl >= need - 1e-6, cl
 
 
 def simplify(walk: Walk, path: list[tuple[float, float]]) -> list[int]:
     """Douglas-Peucker on the planned way (SIMPLIFY), each leg also kept inside what was walked (else split at its
-    farthest point): indexes of the corners kept."""
+    farthest point): at least MIN_CLEAR from the edge, or as far as the way it stands for gets where that is closer (a
+    narrow bit that was walked: its own clearance is all there is). Indexes of the corners kept."""
+    own = [walk.clearance(p) for p in path]
+
     def rec(i, j):
         if j <= i + 1:
             return [i, j]
@@ -1214,7 +1235,7 @@ def simplify(walk: Walk, path: list[tuple[float, float]]) -> list[int]:
             e = abs(d[0] * v[1] - d[1] * v[0]) / L if L > 1e-9 else np.hypot(*v)
             if e > far:
                 far, k = e, m
-        if far <= SIMPLIFY and walk.leg_ok(path[i], path[j])[0]:
+        if far <= SIMPLIFY and walk.leg_ok(path[i], path[j], min(MIN_CLEAR, min(own[i : j + 1])))[0]:
             return [i, j]
         return rec(i, k)[:-1] + rec(k, j)
 
@@ -1276,7 +1297,8 @@ def plan_png(walk: Walk, pts: list[dict], legs: list[dict], out: Path, kills=(),
 
 def cmd_plan(root: Path) -> None:
     """<root>/targets.json (find_targets), <root>/plan.json (the route points from the teleport landing through the
-    stops, the tracker words, the legs) and <root>/plan.png."""
+    stops, the tracker words, the legs) and <root>/plan.png. The stops follow the teacher's way: the actions (chest,
+    flowers, elite) and, in between, where each task count went up in the recording (VIA_NEAR apart), in order."""
     track = load_track(root, sure=True)
     pos = {n: v[:3] for n, v in track.items()}
     tg = find_targets(root, pos)
@@ -1285,7 +1307,25 @@ def cmd_plan(root: Path) -> None:
     start = {"at": [round(pos[first][0], 1), round(pos[first][1], 1)], "name": "传送石碑（落地）",
              "cam": int(round(float(wl.frames_of(root / REC)["cam"][wl.frames_of(root / REC)["idx"][first]])))}
     names = {"chest": "据点宝箱", "flower": "毒花", "fight": "精英怪"}
-    stops = [start] + [s | {"name": names.get(s["do"], s["do"])} for s in tg["stops"] if s["do"] in ("chest", "flower", "fight")]
+    acts = [s | {"name": names.get(s["do"], s["do"]), "n": s["frames"][0]} for s in tg["stops"] if s["do"] in ("chest", "flower", "fight")]
+    # the teacher's way: where each task count went up (a foe fell, a flower went) is passed on the way, in the order
+    # of the recording; one within VIA_NEAR of the stop before it is the same place
+    # (not the first count read: that is where the tracker came up, i.e. where the stronghold's area begins, and
+    # the task may have been under way before; 酒肉山林's 1/7 showed at its gate, where the minimap zooms)
+    kills = sorted((c[0], c[1], c[2:], g["word"]) for g in tg["tasks"].values() for c in g["counts"][1:] if len(c) == 4)
+    stops = [start | {"n": first}]
+    for ev in sorted([(s["n"], "act", s) for s in acts] + [(n, "kill", (done, at, w)) for n, done, at, w in kills], key=lambda e: e[0]):
+        if ev[1] == "act":
+            stops.append(ev[2])
+            continue
+        done, at, w = ev[2]
+        if math.hypot(at[0] - stops[-1]["at"][0], at[1] - stops[-1]["at"][1]) <= VIA_NEAR:
+            continue
+        if any(s.get("do") == "chest" for s in stops):
+            continue  # nothing after the chest
+        stops.append({"at": at, "name": f"{w} {done}（录像第 {ev[0]} 帧）", "n": ev[0]})
+    for s_ in stops:
+        s_.pop("n", None)
     walk = Walk(track)
     pts, legs = plan(walk, stops)
     tracker = {g["key"]: g["word"] for g in tg["tasks"].values()}
@@ -1384,6 +1424,9 @@ def cmd_emit(root: Path, name: str, title: str | None, rec: str | None) -> None:
     stronghold {teleport}), <Name>Teleport and its <Name>_ menu → 江湖行 → 挑战 → card nodes (copies of 佛爷寨's, next
     to this card; the panel, stone, teleport and landing nodes are shared), <Name>Route (route.js follow mode:
     plan.json's points, the tracker word, locate/<name>_mosaic); the card's template."""
+    rec = rec or (json.load(open(root / "rec.json")).get("rec") if (root / "rec.json").exists() else None)
+    if rec:
+        json.dump({"rec": rec}, open(root / "rec.json", "w"))
     meta = json.load(open(WS / "recordings" / rec / "meta.json", encoding="utf-8")) if rec else {}
     title = title or meta.get("name")
     plan_ = json.load(open(root / "plan.json", encoding="utf-8"))
@@ -1411,8 +1454,9 @@ def cmd_emit(root: Path, name: str, title: str | None, rec: str | None) -> None:
     tracker = {"foes": "破戒头陀", "flowers": "毒花"} | plan_["tracker"]
     words = "、".join(f"{g['word']} {g['of']} 个" for g in tg["tasks"].values())
     route = {
-        "desc": (f"{title}：从传送石碑走到据点宝箱。路点由 tools/rec_route.py 从{src}全自动生成：录像里人走到过的地方（打架被推开的也算）"
-                 f"是可走区域，在上面用 A* 规划（离边缘越远越好），再简化成直线段（偏离规划 ≤ {SIMPLIFY} px、每段离未走过的地方 ≥ {MIN_CLEAR} px）。"
+        "desc": (f"{title}：从传送石碑照老师录像里的顺序走到据点宝箱，途经录像里每次任务计数涨时人在的地方（点名写着第几个、录像第几帧）。"
+                 f"路点由 tools/rec_route.py 从{src}全自动生成：录像里人走到过的地方（打架被推开的也算）"
+                 f"是可走区域，在上面用 A* 规划（离边缘越远越好），再简化成直线段（偏离规划 ≤ {SIMPLIFY} px、每段离未走过的地方 ≥ {MIN_CLEAR} px，原本就窄的地方不比原路窄）。"
                  f"连续定位：每帧在小地图拼图 locate/{name}_mosaic 里找位置（院外 / 院内两档，院内分攻占前（有橙色区域）和攻占后各一张），"
                  f"中间航位推算，不开大地图。比例：院外 1 小地图像素 = {k['out']:.3f} 大地图像素（小地图上石碑和据点图标的距离对大地图上的量出来的），"
                  f"院内 {k['in']:.3f}（院外的一半）。任务：{words}；任务栏按 tracker 读。路上遇敌交给 combat，到宝箱点没有宝箱、头陀没清完就跑 "
@@ -1521,12 +1565,223 @@ def cmd_anchors(root: Path, runs: list[Path]) -> None:
     print(len(device_fixes(root)), "frames held by", len(anchors), "device readings")
 
 
+# ---- surveys: frames grabbed on the device where the recording left the reference weak
+
+SURVEY = "survey"  # <root>/survey<N>/: rec/ (grab_frames: <seq>.jpg, frames.jsonl), route.json, survey.json, and
+# what cache / icons / register / locate write, as for the recording
+CHECK_OFF = 3.0  # px: a dry run's where() farther than this from the point (or from where locate put it) is a miss
+SURVEY_REACH = 3.0  # px: the stepping walk's reach at each point
+SURVEY_STEP = 4.0  # px: points put in between for the stepping walk (densify)
+
+
+def surveys_of(root: Path) -> list[Path]:
+    return sorted((d for d in root.glob(f"{SURVEY}*") if (d / "track.json").exists()), key=lambda d: int(d.name[len(SURVEY):] or 0))
+
+
+def survey_conf(root: Path) -> dict:
+    f = root / "survey.json"
+    return json.load(open(f)) if f.exists() else {}
+
+
+def survey_anchors(sd: Path) -> list[dict]:
+    """<sd>/anchors.json from the stepping walk's anchors (route.js `anchors`: a screenshot just before each look at
+    the big map, its frame number and where() there): the look is the run of map frames after it (screens.json)."""
+    route = json.load(open(sd / "route.json", encoding="utf-8"))
+    scr = json.load(open(sd / "screens.json"))
+    seqs = [r["n"] for r in scr]
+    labels = [r["screen"] for r in scr]
+    got = (route.get("value") or {}).get("anchors") or [json.loads(l[len("anchor "):]) for l in route.get("logs", []) if l.startswith("anchor {")]
+    out = []
+    for a in got:
+        j = next((i for i, n in enumerate(seqs) if n > a["seq"] and labels[i] == "map"), None)
+        if j is None:
+            continue
+        k = j
+        while k + 1 < len(seqs) and labels[k + 1] != "world":
+            k += 1
+        out.append({"n": a["n"], "first": seqs[j], "last": seqs[k], "x": a["x"], "y": a["y"]})
+    json.dump(out, open(sd / "anchors.json", "w"), indent=1)
+    return out
+
+
+class Grabber:
+    """scripts/grab_frames.py in a thread: the app's live frames to <out>/<seq>.jpg and frames.jsonl until stop()."""
+
+    def __init__(self, out: Path):
+        import threading
+        from maalow.client import Client
+
+        self.out, self.c, self.n = out, Client(), 0
+        out.mkdir(parents=True, exist_ok=True)
+        self._stop = threading.Event()
+        self.t = threading.Thread(target=self._run, daemon=True)
+        self.t.start()
+
+    def _run(self):
+        import time
+
+        last = None
+        with open(self.out / "frames.jsonl", "a", encoding="utf-8") as log:
+            while not self._stop.is_set():
+                try:
+                    with self.c._open("GET", "/screen", timeout=10) as r:
+                        data, seq = r.read(), int(r.headers["X-Frame"])
+                except OSError:
+                    time.sleep(0.5)
+                    continue
+                if seq != last:
+                    (self.out / f"{seq}.jpg").write_bytes(data)
+                    log.write(json.dumps({"seq": seq, "t": round(time.time() * 1000)}) + "\n")
+                    log.flush()
+                    last, self.n = seq, self.n + 1
+
+    def stop(self) -> int:
+        self._stop.set()
+        self.t.join(15)
+        return self.n
+
+
+def route_node(name: str) -> dict:
+    N = name[0].upper() + name[1:]
+    return dict(json.load(open(PIPELINE, encoding="utf-8"))[f"{N}Route"]["custom_action_param"])
+
+
+def run_skill(name: str, args: dict, ms: int = 1_800_000) -> dict:
+    from maalow.client import Client
+
+    return Client().post("/skill/run", {"name": name, "args": args, "timeout": ms}, timeout=ms / 1000 + 100)
+
+
+def cmd_dryrun(root: Path, name: str, start: int = 1) -> dict:
+    """The route in follow mode with check: true from point `start` to the end (the stronghold taken: no chest is
+    fine). Returns {ok, reached: the last point reached and checked within CHECK_OFF, missed: [points checked farther
+    off], error}; <root>/dryrun<N>.json is the whole result (for `anchors`)."""
+    args = route_node(name)
+    P = args["points"]
+    args |= {"from": start, "to": len(P) - 1, "check": True}
+    r = run_skill("route", args)
+    n = len(list(root.glob("dryrun*.json"))) + 1
+    json.dump(r, open(root / f"dryrun{n}.json", "w", encoding="utf-8"), ensure_ascii=False)
+    reached, missed = start - 1, []
+    for line in r.get("logs", []):
+        m = re.match(r"point (\d+) ", line)
+        if not m or "reached at" not in line:
+            continue
+        j = int(m[1])
+        off = re.search(r"where\(\) [-\d.]+,[-\d.]+, ([\d.]+) px off", line)
+        if off and float(off[1]) > CHECK_OFF:
+            missed.append(j)
+        elif not missed:
+            reached = j
+    err = (r.get("error") or {}).get("message") if not r.get("ok") else None
+    out = {"ok": bool(r.get("ok")) and not missed, "reached": reached, "missed": missed, "error": err, "file": f"dryrun{n}.json"}
+    print(json.dumps(out, ensure_ascii=False))
+    return out
+
+
+def densify(P: list[dict], a: int, b: int, step: float = SURVEY_STEP) -> tuple[list[dict], int, int]:
+    """Points a-1..b with points put in between every `step` px, for walking the old way: it runs straight from
+    wherever it is to the next point, so on a long leg it can drift off the planned line into a wall (酒肉山林: 4.5 px
+    off a 29 px leg, then stuck at a gate's wall). Returns the points and the new indexes of a and b."""
+    out = [P[a - 1]]
+    for i in range(a, b + 1):
+        A, B = np.array(out[-1]["at"], float), np.array(P[i]["at"], float)
+        n = int(np.hypot(*(B - A)) // step)
+        for t in range(1, n + 1):
+            q = A + (B - A) * t / (n + 1)
+            out.append({"at": [round(float(q[0]), 1), round(float(q[1]), 1)]})
+        out.append(P[i])
+    return out, 1, len(out) - 1
+
+
+def cmd_survey(root: Path, name: str, a: int, b: int, at: tuple[float, float] | None = None) -> Path:
+    """Walk points a..b of the route the old way (open the big map, where(), run toward the next point, again: no
+    reference needed), grabbing frames all along; each look is an anchor. Then the frames are placed (cache, icons,
+    anchors, register, locate with the recording's k) into <root>/survey<N>/track.json, which `mosaic` adds to the
+    stronghold-taken level. The points' actions are left out (only walking); points are put in every SURVEY_STEP px
+    (densify). `at`: where the character is (where()), to go on from the nearest of those points (after a survey
+    that stopped half way)."""
+    args = route_node(name)
+    P0 = [{kk: v for kk, v in p.items() if kk not in ("do", "snap")} for p in args["points"]]
+    P, a, b = densify(P0, a, b)
+    if at is not None:
+        a = 1 + min(range(a - 1, b + 1), key=lambda i: math.hypot(P[i]["at"][0] - at[0], P[i]["at"][1] - at[1]))
+        a = min(a, b)
+    n = 1 + max([int(d.name[len(SURVEY):]) for d in root.glob(f"{SURVEY}*") if d.is_dir() and d.name[len(SURVEY):].isdigit()], default=0)
+    sd = root / f"{SURVEY}{n}"
+    g = Grabber(sd / REC)
+    try:
+        r = run_skill("route", {"points": P, "from": a, "to": b, "reach": SURVEY_REACH, "anchors": f"teaching/survey/{name}_{n}"})
+    finally:
+        frames = g.stop()
+    json.dump(r, open(sd / "route.json", "w", encoding="utf-8"), ensure_ascii=False)
+    print(f"survey {sd.name}: points {a}-{b}, {frames} frames, ok {r.get('ok')}", (r.get("error") or {}).get("message", ""))
+    survey_build(root, sd)
+    return sd
+
+
+def survey_build(root: Path, sd: Path) -> None:
+    """Place a survey's frames: cache, icons, anchors from its looks, register, locate (k and the starting zoom from the
+    recording's track)."""
+    k = json.load(open(root / "locate.json"))["k"]
+    cmd_cache(sd)
+    cmd_icons(sd)
+    an = survey_anchors(sd)
+    if not an:
+        print(sd.name, "no anchors: not placed")
+        return
+    main = load_track(root)
+    keys = np.array(sorted(main))
+    P = np.array([main[q][:2] for q in keys])
+    zoom0 = main[int(keys[int(np.argmin(np.hypot(*(P - [an[0]["x"], an[0]["y"]]).T)))])][2]
+    json.dump({"zoom0": zoom0, "k": k}, open(sd / "survey.json", "w"))
+    cmd_register(sd)
+    cmd_locate(sd, k["out"], k["in"])
+
+
+def cmd_auto(root: Path, name: str, rounds: int = 4, survey_ahead: int = 0) -> None:
+    """Dry run, and where it went wrong, survey and rebuild, until the whole route passes (or `rounds`): each round
+    teleports to the stone, runs the route with check from where the last round got to (from the start once it was
+    rebuilt), surveys from the last good point to the end, rebuilds the reference and the route (mosaic, plan, emit),
+    pushes. Tell the teacher first: the survey opens the big map at every few px."""
+    import subprocess
+
+    N = name[0].upper() + name[1:]
+    for rnd in range(1, rounds + 1):
+        print(f"== round {rnd}: teleport, dry run")
+        from maalow.client import Client
+
+        Client().post("/run", {"node": f"{N}Teleport", "once": True}, timeout=400)
+        d = cmd_dryrun(root, name)
+        if d["ok"]:
+            print("the whole route passed")
+            return
+        if d["error"] and "stopped by teacher" in d["error"]:
+            print("stopped by the teacher")
+            return
+        last = len(route_node(name)["points"]) - 1
+        a = max(1, d["reached"] + 1)
+        b = last if not survey_ahead else min(last, a + survey_ahead)
+        print(f"== round {rnd}: survey points {a}-{b}")
+        cmd_survey(root, name, a, b)
+        cmd_mosaic(root, name, None)
+        cmd_plan(root)
+        cmd_view(root)
+        cmd_emit(root, name, None, None)
+        subprocess.run(["uv", "run", "maalow", "sync", "WhereWindsMeet", "--push", "--exclude", "recordings/**"], check=False)
+    print("rounds used up")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd")
     ap.add_argument("root", type=Path)
     ap.add_argument("--rec", help="frames: the recording id (workspaces/WhereWindsMeet/recordings/<id>/video.mp4)")
     ap.add_argument("--video", type=Path)
+    ap.add_argument("--start", type=int, default=1, help="dryrun: the first point")
+    ap.add_argument("--points", help="survey: the route points to walk, e.g. 10-31")
+    ap.add_argument("--at", help="survey: where the character is (x,y from where()), to go on from the nearest point")
+    ap.add_argument("--rounds", type=int, default=4, help="auto: dry run / survey rounds at most")
     ap.add_argument("--run", help="anchors: route_seg.py out= files of dry runs with check=true, comma separated")
     ap.add_argument("--title", help="emit: the stronghold's name on its card (default: the recording's name)")
     ap.add_argument("--tracks", help="check: track.json files of another stronghold's survey, comma separated")
@@ -1575,6 +1830,17 @@ def main() -> None:
         cmd_emit(a.root, a.name, a.title, a.rec)
     elif a.cmd == "view":
         cmd_view(a.root)
+    elif a.cmd == "dryrun":
+        cmd_dryrun(a.root, a.name, a.start)
+    elif a.cmd == "survey":
+        a_, b_ = (int(v) for v in a.points.split("-"))
+        cmd_survey(a.root, a.name, a_, b_, tuple(float(v) for v in a.at.split(",")) if a.at else None)
+    elif a.cmd == "survey-build":
+        for d in sorted(a.root.glob(f"{SURVEY}*")):
+            if d.is_dir() and (d / "route.json").exists():
+                survey_build(a.root, d)
+    elif a.cmd == "auto":
+        cmd_auto(a.root, a.name, a.rounds)
     elif a.cmd == "anchors":
         cmd_anchors(a.root, [Path(r) for r in a.run.split(",")])
     elif a.cmd == "icons":

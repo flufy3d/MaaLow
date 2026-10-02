@@ -6,7 +6,8 @@
 //              template matched (templates/map_stronghold.png ~0.97; map_stronghold_done.png, the gray icon with an
 //              hourglass once taken, ~0.99 / ~0.91 on the live one; positions in taken-icon terms, LIVE_AT); null
 //              when not found, which includes standing on it (the arrow hides it): then the name label (慈心山院, 佛爷寨)
-//              above it, a fixed step from the icon, is read instead; no guessing otherwise, a wrong position sends a
+//              above it, a fixed step from the icon, is read instead, or (no label: 酒肉山林) the teleport stone, also a
+//              fixed step away, when it puts the icon under the arrow; no guessing otherwise, a wrong position sends a
 //              route off in a wrong direction;
 //              also the camera heading (compass degrees, from the minimap before opening the map)
 //   {where: true}  just report that
@@ -47,6 +48,11 @@ const LABELS = [
     ["map_label_cixin.png", [53, -50.5]], // 慈心山院 over the stronghold; its middle from the icon's (7 big map shots, all the same)
     ["map_label_foye.png", [-21.5, -110]], // 佛爷寨 (the place name above the stronghold, 1 shot, explore 2026-10-02)
 ];
+/** @type {Point[]} */
+const STONE_STEPS = [
+    [102.94, -38.28], // 酒肉山林's teleport stone from its icon (the stone template's middle; big map shots of recording 20261002-025629)
+];
+const UNDER_ARROW = 30; // px: an icon this close to the arrow can be hidden by it (21 px at 酒肉山林's west yard was)
 const LABEL_AFTER = 3000; // the icons have shown by then
 const LABEL_MIN = 0.6; // the same label scores 0.68–1.0 from one look to the next (its text drawn a fraction of a px off); other place names ≤ 0.35
 /** @type {Point} */
@@ -94,7 +100,13 @@ export function where() {
         if (icon) return { ...icon, by: "icon" };
         if (Date.now() - t0 < LABEL_AFTER) return null;
         const label = nearestIcon(LABELS.flatMap(([t, at]) => match(t, { image, roi: MAP_ROI, threshold: LABEL_MIN }).results.map((m) => ({ h: m, at }))));
-        return label ? { ...label, by: "label" } : null;
+        if (label) return { ...label, by: "label" };
+        // no label either (酒肉山林's map shows none): the teleport stone, a fixed step from the icon; only where that
+        // puts the icon under the arrow (that is why it was not seen)
+        const stones = match("map_teleport_stone.png", { image, roi: MAP_ROI, threshold: 0.8 }).results;
+        const stone = nearestIcon(STONE_STEPS.flatMap((at) => stones.map((m) => ({ h: m, at }))));
+        return stone && Math.hypot(middle(stone.h.box)[0] - stone.at[0] - PLAYER[0], middle(stone.h.box)[1] - stone.at[1] - PLAYER[1]) <= UNDER_ARROW
+            ? { ...stone, by: "stone" } : null;
     }, { timeout: 6000, interval: 300 }); // the icons show ~2.5 s after the map
     click(MAP_BACK);
     sleep(800);
@@ -193,7 +205,12 @@ function toStone() {
         // has no label to fall back on); only matches near where the card puts it count, so this is still the icon
         const icon = mid([...match(ICONS, { image, roi: MAP_LEFT, threshold: 0.8 }).results.map((m) => ({ h: m, at: /** @type {Point} */ ([0, 0]) })),
             ...match(ICON_MASKED, { image, roi: MAP_LEFT, threshold: 0.85, green_mask: true }).results.map((m) => ({ h: m, at: LIVE_AT }))])
-            ?? mid(LABELS.flatMap(([t, at]) => match(t, { image, roi: MAP_LEFT, threshold: 0.75 }).results.map((m) => ({ h: m, at }))));
+            ?? mid(LABELS.flatMap(([t, at]) => match(t, { image, roi: MAP_LEFT, threshold: 0.75 }).results.map((m) => ({ h: m, at }))))
+            // the arrow over it and no label (酒肉山林, standing 18 px from it): a stone just where its step from the
+            // card's middle puts it says the map is fully zoomed in and the icon is there
+            ?? mid(STONE_STEPS.flatMap((at) => match("map_teleport_stone.png", { image, roi: MAP_LEFT, threshold: 0.7 }).results
+                .filter((m) => Math.hypot(middle(m.box)[0] - at[0] - CARD_AT[0], middle(m.box)[1] - at[1] - CARD_AT[1]) <= 8)
+                .map((m) => ({ h: m, at }))));
         if (!icon) {
             runSkill("pinch", { center: CARD_AT, times: 4 }); // zoomed out: in, around where the card put it
             sleep(1000);
