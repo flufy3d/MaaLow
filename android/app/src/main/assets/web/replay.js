@@ -19,6 +19,8 @@ window.replay = (() => {
   let saving = false, saveTimer = 0, saveError = "";
   let undoStack = [], redoStack = [];
   let recState = { recording: false }, recPolled = 0;
+  /** The app's recording limit in minutes (GET /record limit_ms). */
+  const limitMin = () => Math.round((recState.limit_ms || 20 * 60000) / 60000);
   let playing = false, videoFrame = 0, hideVideoOnLoad = false;
   let drag = null, hover = null, hold = null, editing = null;
   let inPt = -1, outPt = -1; // the range sent as the attachment's focus (-1: open end)
@@ -620,7 +622,7 @@ window.replay = (() => {
       if (ended && started) {
         await loadList();
         if (!prev.stopping) {
-          toast(`录制已结束${prev.remaining_ms < 2000 ? "（到达 3 分钟上限）" : ""}，已保存`);
+          toast(`录制已结束${prev.remaining_ms < 2000 ? `（到达 ${limitMin()} 分钟上限）` : ""}，已保存`);
           const r = recs.find(x => x.state === "ready");
           if (r && active) offer(r);
         }
@@ -648,7 +650,7 @@ window.replay = (() => {
     const b = $("rp-rec");
     b.classList.toggle("live", !!recState.recording);
     b.innerHTML = recState.recording ? `${svg("stop")}<span class="tl">结束录制</span>` : recState.saving ? `<span class="tl">保存中…</span>` : `${svg("rec")}<span class="tl">开始录制</span>`;
-    b.title = recState.recording ? "结束录制并保存" : "录下平板上的真实操作（最长 3 分钟）";
+    b.title = recState.recording ? "结束录制并保存" : `录下平板上的真实操作（最长 ${limitMin()} 分钟）`;
     b.disabled = !!recState.saving && !recState.recording;
   }
 
@@ -669,7 +671,7 @@ window.replay = (() => {
         recState = await post("/record/start", { workspace: ws });
         recPolled = Date.now();
         await loadList();
-        toast("开始录制：在平板上正常操作，最长 3 分钟", 2500);
+        toast(`开始录制：在平板上正常操作，最长 ${limitMin()} 分钟`, 2500);
       }
     } catch (e) {
       toast((recState.recording ? "结束录制失败：" : "开始录制失败：") + e.message, 5000);
@@ -800,7 +802,7 @@ window.replay = (() => {
     if (!active) return;
     const say = recState.recording ? "录制中……在平板上正常操作。<br>结束录制后可以逐帧查看和标注。"
       : !ws ? "还没有工作区，先到 <b>工作区</b> 页新建一个。"
-      : recs.some(r => r.state === "ready") ? "点工具栏里的录像选择器，打开一段录像。" : "点 <b>开始录制</b> 录一段在平板上的真实操作（最长 3 分钟）。";
+      : recs.some(r => r.state === "ready") ? "点工具栏里的录像选择器，打开一段录像。" : `点 <b>开始录制</b> 录一段在平板上的真实操作（最长 ${limitMin()} 分钟）。`;
     stage.over(rec ? "" : `<img src="web/mascot.png" alt=""><div>${say}</div>`);
   }
 

@@ -397,7 +397,7 @@ class Recorder(private val app: App) {
         const val TAG = "MaaLowRecord"
         const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
         const val GOP_S = 1
-        const val LIMIT_FRAMES = 3 * 60 * Recordings.FPS
+        const val LIMIT_FRAMES = 20 * 60 * Recordings.FPS // a whole stronghold run in one take (~900 MB at 6 Mbps)
         const val FRAME_NS = 1_000_000_000L / Recordings.FPS
         const val FIRST_FRAME_WAIT_NS = 1_500_000_000L
     }

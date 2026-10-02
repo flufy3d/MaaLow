@@ -107,7 +107,7 @@ def _add_rec_parser(sub) -> None:
     _add_server_args(p_rec)
     p_rec.add_argument("--workspace", help="workspace on the app (default: the app's)")
     ops = p_rec.add_subparsers(dest="op", required=True)
-    p = ops.add_parser("start", help="start recording the tablet screen (at most 3 minutes)")
+    p = ops.add_parser("start", help="start recording the tablet screen (at most 20 minutes)")
     p.add_argument("--name", help="recording name")
     p.add_argument("--note", help="a note on the recording")
     p.add_argument("--bitrate", type=int, help="bits per second (default: the app's, 3000000)")
