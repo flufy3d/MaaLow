@@ -12,11 +12,6 @@
 //   {zone: true, bearing: 42}  stronghold (据点): chase only the red marks on the orange patch of the minimap, ignoring
 //                            strays around it; with none in sight head for the patch's middle, done ("clear") within
 //                            `zoneAt` (8) px of it; before the patch shows, run `bearing` (from the big map)
-//   {snap: "route/x/03.png", bearing: 40}  run to where a minimap snapshot (templates/, taken at a route point:
-//                            44 px around the character, arrow and fan painted green) shows up in the minimap, turning
-//                            as it comes closer; done ("arrived") within `reachPx` (3) minimap px of it; before it shows,
-//                            run `bearing`, but only for `lostMs` ("lost"). A fight starting on the way (the top right
-//                            icons hide) ends it ("fight")
 //   untilFight: true         enemy / zone: stop ("fight") once a fight has started (the icons hide), for combat to
 //                            take over, rather than keep chasing an enemy that moves about in the fight
 //   face: true               keep the camera looking where it runs (within 20°), as when chasing an enemy
@@ -30,7 +25,7 @@
 //                            (camera heading, joystick direction, sprint / run speed) puts it, and a good match resets
 //                            the reckoning. Sprints while far, lets go and runs the last stretch so it does not
 //                            overshoot. Stuck: the reckoning moves, the matches do not. See goTo()
-import { angleDiff, bearingOf, cameraHeading, CENTER, enemies, onZone, zone } from "./lib/minimap.js";
+import { angleDiff, cameraHeading, enemies, onZone, zone } from "./lib/minimap.js";
 import { recognize as pickupPoint } from "./auto_pickup.js";
 import { calm } from "./lib/hud.js";
 
@@ -65,11 +60,6 @@ const SPRINT_TRIES = 2; // presses that did not start a sprint before giving up 
 const LOCK_CONE = 45; // locked: the locked enemy's mark is within this of the camera direction
 const GONE_PX = 12; // locked, a mark last seen this close that disappears: arrived
 const SAME_PX = 8; // a mark this close to where the chased one was is the same enemy
-/** @type {Box} */
-const SNAP_ROI = [90, 16, 110, 110]; // the minimap disc
-const SNAP_MIN = 0.6; // snapshot score: ~0.98 at the same spot, ~0.6–0.84 a few steps off, ~0.5 elsewhere
-const SNAP_EXPECT = 15; // first sighting: this close to where the route puts it (minimap px)
-const SNAP_JUMP = 10; // after that: this close to where it was last seen
 const HUD_MS = 400;
 const CLEAR_MS = 1500; // zone: this long at the patch's middle with no mark on it is clear
 const STUCK_MS = 1500; // chasing: this long without getting 1 minimap px closer is stuck
@@ -457,7 +447,7 @@ function goTo(args) {
 }
 
 /**
- * @param {{face?: boolean, bearing?: number, rel?: number, enemy?: boolean, zone?: boolean, untilFight?: boolean, zoneAt?: number, snap?: string, reachPx?: number, snapMin?: number, expect?: Point, lostMs?: number, near?: number, lockAt?: number, capture?: boolean, ms?: number, sprint?: boolean,
+ * @param {{face?: boolean, bearing?: number, rel?: number, enemy?: boolean, zone?: boolean, untilFight?: boolean, zoneAt?: number, near?: number, lockAt?: number, capture?: boolean, ms?: number, sprint?: boolean,
  *          pickup?: boolean, turn?: number, step?: number, goto?: Point[], ref?: string | string[], from?: Point, reach?: number}} args
  * @param {SkillContext} [ctx]
  */
@@ -489,9 +479,6 @@ export default function (args, ctx) {
     let level = 0; // next way out to try
     const stuck = []; // [ms, way out] tried
     let why = "time";
-    let snapSeen = false; // snap: the snapshot showed at some point
-    /** @type {Point | null} */
-    let lastSnap = null; // snap: where it was last seen
     const t0 = Date.now();
     touch.down(STICK, 0);
     try {
@@ -501,21 +488,21 @@ export default function (args, ctx) {
         let foe = null;
         let target = null; // foe, or the patch's middle
         let clearSince = 0; // zone: at its middle with no mark on it, since
-        let lastHud = 0; // snap: last look at the top right icons
-        let hudMiss = 0; // snap: looks in a row without them
+        let lastHud = 0; // untilFight: last look at the top right icons
+        let hudMiss = 0; // untilFight: looks in a row without them
         while (Date.now() - t0 < ms) {
             const image = screenshot();
             const now = Date.now();
             let bearing = args.bearing;
-            const chase = args.enemy || args.zone || args.snap;
+            const chase = args.enemy || args.zone;
             if (chase || bearing != null) cam = cameraHeading(image, cam);
             if (chase) {
                 const was = lock;
                 lock = locked(image);
                 if (lock && !was && args.capture) saveImage(image, "captures/locked.png");
-                let foes = args.enemy || args.zone ? enemies(image) : [];
-                let goal = null; // zone: no enemy on the patch in sight, head for its middle; snap: where it shows
-                if ((args.snap || args.untilFight) && now - lastHud >= HUD_MS) {
+                let foes = enemies(image);
+                let goal = null; // zone: no enemy on the patch in sight, head for its middle
+                if (args.untilFight && now - lastHud >= HUD_MS) {
                     lastHud = now;
                     if (!calm(image)) {
                         if (++hudMiss >= 2) {
@@ -523,29 +510,6 @@ export default function (args, ctx) {
                             break;
                         }
                     } else hudMiss = 0;
-                }
-                if (args.snap) {
-                    if (!snapSeen && args.lostMs && now - t0 > args.lostMs) {
-                        why = "lost"; // not in sight by when it should have been close: stop before running past it
-                        break;
-                    }
-                    const h = match(args.snap, { image, roi: SNAP_ROI, threshold: args.snapMin ?? SNAP_MIN, green_mask: true });
-                    // a weak score alone is not enough (~0.6–0.75 a few steps off, ~0.5 elsewhere): it has to be near
-                    // where it was last seen, or at first near where the route says (`expect`, minimap px)
-                    const [x, y, w, hh] = h.box ?? [0, 0, 0, 0];
-                    const c = /** @type {Point} */ ([x + w / 2, y + hh / 2]);
-                    const near = lastSnap
-                        ? Math.hypot(c[0] - lastSnap[0], c[1] - lastSnap[1]) <= SNAP_JUMP
-                        : !args.expect || Math.hypot(c[0] - CENTER[0] - args.expect[0], c[1] - CENTER[1] - args.expect[1]) <= SNAP_EXPECT;
-                    if (h.hit && h.box && near) {
-                        lastSnap = c;
-                        goal = { x: c[0], y: c[1], bearing: bearingOf(c), dist: Math.hypot(c[0] - CENTER[0], c[1] - CENTER[1]) };
-                        snapSeen = true;
-                        if (goal.dist <= (args.reachPx ?? 3)) {
-                            why = "arrived";
-                            break;
-                        }
-                    }
                 }
                 if (args.zone) {
                     const z = zone(image);
@@ -614,8 +578,8 @@ export default function (args, ctx) {
                 } else if (lock && closest <= GONE_PX) {
                     why = "near"; // close by, the mark goes under the arrow or the crowd
                     break;
-                } else if (args.zone || args.snap) {
-                    // the patch / snapshot is not in sight yet: keep to `bearing`
+                } else if (args.zone) {
+                    // the patch is not in sight yet: keep to `bearing`
                     if (bearing == null && now - lastSeen > 2000) {
                         why = "no_zone";
                         break;
@@ -673,7 +637,7 @@ export default function (args, ctx) {
         touch.up(0);
     }
     // found: locked on (the teacher's test for "found an enemy")
-    const out = { ms: Date.now() - t0, why, found: lock, taps, locks, stuck, trace, ...(args.snap ? { seen: snapSeen } : {}) };
+    const out = { ms: Date.now() - t0, why, found: lock, taps, locks, stuck, trace };
     log(JSON.stringify(out));
     // a pipeline node (SeekEnemy) fails when nobody was found
     if (ctx?.trigger === "pipeline" && args.enemy && !lock) return false;

@@ -1702,7 +1702,7 @@ def cmd_survey(root: Path, name: str, a: int, b: int, at: tuple[float, float] | 
     (densify). `at`: where the character is (where()), to go on from the nearest of those points (after a survey
     that stopped half way)."""
     args = route_node(name)
-    P0 = [{kk: v for kk, v in p.items() if kk not in ("do", "snap")} for p in args["points"]]
+    P0 = [{kk: v for kk, v in p.items() if kk != "do"} for p in args["points"]]
     P, a, b = densify(P0, a, b)
     if at is not None:
         a = 1 + min(range(a - 1, b + 1), key=lambda i: math.hypot(P[i]["at"][0] - at[0], P[i]["at"][1] - at[1]))

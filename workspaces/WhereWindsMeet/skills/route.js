@@ -1,18 +1,16 @@
-// Walk a recorded route through a stronghold (据点): points in big map px from the stronghold icon, x east / y south,
-// recorded with stronghold.where() where the teacher said 记点 (teaching explore messages 92–118).
-// New routes are made from one recording by tools/rec_route.py and run in locate mode only; the snapshot and big map
-// modes below are what 慈心山院's first runs used, and the big map one is what rec_route.py survey walks with.
-// A point with a minimap snapshot (`snap`, templates/: 44 px of minimap around the character there, arrow and fan
-// painted green) is run to with move's snap mode: steered by where the snapshot shows in the minimap, no big map.
-// Without one, or when the snapshot never showed, the big map is opened to see where the character is and the way to
-// the point is run as a compass bearing for about the time the distance takes, then looked at again.
+// Walk a route through a stronghold (据点): points in big map px from the stronghold icon, x east / y south, as
+// stronghold.where() reads them. Routes are made from one recording by tools/rec_route.py and run with `locate`
+// (慈心山院's and 佛爷寨's points were read with where() where the teacher said 记点, before that tool existed).
+// Without `locate` (rec_route.py survey only, not a way to run a route): the big map is opened to see where the
+// character is and the way to the point is run as a compass bearing for about the time the distance takes, then looked
+// at again.
 // A fight on the way (the top right icons hidden) is fought with combat first, then the walk goes on.
 // Points with `do`: "flower" taps 销毁 in the interaction list on the right (templates/interact_destroy.png) and waits
 // out its bar (~2–6 s); "fight" seeks the enemy around (an elite that stays put) and fights it; "chest" (shows once
 // everything is done) taps 据点宝箱, 确认领取 with the panel's defaults (领取三份, 扫荡 9, teacher's choice, message 227)
 // and 继续 through the 攻占 result pages.
-//   {points: [{at: [-108, 115], snap: "route/cixin/00.png"}, ...], from: 1, to: 4}
-//   locate: ["locate/cixin_mosaic", "locate/cixin_bigmap"]  instead (one reference or several, tried in turn): no snapshots and no big map on the way; move's goto knows where the character
+//   {points: [{at: [-108, 115]}, ...], from: 1, to: 4}
+//   locate: ["locate/cixin_mosaic", "locate/cixin_bigmap"]  (one reference or several, tried in turn): no big map on the way; move's goto knows where the character
 //                            is on every frame (locate() of the minimap in that reference, dead reckoning between) and
 //                            runs through the points, stopping only where something is done and at the end.
 //                            start: where it starts (default: the point before `from`); check: true stops at every
@@ -38,9 +36,6 @@ const SPEED = 8; // big map px per second sprinting (measured: 23 px in 2.9 s, 3
 const SHORT = 0.8; // big map legs: run this share of the distance, then look again
 const LEG_MS = [700, 5000];
 const LEGS = 8; // tries per point before giving up on it
-const SNAP_SLACK = 1.8; // snap legs: longest run, times the expected time (tracking a seen snapshot)
-const LOST = 1.1; // snap legs: the snapshot not seen by this many times the expected time: stop and look on the map
-const MINI = 2.3; // big map px per minimap px
 const DEG_PX = 0.6; // camera turn per px dragged (move.js)
 const CAM_OK = 8; // at a point: turn the camera to its recorded heading until this close
 const ANCHOR_SETTLE = 1500; // anchors: a sprint coasts on a while after the joystick is let go
@@ -408,7 +403,7 @@ function follow(args) {
     return out;
 }
 
-/** @param {{points: {at: Point, name?: string, snap?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string, dwell?: number, locate?: string | string[], start?: Point, check?: boolean, nodo?: boolean}} args */
+/** @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string, dwell?: number, locate?: string | string[], start?: Point, check?: boolean, nodo?: boolean}} args */
 export default function (args) {
     if (args.locate) return follow(/** @type {any} */ (args));
     const reach = args.reach ?? 6;
@@ -416,10 +411,9 @@ export default function (args) {
     const legs = [];
     const from = args.from ?? 1;
     // where it starts: the point before `from` (just teleported to the stone, or just reached), checked on the map
-    // only when that point has no snapshot to steer by
     /** @type {{x: number, y: number, cam?: number | null}} */
     let pos = { x: args.points[from - 1].at[0], y: args.points[from - 1].at[1] };
-    let known = !!args.points[from].snap; // pos is trusted
+    let known = false; // pos is trusted
     let maps = 0;
     const anchors = [];
     const look = () => {
@@ -443,30 +437,9 @@ export default function (args) {
     for (let i = from; i <= (args.to ?? args.points.length - 1); i++) {
         const p = args.points[i];
         let tries = 0;
-        let snapOk = !!p.snap;
         let away = 0; // big map legs in a row that ended farther from the point
         for (;;) {
             if (++tries > LEGS) throw new Error(`point ${i} (${p.name ?? ""}): not reached after ${LEGS} tries`);
-            if (snapOk) {
-                const dist = Math.hypot(p.at[0] - pos.x, p.at[1] - pos.y);
-                const ms = Math.round(Math.max(3000, (SNAP_SLACK * dist * 1000) / speed));
-                const expect = [(p.at[0] - pos.x) / MINI, (p.at[1] - pos.y) / MINI]; // where the snapshot should show
-                const lostMs = Math.round(Math.max(1500, (LOST * dist * 1000) / speed));
-                const r = runSkill("move", { face: true, snap: p.snap, expect, lostMs, bearing: bearingTo([pos.x, pos.y], p.at), sprint: true, reachPx: 2, ms, pickup: false });
-                legs.push({ i, snap: true, why: r.why, seen: r.seen, ms: r.ms, stuck: r.stuck.length });
-                if (r.why === "arrived") {
-                    pos = { x: p.at[0], y: p.at[1] };
-                    break;
-                }
-                if (r.why === "fight") {
-                    log(`point ${i}: fight`);
-                    runSkill("combat", { hp: 0.5, within: 20 });
-                    continue; // the snapshot is likely in sight again from where the fight ended
-                }
-                snapOk = false; // never showed or stuck: find the way on the big map
-                pos = look();
-                continue;
-            }
             if (!known) pos = look();
             const dx = p.at[0] - pos.x;
             const dy = p.at[1] - pos.y;
