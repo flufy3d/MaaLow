@@ -293,7 +293,7 @@ function follow(args) {
 
     /** Find the character on the whole reference; false when it cannot tell. */
     const again = () => {
-        let at = relocate(args.locate, undefined, layer);
+        let at = relocate(args.locate, undefined, layer, pos);
         if (!at && !inFight()) {
             // the minimap could not tell (a day sky's sun behind it washes the disc out: 酒肉山林's west yard,
             // 2026-10-02, 77 frames unmatched and the whole reference no help): the big map can
@@ -330,16 +330,20 @@ function follow(args) {
      * @param {number[]} ks
      */
     const stepBack = (ks) => {
+        let stuckSteps = 0;
         for (let s = 0; s < STEP_BACK; s++) {
             const k = ks.slice(0, AHEAD).reduce((b, m) => (away(m) < away(b) ? m : b));
             const d = away(k);
             if (d <= STEP_REACH) return;
             const ms = Math.round(Math.max(LEG_MS[0], Math.min(3000, (SHORT * d * 1000) / V_RUN)));
-            log(`back onto the way: ${Math.round(d)} px to point ${k}, running ${Math.round(bearingTo(pos, P[k].at))}° for ${ms} ms`);
-            runSkill("move", { face: true, bearing: bearingTo(pos, P[k].at), ms, pickup: false });
+            // a step that did not move it ran into something: the next goes 60° to one side, then the other
+            const bearing = (bearingTo(pos, P[k].at) + [0, 60, -60][stuckSteps] + 360) % 360;
+            log(`back onto the way: ${Math.round(d)} px to point ${k}, running ${Math.round(bearing)}° for ${ms} ms`);
+            runSkill("move", { face: true, bearing, ms, pickup: false });
             const w = where(args.stronghold);
             maps++;
             if (!w) return;
+            if (distTo(pos, [w.x, w.y]) < 1.5 && ++stuckSteps > 2) return; // 佛爷寨: the same wall 12 times
             pos = [w.x, w.y];
         }
     };
@@ -367,8 +371,13 @@ function follow(args) {
             if (r.why === "fight") {
                 log(`points ${rest[r.idx]}–${j}: fight`);
                 fight(() => runSkill("combat", { hp: 0.5, within: 20 }));
-                rest = rest.slice(r.idx);
+                // back to the point passed last before the fight, then on along the way: a fight can take it far off
+                // (locked on a far enemy, 突进 lunges at it: 佛爷寨 2026-10-02) and going on from the nearest point
+                // left part of the way out (teacher)
+                rest = rest.slice(Math.max(0, r.idx - 1));
                 again(); // not found: the reckoned position, looked for wide at the start of the next leg
+                if (rest.length > 1) log(`after the fight: back to point ${rest[0]}, ${Math.round(away(rest[0]))} px away`);
+                continue;
             } else {
                 if (++tries > RETRIES) fail(`points ${rest[0]}–${named(j)}: ${r.why} at ${pos.map(Math.round)}`);
                 log(`points ${rest[0]}–${j}: ${r.why} at ${pos.map(Math.round)}, finding it again`);

@@ -224,21 +224,25 @@ function fix(ref, image, cam, prior, radius, layer) {
 }
 
 const RELOCATE_PX = 4; // relocate: two looks in a row this close agree
+const RELOCATE_NEAR = 25; // relocate: first within this of where it was put (px), the whole reference after half the time
 
 /**
  * Where the character is from the minimap alone, with nothing to go by (a fight pulled it around, the track was
  * lost): locate() over the whole of each reference, taken once two looks in a row agree; null if none do in `ms`.
- * `layer`: the stronghold's state if known (see fix()).
- * @param {string | string[]} ref @param {number} [ms] @param {string} [layer]
+ * `layer`: the stronghold's state if known (see fix()); `near`: where it was put (looked around first).
+ * @param {string | string[]} ref @param {number} [ms] @param {string} [layer] @param {Point} [near]
  * @returns {Point | null}
  */
-export function relocate(ref, ms = 4000, layer) {
+export function relocate(ref, ms = 4000, layer, near) {
     const t0 = Date.now();
     /** @type {Point | null} */
     let last = null;
     while (Date.now() - t0 < ms) {
         const image = screenshot();
-        const r = fix(ref, image, cameraHeading(image), null, SEARCH[2], layer);
+        // near where it was first (a fight seldom pushes it 20 px): over the whole reference two looks in a row once
+        // agreed on a place 77 px off (佛爷寨, 2026-10-02, a look-alike corner)
+        const wide = !near || Date.now() - t0 > ms / 2;
+        const r = fix(ref, image, cameraHeading(image), wide ? null : near, wide ? SEARCH[2] : RELOCATE_NEAR, layer);
         if (r) {
             if (last && distTo(last, [r.x, r.y]) <= RELOCATE_PX) return [r.x, r.y];
             last = [r.x, r.y];

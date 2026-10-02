@@ -173,7 +173,8 @@ export default function (args = {}) {
             if (now - calmSince > (args.calmMs ?? 1500)) throw new Over("out of combat");
         }
         if (now > until) throw new Over("time");
-        if (bar()) lastBar = now;
+        // locked on, the game holds the camera on the locked enemy: a turn is pulled back (佛爷寨: 6 turns of 64°)
+        if (bar() || locked) lastBar = now;
         else if (fought && !calm && now - lastBar > BAR_MS && now - lastTurn > TURN_MS) behind();
         if (foes && !locked && now - lastLock > LOCK_MS) {
             tap(LOCK);
