@@ -1,5 +1,7 @@
 // Walk a recorded route through a stronghold (据点): points in big map px from the stronghold icon, x east / y south,
 // recorded with stronghold.where() where the teacher said 记点 (teaching explore messages 92–118).
+// New routes are made from one recording by tools/rec_route.py and run in locate mode only; the snapshot and big map
+// modes below are what 慈心山院's first runs used, and the big map one is what rec_route.py survey walks with.
 // A point with a minimap snapshot (`snap`, templates/: 44 px of minimap around the character there, arrow and fan
 // painted green) is run to with move's snap mode: steered by where the snapshot shows in the minimap, no big map.
 // Without one, or when the snapshot never showed, the big map is opened to see where the character is and the way to
