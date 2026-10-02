@@ -69,7 +69,9 @@ const STUCK_MS = 1500; // chasing: this long without getting 1 minimap px closer
  * @type {[number | "jump", number][][]}
  */
 const UNSTICK = [
-    [["jump", 300], ["jump", 500]], // a low wall or fence: climb it
+    // a low wall or fence: back off, run at it and jump before it (jumping up against it, the eaves above stop the
+    // jump: teacher, 2026-10-02)
+    [[180, 600], [0, 250], ["jump", 400], ["jump", 500]],
     [[-60, 1000]], // edge around the left
     [[60, 1000]], // or the right
     [[180, 800], [-90, 1500]], // back off, go wide left
@@ -158,19 +160,35 @@ const V_COAST = 6;
 const FIX_MIN = 0.4; // a match counts from this score, and this far above the best elsewhere (on the survey's
 const FIX_MARGIN = 0.1; // frames: 2 wrong among 243 taken with the stitched reference)
 const SEARCH = [10, 8, 40]; // search radius around the reckoning: px, + px per second without a match, at most
+// a match this far from the reckoning (px, + sprint speed × the time since the last match) is not taken while that
+// last match is recent: a jump no run can make (酒肉山林's gate, the minimap zooming in: 0.41 for a place 10 px off,
+// a quarter of a second after a good match; it then steered by that into the wall and was lost)
+const GATE_PX = 4;
+const GATE_MS = 1500;
 const LOST_MS = 3000; // no match this long: lost
 const PASS = 2.5; // a point on the way counts as passed this close,
 const PASS_SIDE = 6; // or once past it (over the line across the way there) no farther than this to the side
+const LOOKAHEAD = 3; // steering: at the point this far ahead along the way from where it is across the leg (big map px)
 const REACH_BACK = 3; // the last point: within this and getting farther again (it went by), arrived too
 const LOOK_MS = 1500; // at the last point with no match this long (the reckoning alone is no arrival: up stairs it
 // runs slower than reckoned, 2 px/s at the chest; after a fight matches can drop out): look wider
 const SPRINT_STOP = 12; // let go of a sprint this far from the last point, then run the rest
+// Sprint only on the minimap's zoomed-out level (the way to the gate); in a courtyard (zoomed in: small doors, tight
+// turns) it runs: sprinting it carries on past the turns and through the matches (teacher, 2026-10-02)
+const SPRINT_ZOOM = "out";
 const BRAKE_MS = 350; // how long the joystick is let go to end the sprint
 const SPRINT_AFTER = 300; // the joystick held this long before dodge is pressed for a sprint: pressed with it, before
 // the character runs, dodge is a roll that sets it 2–3 px off the way (酒肉山林 point 11→12, into a wall's corner)
 const GO_STUCK_MS = 2000; // not 1 px closer to the point this long: stuck
 const ASTRAY = 15; // this much farther from the point than the closest it got: astray
 const SETTLE_MS = 600; // at the end: coasting, then the match that says it is there
+// Steering bias: the way it actually runs (two matches BIAS_MS apart) against the way it was steered. The camera
+// heading read from the fan can be ~30° off over a bright day sky (酒肉山林 2026-10-02: steered 244°, ran 278°, into a
+// wall's corner 4 px off the way), and the joystick goes by it; the difference, smoothed, is taken off the steering.
+const BIAS_MS = 600;
+const BIAS_RUN = 0.7; // only while it runs at least this share of the speed (sliding along a wall is slower)
+const BIAS_GAIN = 0.5;
+const BIAS_MAX = 60;
 const FIGHT_BIG = 30; // the top right icons hidden and a red mark this close (big map px): a fight; in minimap px
 // (by the k of the level matched last) that is ~26 in the courtyard but ~13 outside, so the enemies behind the wall
 // that spot it at the gate do not stop it
@@ -236,9 +254,10 @@ export function relocate(ref, ms = 4000, layer) {
  * Ends: arrived | stuck (no closer for GO_STUCK_MS after every way out) | astray | lost (no match for LOST_MS) |
  * fight (the top right icons hide) | time.
  * `k`: the scale matched last (the result's `k`, carried from leg to leg) for the fight check until this leg matches.
+ * `bias`: the steering bias (see BIAS_MS) carried from leg to leg too; the result's `bias` is where it ended.
  * `layer`: the stronghold's state known so far ("live" | "taken", carried from leg to leg like `k`); it changes when
  * the minimap shows the other (strongholdState(), two looks in a row), and picks the reference levels tried (fix()).
- * @param {{goto: Point[], ref: string | string[], from?: Point, k?: number, layer?: string, reach?: number, ms?: number, sprint?: boolean, face?: boolean, pickup?: boolean}} args
+ * @param {{goto: Point[], ref: string | string[], from?: Point, k?: number, bias?: number, layer?: string, reach?: number, ms?: number, sprint?: boolean, face?: boolean, pickup?: boolean}} args
  */
 function goTo(args) {
     const path = args.goto;
@@ -252,6 +271,9 @@ function goTo(args) {
     let lastFix = t0;
     let fixes = 0;
     let misses = 0;
+    let gated = 0; // matches not taken: too far from where it could be
+    /** @type {string | null} */
+    let zoomAt = null; // the zoom level matched last
     let missRun = 0;
     let maxMissRun = 0;
     let idx = 0;
@@ -266,6 +288,9 @@ function goTo(args) {
     let coastFast = false;
     /** @type {number | null} */
     let dir = null; // compass direction steered
+    let bias = args.bias ?? 0; // the way it runs minus the way it is steered (degrees)
+    /** @type {{t: number, p: Point, dir: number} | null} */
+    let ran = null; // the last match it measured the way it runs from
     let lastT = t0;
     let closest = Infinity;
     let nearest = Infinity; // the last point: closest so far, to the fraction
@@ -291,11 +316,41 @@ function goTo(args) {
     /** @type {Record<string, any>[]} */
     const trace = [];
     const start = pos;
+    /**
+     * The point to steer at: where `p` is across the leg into point `i`, LOOKAHEAD px on along the way (into the next
+     * legs; not past the last point). Steering at the next point instead, a point passed a step off to the side, or a
+     * sideways drift, put it a few px off the leg for the whole of the next one: the planned legs keep ~1 px from what
+     * was walked, so that ran it into a pocket of the wall (酒肉山林 points 11→12, 19→20, 2026-10-02).
+     * @param {Point} p @param {number} i @returns {Point}
+     */
+    const aim = (p, i) => {
+        const a = i ? path[i - 1] : start ?? p;
+        const b = path[i];
+        const vx = b[0] - a[0];
+        const vy = b[1] - a[1];
+        const l2 = vx * vx + vy * vy;
+        const t = l2 > 1e-6 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / l2)) : 1;
+        /** @type {Point} */
+        let cur = [a[0] + t * vx, a[1] + t * vy];
+        let k = i;
+        let rest = LOOKAHEAD;
+        for (;;) {
+            const end = path[k];
+            const d = distTo(cur, end);
+            if (rest <= d || k >= path.length - 1) {
+                const f = d > 1e-6 ? Math.min(1, rest / d) : 1;
+                return [cur[0] + (end[0] - cur[0]) * f, cur[1] + (end[1] - cur[1]) * f];
+            }
+            rest -= d;
+            cur = end;
+            k++;
+        }
+    };
     /** One line of the trace every 250 ms. @param {Image} image @param {Located | null} r @param {number} dist */
     const note = (image, r, dist) => {
         const now = Date.now();
         if (!pos || (trace.length && now - t0 - trace[trace.length - 1].t < 250)) return;
-        trace.push({ t: now - t0, seq: image.seq, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, ...(r ? { lv: r.layer ?? r.zoom } : {}), i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}) });
+        trace.push({ t: now - t0, seq: image.seq, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, ...(r ? { lv: r.layer ?? r.zoom } : {}), ...(bias ? { b: Math.round(bias) } : {}), i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}) });
     };
     /**
      * Point k is behind: close to it, or past the line across the way at it (and not far off to the side).
@@ -344,11 +399,26 @@ function goTo(args) {
                 }
                 seen = look;
             }
-            const r = fix(args.ref, image, cam, pos, radius, layer);
+            let r = fix(args.ref, image, cam, pos, radius, layer);
+            if (r && pos && !wide && now - lastFix < GATE_MS && distTo(pos, [r.x, r.y]) > GATE_PX + (V_SPRINT * (now - lastFix)) / 1000) {
+                gated++;
+                r = null;
+            }
             wide = false;
             if (r) {
-                pos = [r.x, r.y];
+                const at = /** @type {Point} */ ([r.x, r.y]);
+                // the steering bias, from the way it ran since the last sample (steered the same way, running)
+                if (held && !holding && dir != null && ran && now - ran.t >= BIAS_MS) {
+                    const d = distTo(ran.p, at);
+                    if (Math.abs(angleDiff(dir, ran.dir)) < 15 && d >= Math.max(1.5, (BIAS_RUN * (fast ? V_SPRINT : V_RUN) * (now - ran.t)) / 1000)) {
+                        bias = Math.max(-BIAS_MAX, Math.min(BIAS_MAX, bias + BIAS_GAIN * angleDiff(bearingTo(ran.p, at), ran.dir)));
+                    }
+                    ran = null;
+                }
+                if (!ran && held && dir != null) ran = { t: now, p: at, dir };
+                pos = at;
                 k = r.k;
+                zoomAt = r.zoom;
                 lastFix = now;
                 fixes++;
                 missRun = 0;
@@ -425,7 +495,7 @@ function goTo(args) {
                 continue;
             }
             // near the end of a sprint: let go so it stops sprinting, then run the rest
-            if (last && fast && !slow && dist <= SPRINT_STOP) {
+            if (fast && !slow && ((last && dist <= SPRINT_STOP) || (zoomAt != null && zoomAt !== SPRINT_ZOOM))) {
                 slow = true;
                 coastFast = true;
                 releasedAt = brakeAt = now;
@@ -433,12 +503,14 @@ function goTo(args) {
                 continue;
             }
             if (!held && (!brakeAt || now - brakeAt >= BRAKE_MS)) {
-                if (cam != null) rel = angleDiff(bearingTo(pos, goal), cam);
+                if (cam != null) rel = angleDiff(bearingTo(pos, aim(pos, idx)) - bias, cam);
                 press();
+                ran = null;
             }
-            const bearing = bearingTo(pos, goal);
+            const bearing = bearingTo(pos, aim(pos, idx));
             if (cam != null) {
-                rel = angleDiff(bearing, cam);
+                rel = angleDiff(bearing - bias, cam);
+                if (dir != null && Math.abs(angleDiff(bearing, dir)) >= 15) ran = null; // steered another way: start over
                 dir = bearing;
             }
             if (held) touch.move(stickAt(rel), 0);
@@ -448,10 +520,11 @@ function goTo(args) {
                 turn(dx);
                 cam = (cam + dx * DEG_PX + 360) % 360;
                 lastFace = Date.now();
+                ran = null; // the run during a turn sweeps round
                 continue;
             }
             fast = sprinting(image);
-            const far = !slow && (!last || dist > SPRINT_STOP + 6);
+            const far = !slow && (zoomAt == null || zoomAt === SPRINT_ZOOM) && (!last || dist > SPRINT_STOP + 6);
             if (args.sprint !== false && far && held && now - heldAt >= SPRINT_AFTER && sprintFails < SPRINT_TRIES && !holding && !fast) {
                 touch.down(DODGE, 1);
                 holding = now;
@@ -476,7 +549,7 @@ function goTo(args) {
     } finally {
         release();
     }
-    const out = { ms: Date.now() - t0, why, at: pos && [Math.round(pos[0] * 10) / 10, Math.round(pos[1] * 10) / 10], k, layer, layers, idx, fixes, misses, maxMissRun, stuck, taps, trace };
+    const out = { ms: Date.now() - t0, why, at: pos && [Math.round(pos[0] * 10) / 10, Math.round(pos[1] * 10) / 10], k, bias: Math.round(bias), layer, layers, idx, fixes, misses, gated, maxMissRun, stuck, taps, trace };
     log(JSON.stringify(out));
     return out;
 }

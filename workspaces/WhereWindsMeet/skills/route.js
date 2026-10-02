@@ -9,12 +9,15 @@
 // out its bar (~2–6 s); "fight" seeks the enemy around (an elite that stays put) and fights it; "chest" (shows once
 // everything is done) taps 据点宝箱, 确认领取 with the panel's defaults (领取三份, 扫荡 9, teacher's choice, message 227)
 // and 继续 through the 攻占 result pages.
+//   {stronghold: <config>, from: 1, to: 4}  a stronghold's route (its config: pipeline/stronghold_<id>.json, see
+//                            stronghold.js): points, locate, tracker from it; where() reads its label and stone
 //   {points: [{at: [-108, 115]}, ...], from: 1, to: 4}
 //   locate: ["locate/cixin_mosaic", "locate/cixin_bigmap"]  (one reference or several, tried in turn): no big map on the way; move's goto knows where the character
 //                            is on every frame (locate() of the minimap in that reference, dead reckoning between) and
 //                            runs through the points, stopping only where something is done and at the end.
 //                            start: where it starts (default: the point before `from`); check: true stops at every
-//                            point and reads where() there too (the arrival error, for trying references); nodo: true
+//                            point and reads where() there too (the arrival error, for trying references), a list of
+//                            points only at those (a dry run: the config's checks, where it is least sure); nodo: true
 //                            skips the points' actions; skip: [14] only those points' (leaving one flower for last
 //                            keeps the stronghold from finishing, so a run can be tried again). A fight on the way,
 //                            or a leg that lost its way, finds the character on the whole reference and goes on.
@@ -254,7 +257,7 @@ const range = (a, b) => Array.from({ length: b - a + 1 }, (_, n) => a + n);
  * At the chest point with no chest offered, what the tracker says is left is done first (FINISH rounds): flowers not
  * destroyed on the way are walked back to along the route, enemies left are cleared with the `clear` node (zone mode,
  * StrongholdFight), then back to the chest.
- * @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, locate: string | string[], start?: Point, check?: boolean, nodo?: boolean, skip?: number[], clear?: string, tracker?: Record<string, string>, layer?: string}} args
+ * @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, locate: string | string[], start?: Point, check?: boolean | number[], nodo?: boolean, skip?: number[], clear?: string, tracker?: Record<string, string>, layer?: string, stronghold?: any}} args
  */
 function follow(args) {
     const P = args.points;
@@ -270,7 +273,8 @@ function follow(args) {
     /** @type {number | undefined} */
     let k; // the scale of the reference level matched last, for goto's fight check before a leg's first match
     /** @type {string | undefined} */
-    let layer = args.layer; // the stronghold's state, live | taken, as goto saw it last (picks the reference's levels)
+    let layer = args.layer;
+    let bias = 0; // goto's steering bias, carried from leg to leg // the stronghold's state, live | taken, as goto saw it last (picks the reference's levels)
     /** @type {Map<number, boolean>} */
     const flowers = new Map(); // flower point → destroyed
     const t0 = Date.now();
@@ -313,8 +317,9 @@ function follow(args) {
             let length = 0;
             seg.reduce((a, b) => ((length += distTo(a, b)), b), pos);
             const ms = Math.round(Math.max(GOTO_MS[0], (GOTO_MS[1] * length * 1000) / V_RUN));
-            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, k, layer, reach: args.reach ?? 2, ms });
+            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, k, bias, layer, reach: args.reach ?? 2, ms });
             k = r.k ?? k;
+            bias = r.bias ?? bias;
             layer = r.layer ?? layer;
             const j = rest[rest.length - 1];
             /** @type {Record<string, any>} */
@@ -376,13 +381,16 @@ function follow(args) {
         return done;
     };
 
+    const checks = Array.isArray(args.check) ? new Set(args.check) : null;
+    /** @param {number} k */
+    const checking = (k) => args.check === true || !!checks?.has(k);
     for (let i = from; i <= to; ) {
         let j = i; // the next stop
-        while (j < to && !args.check && (args.nodo || !P[j].do)) j++;
+        while (j < to && !checking(j) && (args.nodo || !P[j].do)) j++;
         const leg = walk(range(i, j));
         const p = P[j];
-        if (args.check) {
-            const w = where();
+        if (checking(j)) {
+            const w = where(args.stronghold);
             maps++;
             if (w) {
                 leg.where = [w.x, w.y];
@@ -411,8 +419,11 @@ function follow(args) {
     return out;
 }
 
-/** @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string, dwell?: number, locate?: string | string[], start?: Point, check?: boolean, nodo?: boolean}} args */
+/** @param {{points: {at: Point, name?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string, dwell?: number, locate?: string | string[], start?: Point, check?: boolean | number[], nodo?: boolean, stronghold?: any}} args */
 export default function (args) {
+    const cfg = args.stronghold;
+    // a stronghold's config gives the route; what the call says (points: a survey's, densified) goes over it
+    if (cfg) args = Object.assign({ points: cfg.points, locate: cfg.locate, tracker: cfg.tracker }, args);
     if (args.locate) return follow(/** @type {any} */ (args));
     const reach = args.reach ?? 6;
     const speed = args.speed ?? SPEED;
@@ -432,7 +443,7 @@ export default function (args) {
             image = screenshot();
             saveImage(image, `${args.anchors}/${String(maps).padStart(3, "0")}.png`);
         }
-        const p = where();
+        const p = where(args.stronghold);
         if (!p) throw new Error("big map: stronghold icon not found (or standing on it)");
         if (image) {
             anchors.push({ n: maps, seq: image.seq, time: image.time, x: p.x, y: p.y, cam: p.cam });

@@ -273,7 +273,8 @@ declare const memory: {
 
 // ---- composition
 
-/** Run a pipeline task from a node (with its actions and next); once: check the current screen only. */
-declare function runNode(node: string, opts?: { once?: boolean; override?: Record<string, any> }): NodeRun;
+/** Run a pipeline task from a node (with its actions and next); once: check the current screen only; override: over
+ * this node's fields; nodes: over any nodes of the run, by name (e.g. a generic chain's card template). */
+declare function runNode(node: string, opts?: { once?: boolean; override?: Record<string, any>; nodes?: Record<string, Record<string, any>> }): NodeRun;
 /** Run another skill's default export in this run; returns its result, throws its error (or its timeout). */
 declare function runSkill<T = any>(name: string, args?: any): T;

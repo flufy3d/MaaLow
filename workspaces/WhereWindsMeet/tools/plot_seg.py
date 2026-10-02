@@ -16,8 +16,7 @@ crop = comp[int(oy + y0):int(oy + y1), int(ox + x0):int(ox + x1)]
 img = cv2.resize(crop, None, fx=S, fy=S, interpolation=cv2.INTER_CUBIC)
 P = lambda x, y: (int((x - x0) * S), int((y - y0) * S))
 
-node = json.load(open("workspaces/WhereWindsMeet/pipeline/stronghold.json", encoding="utf8"))["CixinRoute"]
-pts = node["custom_action_param"]["points"]
+pts = json.load(open("workspaces/WhereWindsMeet/pipeline/stronghold_cixin.json", encoding="utf8"))["Cixin"]["custom_action_param"]["stronghold"]["points"]
 for k, p in enumerate(pts):
     x, y = p["at"]
     if x0 <= x <= x1 and y0 <= y <= y1:

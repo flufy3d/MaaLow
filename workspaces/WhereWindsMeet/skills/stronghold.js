@@ -11,7 +11,7 @@
 //              route off in a wrong direction;
 //              also the camera heading (compass degrees, from the minimap before opening the map; null when the fan
 //              is not found, over a bright day sky: the minimap's gold arrow says it is the world screen then)
-//   {where: true}  just report that
+//   {where: true, stronghold?: <config>}  just report that (the config's label and stone help next to the icon)
 //   {locate: ["locate/cixin_mosaic", "locate/cixin_bigmap"], n: 5}  compare locate() (minimap in a reference image,
 //                  no big map) with where(): each reference n times, with the time each look took
 //   progress():  the stronghold's tasks on the tracker under the minimap (OCR), e.g. 击败绣金卫 3/7
@@ -19,11 +19,21 @@
 //                it comes back (势力重新占据时间): not refreshed yet; the text is kept in memory for start()
 //   {relocate: ["locate/cixin_mosaic", "locate/cixin_bigmap"]}  where the character is from the minimap alone, over the
 //                  whole reference (move.js relocate(), used by the route after a fight)
-//   {stone: true}  (node Teleport_ClosePanel) on the big map the stronghold card opened: close its panel and tap the
-//                  teleport stone nearest the stronghold icon, zooming in first if the map was left zoomed out
-//   {teleport: "CixinTeleport"}  one-click start (node Cixin): close popups, run the teleport node to the stone, and
-//                  stop with an error if on the way the card said the stronghold has not come back yet (its marker node
-//                  Teleport_NotRefreshed, recognition waiting); the route node goes on from there
+//   {stone: true, stronghold: {label, stone}}  (node Teleport_ClosePanel, filled in by the teleport) on the big map the
+//                  stronghold card opened: close its panel and tap the teleport stone nearest the stronghold icon,
+//                  zooming in first if the map was left zoomed out
+//   {stronghold: <config>}  one-click run (nodes Cixin, Foye, Jiurou: pipeline/stronghold_<id>.json, each its config):
+//                  close popups, teleport to the stone (the generic chain StrongholdTeleport with the config's card), stop
+//                  with an error if on the way the card said the stronghold has not come back yet (marker node
+//                  Teleport_NotRefreshed, recognition waiting), then walk the route (route.js with the config);
+//                  route: false stops at the stone (the PC tools' teleport)
+//
+// A stronghold's config (written by tools/rec_route.py emit; 慈心山院's and 佛爷寨's moved over from their old nodes):
+//   id, title (the card's name), card (its title template), stone (the teleport stone from the stronghold icon, big map
+//   px: where() falls back on it when the arrow hides the icon; null: not needed), label ({template, at}: the name
+//   label above the icon, at its step from it; null: none shows), k ({out, in}: big map px per minimap px), zoom (how
+//   the minimap zooms at the gate, for the PC tools), tracker (task words on the tracker), locate (references), checks
+//   (points a dry run looks at the big map at), points (the route)
 import { arrowShows, cameraHeading, enemies, onZone, zone } from "./lib/minimap.js";
 import { relocate } from "./move.js";
 
@@ -44,15 +54,16 @@ const ICONS = ["map_stronghold.png", "map_stronghold_done.png"];
 // the live icon's is: LIVE_AT holds for it.
 const ICON_MASKED = "map_stronghold_m.png";
 const MASKED_MIN = 0.8; // the taken icon is see-through: 0.84 at 酒肉山林's chest, on a building block next to the arrow
-/** @type {[string, Point][]} */
-const LABELS = [
-    ["map_label_cixin.png", [53, -50.5]], // 慈心山院 over the stronghold; its middle from the icon's (7 big map shots, all the same)
-    ["map_label_foye.png", [-21.5, -110]], // 佛爷寨 (the place name above the stronghold, 1 shot, explore 2026-10-02)
-];
-/** @type {Point[]} */
-const STONE_STEPS = [
-    [102.94, -38.28], // 酒肉山林's teleport stone from its icon (the stone template's middle; big map shots of recording 20261002-025629)
-];
+/**
+ * What where() and the stone search need of a stronghold's config: its name label above the icon (慈心山院's 7 big map
+ * shots all put it at (53, −50.5)) and its teleport stone (酒肉山林: (102.94, −38.28) from the icon, from the
+ * recording's big map frames), each a fixed step from the icon, matched when the arrow hides the icon.
+ * @typedef {{label?: {template: string, at: Point} | null, stone?: Point | null}} Marks
+ */
+/** @param {Marks} [cfg] @returns {[string, Point][]} */
+const labelsOf = (cfg) => (cfg?.label ? [[cfg.label.template, cfg.label.at]] : []);
+/** @param {Marks} [cfg] @returns {Point[]} */
+const stonesOf = (cfg) => (cfg?.stone ? [cfg.stone] : []);
 const UNDER_ARROW = 30; // px: an icon this close to the arrow can be hidden by it (21 px at 酒肉山林's west yard was)
 const LABEL_AFTER = 3000; // the icons have shown by then
 const LABEL_MIN = 0.6; // the same label scores 0.68–1.0 from one look to the next (its text drawn a fraction of a px off); other place names ≤ 0.35
@@ -77,11 +88,12 @@ function nearestIcon(cands, to = PLAYER) {
 
 /**
  * Open the big map, read the character's position from the stronghold icon nearest it, close it. Standing on or next
- * to the icon, the arrow hides it: then the stronghold's name label is read instead (LABELS, each a fixed step from its
- * icon). null: neither found, or not on the world screen (no camera fan and no minimap arrow: a menu, a loading screen,
+ * to the icon, the arrow hides it: then the stronghold's name label is read instead (the config's `label`, a fixed step
+ * from its icon), or its teleport stone (`stone`). null: neither found, or not on the world screen (no camera fan and no minimap arrow: a menu, a loading screen,
  * where tapping the minimap's place opens no map and the icons could be matched on something else).
  */
-export function where() {
+/** @param {Marks} [cfg] */
+export function where(cfg) {
     let c = cameraHeading(screenshot());
     if (c == null) {
         sleep(300);
@@ -102,12 +114,12 @@ export function where() {
             ...done.results.map((m) => ({ h: m, at: /** @type {Point} */ ([0, 0]) }))]);
         if (icon) return { ...icon, by: "icon" };
         if (Date.now() - t0 < LABEL_AFTER) return null;
-        const label = nearestIcon(LABELS.flatMap(([t, at]) => match(t, { image, roi: MAP_ROI, threshold: LABEL_MIN }).results.map((m) => ({ h: m, at }))));
+        const label = nearestIcon(labelsOf(cfg).flatMap(([t, at]) => match(t, { image, roi: MAP_ROI, threshold: LABEL_MIN }).results.map((m) => ({ h: m, at }))));
         if (label) return { ...label, by: "label" };
         // no label either (酒肉山林's map shows none): the teleport stone, a fixed step from the icon; only where that
         // puts the icon under the arrow (that is why it was not seen)
         const stones = match("map_teleport_stone.png", { image, roi: MAP_ROI, threshold: 0.8 }).results;
-        const stone = nearestIcon(STONE_STEPS.flatMap((at) => stones.map((m) => ({ h: m, at }))));
+        const stone = nearestIcon(stonesOf(cfg).flatMap((at) => stones.map((m) => ({ h: m, at }))));
         return stone && Math.hypot(middle(stone.h.box)[0] - stone.at[0] - PLAYER[0], middle(stone.h.box)[1] - stone.at[1] - PLAYER[1]) <= UNDER_ARROW
             ? { ...stone, by: "stone" } : null;
     }, { timeout: 6000, interval: 300 }); // the icons show ~2.5 s after the map
@@ -189,8 +201,8 @@ const CARD_NEAR = 60;
 /** @param {Box} b @returns {Point} */
 const middle = (b) => [b[0] + b[2] / 2, b[1] + b[3] / 2];
 
-/** Get the stone's 传送 panel up on the card's big map; an error rather than a tap anywhere else. */
-function toStone() {
+/** Get the stone's 传送 panel up on the card's big map; an error rather than a tap anywhere else. @param {Marks} [cfg] */
+function toStone(cfg) {
     const teleport = () => match("teleport_button.png", { image: screenshot(), roi: TELEPORT_ROI, threshold: 0.8 }).hit;
     click(PANEL_TAP);
     sleep(1500);
@@ -208,10 +220,10 @@ function toStone() {
         // has no label to fall back on); only matches near where the card puts it count, so this is still the icon
         const icon = mid([...match(ICONS, { image, roi: MAP_LEFT, threshold: 0.8 }).results.map((m) => ({ h: m, at: /** @type {Point} */ ([0, 0]) })),
             ...match(ICON_MASKED, { image, roi: MAP_LEFT, threshold: 0.85, green_mask: true }).results.map((m) => ({ h: m, at: LIVE_AT }))])
-            ?? mid(LABELS.flatMap(([t, at]) => match(t, { image, roi: MAP_LEFT, threshold: 0.75 }).results.map((m) => ({ h: m, at }))))
+            ?? mid(labelsOf(cfg).flatMap(([t, at]) => match(t, { image, roi: MAP_LEFT, threshold: 0.75 }).results.map((m) => ({ h: m, at }))))
             // the arrow over it and no label (酒肉山林, standing 18 px from it): a stone just where its step from the
             // card's middle puts it says the map is fully zoomed in and the icon is there
-            ?? mid(STONE_STEPS.flatMap((at) => match("map_teleport_stone.png", { image, roi: MAP_LEFT, threshold: 0.7 }).results
+            ?? mid(stonesOf(cfg).flatMap((at) => match("map_teleport_stone.png", { image, roi: MAP_LEFT, threshold: 0.7 }).results
                 .filter((m) => Math.hypot(middle(m.box)[0] - at[0] - CARD_AT[0], middle(m.box)[1] - at[1] - CARD_AT[1]) <= 8)
                 .map((m) => ({ h: m, at }))));
         if (!icon) {
@@ -237,18 +249,26 @@ function toStone() {
     throw new Error(`big map: ${missed} (${STONE_TRIES} tries)`);
 }
 
-/** Close popups and teleport to the stone; an error if the stronghold has not come back yet. @param {string} node */
-function start(node) {
+const TELEPORT = "StrongholdTeleport";
+
+/**
+ * Close popups and teleport to the stone (the generic chain, the config's card and marks filled in); `refreshed`:
+ * false when the card said the stronghold has not come back yet (`wait`: what it said).
+ * @param {{title: string, card: string} & Marks} cfg
+ */
+function start(cfg) {
     runSkill("clear_popups", {});
     memory.delete(WAIT_KEY);
-    let r = runNode(node);
+    const nodes = { Teleport_Card: { template: cfg.card }, Teleport_ClosePanel: { custom_action_param: { stone: true, stronghold: { label: cfg.label ?? null, stone: cfg.stone ?? null } } } };
+    const node = `${TELEPORT} (${cfg.title})`;
+    let r = runNode(TELEPORT, { nodes });
     if (!r.hit && !r.nodes.includes(NOT_BACK)) {
         log(`${node} did not get there (${r.nodes.slice(-3).join(" → ")}), once more from this page`);
-        r = runNode(node); // a page that did not come up in time (the menu, 江湖行): the teleport goes on from any of them
+        r = runNode(TELEPORT, { nodes }); // a page that did not come up in time (the menu, 江湖行): the teleport goes on from any of them
     }
-    if (r.nodes.includes(NOT_BACK)) throw new Error(`stronghold not refreshed yet (${memory.get(WAIT_KEY, "")}), stopped at the stone`);
-    if (!r.hit) throw new Error(`${node} did not get to the stone: ${r.nodes.slice(-4).join(" → ")}`);
-    return { nodes: r.nodes };
+    if (!r.hit && !r.nodes.includes(NOT_BACK)) throw new Error(`${node} did not get to the stone: ${r.nodes.slice(-4).join(" → ")}`);
+    const refreshed = !r.nodes.includes(NOT_BACK);
+    return { nodes: r.nodes, refreshed, ...(refreshed ? {} : { wait: memory.get(WAIT_KEY, "") }) };
 }
 
 /** @param {{zoneAt?: number}} args @param {SkillContext} ctx */
@@ -264,11 +284,11 @@ export function recognize(args, ctx) {
 
 /**
  * locate() with each reference `n` times against one where(): the readings, their spread and time.
- * @param {string[]} refs @param {number} n
+ * @param {string[]} refs @param {number} n @param {Marks} [cfg]
  */
-function compare(refs, n) {
+function compare(refs, n, cfg) {
     /** @type {{where: any, refs: Record<string, any[]>}} */
-    const out = { where: where(), refs: {} };
+    const out = { where: where(cfg), refs: {} };
     sleep(1500); // the minimap stays zoomed out a moment after the big map closes
     for (const ref of refs) {
         const reads = [];
@@ -287,19 +307,24 @@ function compare(refs, n) {
 /**
  * Report what the minimap shows: the patch and the enemies on / off it, and the tasks on the tracker; {where: true}:
  * the position.
- * @param {{where?: boolean, locate?: string[], n?: number, teleport?: string, relocate?: string[], stone?: boolean}} args
+ * @param {{where?: boolean, locate?: string[], n?: number, stronghold?: any, route?: boolean, relocate?: string[], stone?: boolean}} args
  */
 export default function (args = {}) {
-    if (args.stone) return toStone();
-    if (args.teleport) return start(args.teleport);
+    if (args.stone) return toStone(args.stronghold);
+    if (args.stronghold && !args.where && !args.locate) {
+        const t = start(args.stronghold);
+        if (args.route === false) return t; // the PC tools: dry runs are made before it comes back
+        if (!t.refreshed) throw new Error(`stronghold not refreshed yet (${t.wait}), stopped at the stone`);
+        return runSkill("route", { stronghold: args.stronghold });
+    }
     if (args.relocate) return { at: relocate(args.relocate) };
     if (args.locate) {
-        const out = compare(args.locate, args.n ?? 5);
+        const out = compare(args.locate, args.n ?? 5, args.stronghold);
         log(JSON.stringify(out));
         return out;
     }
     if (args.where) {
-        const out = where();
+        const out = where(args.stronghold);
         log(JSON.stringify(out));
         return out;
     }

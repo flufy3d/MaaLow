@@ -337,7 +337,10 @@ internal class SkillRun(
             "run_node" -> {
                 val node = node(a)
                 val override = buildJsonObject {
+                    // nodes: overrides for other nodes of the run (e.g. a generic chain filled in per call)
+                    (a["nodes"] as? JsonObject)?.forEach { (k, v) -> if (k != node) put(k, v) }
                     put(node, buildJsonObject {
+                        ((a["nodes"] as? JsonObject)?.get(node) as? JsonObject)?.forEach { (k, v) -> put(k, v) }
                         (a["override"] as? JsonObject)?.forEach { (k, v) -> put(k, v) }
                         if (a.optBool("once") == true) put("timeout", 0)
                     })

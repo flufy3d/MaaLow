@@ -128,7 +128,7 @@
             all: () => call("memory_all"),
         }),
 
-        runNode: (node, o = {}) => call("run_node", { node, once: o.once, override: o.override }),
+        runNode: (node, o = {}) => call("run_node", { node, once: o.once, override: o.override, nodes: o.nodes }),
         runSkill: (name, args) => call("run_skill", { name, args: args ?? {} }),
     };
 
