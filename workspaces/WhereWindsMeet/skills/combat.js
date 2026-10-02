@@ -6,9 +6,9 @@
 // 奇术 goes whenever it is lit (grey without 精力, a countdown while cooling), always followed by 卸势. A skill pressed
 // while being hit may not come out: a press counts once its button changes (a countdown shows, or the icon becomes
 // the next one), otherwise it is pressed again. Below `hp` health the potion next to the bar is tapped.
-// 处决 is tapped whenever it shows (teacher, recording 酒肉山林 frame 2427): a gold diamond above 奇术, always in the
-// same place, there for about a second (frames 2412–2444, 4156–4176) and finishing the enemy. Every look checks it,
-// and the 3 s 蓄力 holds and the wait before 卸势 keep looking, so it is not missed while they last.
+// 处决 is tapped whenever a look sees it (teacher, recording 酒肉山林 frame 2427): a gold diamond above 奇术, always in
+// the same place, there for about a second (frames 2412–2444, 4156–4176) and finishing the enemy. The 3 s 蓄力 holds
+// and the wait before 卸势 are not cut short for it (teacher, 2026-10-02).
 // The fight is over when no red mark has been on the minimap (within `within` minimap px, if given) and nothing
 // locked for `idleMs`; at a stronghold the rest of its enemies may be in sight but too far to be part of this fight.
 // Sooner: in a fight the game hides the icons at the top right; once they have been hidden, their coming back for
@@ -66,7 +66,6 @@ const PARRY_AFTER = 2000; // 奇术 recovery cut by 卸势 after this
 const POTION_MS = 3000; // between potion taps
 const LOCK_MS = 2000; // between lock taps when enemies are around but nothing is locked
 const EXECUTE_MS = 300; // between 处决 taps while it still shows
-const POLL_MS = 250; // between looks while holding or waiting
 
 function tap(p, ms = 50) {
     touch.down(p, 1);
@@ -151,30 +150,6 @@ export default function (args = {}) {
         }
     }
 
-    /** Wait ms, looking all the while. */
-    function pause(ms) {
-        const end = Date.now() + ms;
-        while (end - Date.now() > POLL_MS) {
-            sleep(POLL_MS);
-            look();
-        }
-        sleep(Math.max(0, end - Date.now()));
-    }
-
-    /** Hold p for ms; let go early when 处决 shows (it is tapped by the look after). */
-    function hold(p, ms) {
-        const end = Date.now() + ms;
-        touch.down(p, 1);
-        while (end - Date.now() > 0) {
-            sleep(Math.max(0, Math.min(POLL_MS, end - Date.now())));
-            img = screenshot();
-            if (seen("execute")) break;
-        }
-        touch.up(1);
-        sleep(100);
-        look();
-    }
-
     /** Press p until done() (on a fresh screenshot) says it came out. */
     function press(p, done, name, tries = 4, wait = 300) {
         for (let i = 0; i < tries; i++) {
@@ -200,7 +175,7 @@ export default function (args = {}) {
     function qishu() {
         if (!seen("qishu")) return false;
         if (!press(QISHU, () => !seen("qishu"), "奇术", 3)) return false;
-        pause(PARRY_AFTER - 300);
+        sleep(PARRY_AFTER - 300);
         tap(PARRY);
         look();
         return true;
@@ -225,7 +200,13 @@ export default function (args = {}) {
 
         switchTo("modao");
         const t0 = Date.now();
-        for (let i = 0; i < CHARGES; i++) hold(CHARGE, CHARGE_MS);
+        for (let i = 0; i < CHARGES; i++) {
+            touch.down(CHARGE, 1);
+            sleep(CHARGE_MS);
+            touch.up(1);
+            sleep(100);
+            look();
+        }
         while (Date.now() - t0 < ROUND_MS) {
             tap(LIGHT);
             sleep(200);
