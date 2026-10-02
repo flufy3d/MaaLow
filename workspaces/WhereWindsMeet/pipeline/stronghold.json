@@ -723,5 +723,199 @@
             "Foye_OpenMenu",
             "Foye_LeaveMap"
         ]
+    },
+    "Jiurou": {
+        "desc": "酒肉山林一键跑完：从任意画面关弹窗 → JiurouTeleport 传送到石碑 → JiurouRoute 走到宝箱（路上遇敌就打，宝箱点没清完就清场），开据点宝箱。卡片上写着「势力重新占据时间」（还没刷新）就在石碑停下报错，不跑路线。tools/rec_route.py emit 生成，技能 skills/stronghold.js 的 teleport 模式",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "stronghold",
+        "custom_action_param": {
+            "teleport": "JiurouTeleport"
+        },
+        "next": [
+            "JiurouRoute"
+        ]
+    },
+    "JiurouRoute": {
+        "desc": "酒肉山林：从传送石碑走到据点宝箱。路点由 tools/rec_route.py 从录像 20261002-025629（酒肉山林）全自动生成：录像里人走到过的地方（打架被推开的也算）是可走区域，在上面用 A* 规划（离边缘越远越好），再简化成直线段（偏离规划 ≤ 1.5 px、每段离未走过的地方 ≥ 1.0 px）。连续定位：每帧在小地图拼图 locate/jiurou_mosaic 里找位置（院外 / 院内两档，院内分攻占前（有橙色区域）和攻占后各一张），中间航位推算，不开大地图。比例：院外 1 小地图像素 = 2.239 大地图像素（小地图上石碑和据点图标的距离对大地图上的量出来的），院内 1.120（院外的一半）。任务：破戒头陀 7 个；任务栏按 tracker 读。路上遇敌交给 combat，到宝箱点没有宝箱、头陀没清完就跑 StrongholdFight 清场再回宝箱；宝箱默认领取三份（老师同意）。技能 skills/route.js",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "route",
+        "custom_action_param": {
+            "locate": [
+                "locate/jiurou_mosaic"
+            ],
+            "tracker": {
+                "foes": "破戒头陀",
+                "flowers": "毒花"
+            },
+            "points": [
+                {
+                    "at": [
+                        104.0,
+                        -35.5
+                    ],
+                    "name": "传送石碑（落地）",
+                    "cam": 248
+                },
+                {
+                    "at": [
+                        98.3,
+                        -31.8
+                    ]
+                },
+                {
+                    "at": [
+                        69.3,
+                        -33.3
+                    ]
+                },
+                {
+                    "at": [
+                        53.3,
+                        -32.3
+                    ]
+                },
+                {
+                    "at": [
+                        27.1,
+                        -23.1
+                    ],
+                    "name": "据点宝箱",
+                    "cam": 270,
+                    "do": "chest"
+                }
+            ]
+        }
+    },
+    "JiurouTeleport": {
+        "desc": "传送到酒肉山林的传送石碑：菜单 → 江湖行 → 挑战 → 据点挑战「酒肉山林」卡片 → 大地图上找离据点图标最近的石碑 → 传送 → 回到大世界；从中间哪一页开始都能接着走，开着别处的大地图就先退出来。tools/rec_route.py emit 照 FoyeTeleport 生成（录像 20261002-025629（酒肉山林）），菜单到卡片这几步是 Jiurou_ 开头的节点，后面的说明面板、石碑、传送、落地和别的据点共用。路线 JiurouRoute 从这里开始",
+        "recognition": "DirectHit",
+        "next": [
+            "Teleport_NotRefreshed",
+            "Teleport_Go",
+            "Teleport_ClosePanel",
+            "Jiurou_Card",
+            "Jiurou_Challenge",
+            "Jiurou_Jianghu",
+            "Jiurou_OpenMenu",
+            "Jiurou_LeaveMap",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "Jiurou_OpenMenu": {
+        "desc": "大世界右上角菜单按钮（去酒肉山林）",
+        "recognition": "TemplateMatch",
+        "template": "world_menu_button.png",
+        "roi": [
+            990,
+            0,
+            89,
+            60
+        ],
+        "threshold": 0.6,
+        "green_mask": true,
+        "action": "Click",
+        "post_delay": 1500,
+        "next": [
+            "Jiurou_Jianghu"
+        ]
+    },
+    "Jiurou_Jianghu": {
+        "desc": "菜单面板「玩法」里的「江湖行」（去酒肉山林）",
+        "recognition": "TemplateMatch",
+        "template": "menu_jianghu.png",
+        "roi": [
+            680,
+            440,
+            100,
+            80
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "post_delay": 2000,
+        "next": [
+            "Jiurou_Challenge",
+            "Jiurou_Jianghu"
+        ]
+    },
+    "Jiurou_Challenge": {
+        "desc": "江湖行页的「挑战」大卡片（默认打开「据点挑战」页，去酒肉山林）",
+        "recognition": "TemplateMatch",
+        "template": "jianghu_challenge.png",
+        "roi": [
+            60,
+            490,
+            150,
+            80
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "target": [
+            262,
+            410,
+            1,
+            1
+        ],
+        "post_delay": 2000,
+        "next": [
+            "Jiurou_Card",
+            "Jiurou_Challenge"
+        ]
+    },
+    "Jiurou_Card": {
+        "desc": "据点挑战页的「酒肉山林」卡片（认卡片标题，点标题下方卡片中间；模板从录像 20261002-025629（酒肉山林）的据点挑战页裁的）",
+        "recognition": "TemplateMatch",
+        "template": "stronghold_card_jiurou.png",
+        "roi": [
+            60,
+            170,
+            960,
+            70
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "target": true,
+        "target_offset": [
+            0,
+            150,
+            0,
+            0
+        ],
+        "post_delay": 3000,
+        "next": [
+            "Teleport_NotRefreshed",
+            "Teleport_Go",
+            "Teleport_ClosePanel",
+            "Jiurou_Card"
+        ]
+    },
+    "Jiurou_LeaveMap": {
+        "desc": "开着的是别处的大地图（左下「标点筛选」）：点右上返回退出来，再从菜单或据点挑战页接着走（去酒肉山林）",
+        "recognition": "TemplateMatch",
+        "template": "map_filter_button.png",
+        "roi": [
+            20,
+            640,
+            150,
+            80
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "target": [
+            1025,
+            37,
+            1,
+            1
+        ],
+        "post_delay": 2000,
+        "next": [
+            "Jiurou_Card",
+            "Jiurou_Challenge",
+            "Jiurou_Jianghu",
+            "Jiurou_OpenMenu",
+            "Jiurou_LeaveMap"
+        ]
     }
 }

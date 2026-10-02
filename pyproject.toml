@@ -9,7 +9,7 @@ dependencies = []
 [project.optional-dependencies]
 maa = ["maafw", "pillow"]
 # offline image checks (scripts/, workspaces/*/tools/)
-cv = ["opencv-python-headless", "numpy"]
+cv = ["opencv-python-headless", "numpy", "onnxruntime", "scipy"]
 
 [project.scripts]
 maalow = "maalow.cli:main"

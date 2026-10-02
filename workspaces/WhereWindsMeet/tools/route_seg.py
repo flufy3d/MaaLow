@@ -1,13 +1,16 @@
-"""Run CixinRoute's route skill over a part of the route: route_seg.py FROM TO [start_x start_y] [key=json ...] [out=path.json]."""
+"""Run a route node's route skill (CixinRoute unless node=NAME) over a part of the route:
+route_seg.py FROM TO [start_x start_y] [node=NAME] [key=json ...] [out=path.json]."""
 import json
 import sys
 
 from maalow.client import Client
 
-node = json.load(open("workspaces/WhereWindsMeet/pipeline/stronghold.json", encoding="utf8"))["CixinRoute"]
+rest = sys.argv[3:]
+name = next((kv.split("=", 1)[1] for kv in rest if kv.startswith("node=")), "CixinRoute")
+rest = [kv for kv in rest if not kv.startswith("node=")]
+node = json.load(open("workspaces/WhereWindsMeet/pipeline/stronghold.json", encoding="utf8"))[name]
 args = dict(node["custom_action_param"])
 args["from"], args["to"] = int(sys.argv[1]), int(sys.argv[2])
-rest = sys.argv[3:]
 if len(rest) >= 2 and "=" not in rest[0]:
     args["start"] = [float(rest[0]), float(rest[1])]
     rest = rest[2:]

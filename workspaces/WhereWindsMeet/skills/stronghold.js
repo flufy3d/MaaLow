@@ -36,6 +36,12 @@ const PLAYER = [537, 362]; // the arrow on the big map opened from the minimap (
 const MAP_BACK = [1025, 37]; // the big map's back button
 const MAP_ROI = /** @type {Box} */ ([0, 60, 1080, 660]);
 const ICONS = ["map_stronghold.png", "map_stronghold_done.png"];
+// The live icon with its background painted green (green_mask): the plain templates carry 慈心山院's background and
+// drop to ~0.83 where the icon stands on a building block (酒肉山林, taken, 2026-10-02); this one scores 0.84–0.91 there
+// on both icons, ≤ 0.63 elsewhere. Matched on the taken icon its middle is (−1, −2) from the taken template's, as
+// the live icon's is: LIVE_AT holds for it.
+const ICON_MASKED = "map_stronghold_m.png";
+const MASKED_MIN = 0.8; // the taken icon is see-through: 0.84 at 酒肉山林's chest, on a building block next to the arrow
 /** @type {[string, Point][]} */
 const LABELS = [
     ["map_label_cixin.png", [53, -50.5]], // 慈心山院 over the stronghold; its middle from the icon's (7 big map shots, all the same)
@@ -82,7 +88,9 @@ export function where() {
         const image = screenshot();
         const live = match(ICONS[0], { image, roi: MAP_ROI, threshold: 0.85 });
         const done = match(ICONS[1], { image, roi: MAP_ROI, threshold: 0.85 });
-        const icon = nearestIcon([...live.results.map((m) => ({ h: m, at: LIVE_AT })), ...done.results.map((m) => ({ h: m, at: /** @type {Point} */ ([0, 0]) }))]);
+        const masked = match(ICON_MASKED, { image, roi: MAP_ROI, threshold: MASKED_MIN, green_mask: true });
+        const icon = nearestIcon([...live.results.map((m) => ({ h: m, at: LIVE_AT })), ...masked.results.map((m) => ({ h: m, at: LIVE_AT })),
+            ...done.results.map((m) => ({ h: m, at: /** @type {Point} */ ([0, 0]) }))]);
         if (icon) return { ...icon, by: "icon" };
         if (Date.now() - t0 < LABEL_AFTER) return null;
         const label = nearestIcon(LABELS.flatMap(([t, at]) => match(t, { image, roi: MAP_ROI, threshold: LABEL_MIN }).results.map((m) => ({ h: m, at }))));
@@ -181,7 +189,10 @@ function toStone() {
             const c = nearestIcon(cands, CARD_AT);
             return c && Math.hypot(middle(c.h.box)[0] - c.at[0] - CARD_AT[0], middle(c.h.box)[1] - c.at[1] - CARD_AT[1]) <= CARD_NEAR ? c : null;
         };
-        const icon = mid(match(ICONS, { image, roi: MAP_LEFT, threshold: 0.9 }).results.map((m) => ({ h: m, at: /** @type {Point} */ ([0, 0]) })))
+        // 0.8: standing by the stronghold, the arrow covers a corner of its icon (0.82–0.84, 酒肉山林 2026-10-02, which
+        // has no label to fall back on); only matches near where the card puts it count, so this is still the icon
+        const icon = mid([...match(ICONS, { image, roi: MAP_LEFT, threshold: 0.8 }).results.map((m) => ({ h: m, at: /** @type {Point} */ ([0, 0]) })),
+            ...match(ICON_MASKED, { image, roi: MAP_LEFT, threshold: 0.85, green_mask: true }).results.map((m) => ({ h: m, at: LIVE_AT }))])
             ?? mid(LABELS.flatMap(([t, at]) => match(t, { image, roi: MAP_LEFT, threshold: 0.75 }).results.map((m) => ({ h: m, at }))));
         if (!icon) {
             runSkill("pinch", { center: CARD_AT, times: 4 }); // zoomed out: in, around where the card put it
