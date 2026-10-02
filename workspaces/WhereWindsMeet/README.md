@@ -7,7 +7,7 @@
 | | 内容 |
 |---|---|
 | 流水线 `pipeline/` | 启动登录 `LaunchAndLogin`、每日签到 `DailySignIn`、各种弹窗（商城、奖励、物品提示、空闲幻灯片）、自动拾取 `AutoPickup`、找怪开打 `SeekAndFight`、据点 `Cixin`（一键）/ `CixinTeleport` / `CixinRoute`、`Foye`（一键）/ `FoyeTeleport` / `FoyeRoute`、`Jiurou`（一键）/ `JiurouTeleport` / `JiurouRoute`、`StrongholdFight` |
-| 技能 `skills/` | `move.js` 移动（摇杆、疾跑、追怪、按路点连续定位跑）、`combat.js` 战斗、`route.js` 据点路线、`stronghold.js` 据点检查、`where()` 开地图读位置、任务栏 OCR、一键入口、传送时找石碑、`auto_pickup.js` 拾取、`pinch.js` 双指缩放；`lib/minimap.js` 读小地图（镜头朝向、红点、据点橙色区域），`lib/hud.js` 右上角图标 |
+| 技能 `skills/` | `move.js` 移动（摇杆、疾跑、追怪、按路点连续定位跑）、`combat.js` 战斗（出现「处决」就点）、`route.js` 据点路线、`stronghold.js` 据点检查、`where()` 开地图读位置、任务栏 OCR、一键入口、传送时找石碑、`auto_pickup.js` 拾取、`pinch.js` 双指缩放；`lib/minimap.js` 读小地图（镜头朝向、红点、据点橙色区域），`lib/hud.js` 右上角图标 |
 | 守护规则 | `AutoPickup`（500 ms）、`DismissIdleSlideshow`、`CloseItemTip`（1000 ms） |
 | OCR 模型 `model/ocr/` | PaddleOCR v4 中文（MaaCommonAssets），onnx 走 Git LFS；读任务栏、据点卡片、宝箱面板。每次只读一小块，约 240 ms，App 多占约 60 MB |
 | 离线工具 `tools/` | `rec_route.py` 从一段录像全自动做据点路线（见「从一段录像做据点路线」）；`wwm_ocr.py` PC 上的 OCR（同一套 PaddleOCR 模型）；`wwm_locate.py` 做小地图定位的参考图；`route_bench.py` 据点路线跑分；`route_seg.py` 只跑路线的一段（`node=JiurouRoute` 换节点）、`plot_seg.py` 画轨迹（调试用） |
@@ -192,6 +192,7 @@ uv run --extra cv python workspaces/WhereWindsMeet/tools/rec_route.py anchors da
 * **一键入口跑通一次**：从院子里开始，传送 → 整条路线 → 开箱领取，路线 311 秒，5 场战斗。中途第三朵花误判成已销毁（当时最后一朵整行消失只读一次就算，已改成连读两次），第四朵没凑到，到宝箱点后补救回头补上了，然后开箱
 * **定位**：带橙色区域时仍然够用。石碑到第一朵花 3 次核对，到点误差 0.5–1 px；第四朵花 0.7 px。整趟 15 段，匹配 3462 次、漏 92 次（2.6%），最长连漏 10 帧。宝箱一带（院子东北角）有橙色时最弱（分数 0.4–0.5，有一趟漏了 27%），据点做完橙色就没了，那时又好了
 * **战斗**：`combat` 能把门口、毒花旁的绣金卫和精英怪打完（精英怪一仗喝了 3 瓶药，血最低 34%），打完常被拉开 10–20 px，全图重定位都能找回来
+  * 出现「处决」就点（老师在录像酒肉山林第 2427 帧标的，2026-10-02 加）：金色菱形按钮在奇术上方，位置固定，每次只亮约 1 秒（录像里两次：2412–2444、4156–4176 帧），点了就把敌人了结。模板 `combat/execute.png` 出现时 0.78–1.0，别的画面最高 0.55，门槛 0.7；每次看画面都查，按住蓄力的 3 秒和奇术后等卸势的那段里也一直在看，看到就松手去点。还没在设备上实战验证
 * **还会出的小问题**
   * 回头补的时候，从第二朵花往东去精英怪偶尔在 (6,−26) 卡两下，靠解困过去
   * 精英怪那一仗之后任务栏偶尔读不出绣金卫的数字（OCR 读成「X击败绣金卫」），不影响判断

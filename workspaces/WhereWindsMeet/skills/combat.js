@@ -6,6 +6,9 @@
 // 奇术 goes whenever it is lit (grey without 精力, a countdown while cooling), always followed by 卸势. A skill pressed
 // while being hit may not come out: a press counts once its button changes (a countdown shows, or the icon becomes
 // the next one), otherwise it is pressed again. Below `hp` health the potion next to the bar is tapped.
+// 处决 is tapped whenever it shows (teacher, recording 酒肉山林 frame 2427): a gold diamond above 奇术, always in the
+// same place, there for about a second (frames 2412–2444, 4156–4176) and finishing the enemy. Every look checks it,
+// and the 3 s 蓄力 holds and the wait before 卸势 keep looking, so it is not missed while they last.
 // The fight is over when no red mark has been on the minimap (within `within` minimap px, if given) and nothing
 // locked for `idleMs`; at a stronghold the rest of its enemies may be in sight but too far to be part of this fight.
 // Sooner: in a fight the game hides the icons at the top right; once they have been hidden, their coming back for
@@ -24,6 +27,7 @@ export const meta = { description: "fight the enemies around with the 陌刀 / �
 /** @type {Point} */ const BUFF = [825, 668]; // 陌刀 增益 (横刀: 爆发)
 /** @type {Point} */ const SWITCH = [993, 320]; // weapon bar
 /** @type {Point} */ const POTION = [700, 690];
+/** @type {Point} */ const EXECUTE = [852, 430]; // 处决
 /** @type {Point} */ const LOCK = [1021, 667];
 /** @type {Box} */ const LOCK_ROI = [1004, 648, 34, 39];
 const GOLD = { lower: [200, 180, 100], upper: [255, 245, 200] };
@@ -38,6 +42,9 @@ const T = {
     strike: ["combat/hengdao_strike.png", [801, 561, 64, 64]], // arrow: 伤害 ready (teaching message 2)
     burst: ["combat/hengdao_burst.png", [793, 635, 64, 64]],
     buff: ["combat/modao_buff.png", [793, 635, 64, 64]],
+    // inside of the diamond (the white rim pulses): 0.78 the frame it comes up, 0.85–1.0 after; ≤ 0.55 everywhere
+    // else in that recording and ≤ 0.49 in ~22000 frames of other runs
+    execute: ["combat/execute.png", [815, 391, 75, 75]],
 };
 const THRESHOLD = 0.7;
 
@@ -58,6 +65,8 @@ const STRIKE_MS = 4000; // 爆发 playing until 伤害 is ready
 const PARRY_AFTER = 2000; // 奇术 recovery cut by 卸势 after this
 const POTION_MS = 3000; // between potion taps
 const LOCK_MS = 2000; // between lock taps when enemies are around but nothing is locked
+const EXECUTE_MS = 300; // between 处决 taps while it still shows
+const POLL_MS = 250; // between looks while holding or waiting
 
 function tap(p, ms = 50) {
     touch.down(p, 1);
@@ -80,9 +89,11 @@ export default function (args = {}) {
     let calmSince = 0; // since when they are back
     let lastPotion = 0;
     let lastLock = 0;
+    let lastExecute = 0;
     let lows = 0;
     let rounds = 0;
     let potions = 0;
+    let executions = 0;
     let img = screenshot();
 
     const seen = (k) => match(T[k][0], { image: img, roi: T[k][1], threshold: THRESHOLD }).hit;
@@ -97,9 +108,21 @@ export default function (args = {}) {
         return Math.max(0, Math.min(1, (right - HP_LEFT) / (HP_FULL - HP_LEFT)));
     }
 
-    /** New screenshot; heal, keep the lock, and end the fight when it is over. */
+    /** 处决 on the current screenshot: tap it. */
+    function execute() {
+        const now = Date.now();
+        if (now - lastExecute < EXECUTE_MS || !seen("execute")) return false;
+        log("处决");
+        tap(EXECUTE);
+        lastExecute = now;
+        executions++;
+        return true;
+    }
+
+    /** New screenshot; 处决, heal, keep the lock, and end the fight when it is over. */
     function look() {
         img = screenshot();
+        execute();
         const now = Date.now();
         const locked = color({ ...GOLD, image: img, roi: LOCK_ROI, count: 150 }).hit;
         const foes = enemies(img).filter((e) => e.dist <= (args.within ?? Infinity)).length;
@@ -128,6 +151,30 @@ export default function (args = {}) {
         }
     }
 
+    /** Wait ms, looking all the while. */
+    function pause(ms) {
+        const end = Date.now() + ms;
+        while (end - Date.now() > POLL_MS) {
+            sleep(POLL_MS);
+            look();
+        }
+        sleep(Math.max(0, end - Date.now()));
+    }
+
+    /** Hold p for ms; let go early when 处决 shows (it is tapped by the look after). */
+    function hold(p, ms) {
+        const end = Date.now() + ms;
+        touch.down(p, 1);
+        while (end - Date.now() > 0) {
+            sleep(Math.max(0, Math.min(POLL_MS, end - Date.now())));
+            img = screenshot();
+            if (seen("execute")) break;
+        }
+        touch.up(1);
+        sleep(100);
+        look();
+    }
+
     /** Press p until done() (on a fresh screenshot) says it came out. */
     function press(p, done, name, tries = 4, wait = 300) {
         for (let i = 0; i < tries; i++) {
@@ -153,7 +200,7 @@ export default function (args = {}) {
     function qishu() {
         if (!seen("qishu")) return false;
         if (!press(QISHU, () => !seen("qishu"), "奇术", 3)) return false;
-        sleep(PARRY_AFTER - 300);
+        pause(PARRY_AFTER - 300);
         tap(PARRY);
         look();
         return true;
@@ -178,13 +225,7 @@ export default function (args = {}) {
 
         switchTo("modao");
         const t0 = Date.now();
-        for (let i = 0; i < CHARGES; i++) {
-            touch.down(CHARGE, 1);
-            sleep(CHARGE_MS);
-            touch.up(1);
-            sleep(100);
-            look();
-        }
+        for (let i = 0; i < CHARGES; i++) hold(CHARGE, CHARGE_MS);
         while (Date.now() - t0 < ROUND_MS) {
             tap(LIGHT);
             sleep(200);
@@ -210,6 +251,6 @@ export default function (args = {}) {
     } finally {
         touch.up(1);
     }
-    log(`fight over (${why}): ${rounds} rounds, ${potions} potions`);
-    return { reason: why, rounds, potions };
+    log(`fight over (${why}): ${rounds} rounds, ${potions} potions, ${executions} 处决`);
+    return { reason: why, rounds, potions, executions };
 }
