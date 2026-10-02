@@ -4,10 +4,10 @@
         {
             "zoom": "out",
             "image": "locate/jiurou_mosaic_out.png",
-            "k": 2.2391,
+            "k": 2.31,
             "origin": [
-                35.19,
-                73.99
+                36.05,
+                73.52
             ],
             "off": [
                 0.0,
@@ -18,10 +18,10 @@
             "zoom": "in",
             "layer": "live",
             "image": "locate/jiurou_mosaic_in_live.png",
-            "k": 1.1196,
+            "k": 1.152,
             "origin": [
-                80.71,
-                84.42
+                79.11,
+                83.8
             ],
             "off": [
                 0.0,
@@ -32,10 +32,10 @@
             "zoom": "in",
             "layer": "taken",
             "image": "locate/jiurou_mosaic_in_taken.png",
-            "k": 1.1196,
+            "k": 1.152,
             "origin": [
-                84.55,
-                86.06
+                82.3,
+                90.75
             ],
             "off": [
                 0.0,

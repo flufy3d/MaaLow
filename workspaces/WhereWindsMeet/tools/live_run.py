@@ -1,6 +1,7 @@
 """A stronghold's one-click run (node <Name>: close popups, teleport, stop if not refreshed, then the route) as two
-skill calls (stronghold.js with route: false, then route.js with the config), so the route's whole log comes back; the app's live frames are grabbed all along
-(scripts/grab_frames.py, ~8/s) to line up with the goto traces (their `seq`).
+skill calls (stronghold.js with route: false, then route.js with the config), so the route's whole log comes back; the
+app's live frames are grabbed all along (scripts/grab_frames.py, ~8/s) to line up with the goto traces (their `seq`).
+Exit status: 0 the route went through, 1 it failed (or the teacher stopped it), 2 not refreshed yet (no route run).
 
     uv run python workspaces/WhereWindsMeet/tools/live_run.py Jiurou data/wwm_live/jiurou1
 
@@ -51,9 +52,11 @@ def main() -> None:
     try:
         t = sh.teleport(name)
         json.dump(t, open(out / "teleport.json", "w", encoding="utf-8"), ensure_ascii=False)
-        if not t.get("ok"):
-            print(json.dumps({"teleport": (t.get("error") or {}).get("message")}, ensure_ascii=False))
-            return
+        v = t.get("value") or {}
+        if not t.get("ok") or not v.get("refreshed"):
+            # as the one-click run does: not refreshed yet, stop at the stone
+            print(json.dumps({"teleport": (t.get("error") or {}).get("message") or f"not refreshed yet ({v.get('wait')})"}, ensure_ascii=False))
+            sys.exit(2)
         r = sh.route(name)
         json.dump(r, open(out / "route.json", "w", encoding="utf-8"), ensure_ascii=False)
     finally:
@@ -61,6 +64,7 @@ def main() -> None:
     s = summary(r) | {"frames": frames}
     json.dump(s, open(out / "summary.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(json.dumps(s, ensure_ascii=False, indent=1))
+    sys.exit(0 if s["ok"] else 1)
 
 
 if __name__ == "__main__":

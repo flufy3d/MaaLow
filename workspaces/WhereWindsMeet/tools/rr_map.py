@@ -370,7 +370,12 @@ def good_world(root: Path) -> np.ndarray:
 
 LAGS = (7, 10, 30)  # frame pairs registered this many frames apart: shorter ones are unreliable (the recording repeats
 # frames while the screen does not change, sub-px steps that small are lost), 7 and 10 coprime so every frame is linked
-K0 = {"out": 2.29, "in": 1.16}  # big map px per minimap px to start from (佛爷寨, 慈心山院); fitted here
+# big map px per minimap px: one constant for the game (2026-10-02, the anchors' where() against the minimap's taken
+# icon, the same fit for all three strongholds: in 1.150 / 1.156 / 1.151 over 28–118 anchors each, out 2.315 / 2.332 /
+# 2.314, pooled 1.1523 ± 0.0012 and 2.316 ± 0.024; data/tmp/kfit). stone_k() read 2.239 for 酒肉山林: the icon's middle
+# is not the same point on the minimap and the big map, which takes 2–3% off a short step; it is kept as a check only
+K = {"out": 2.31, "in": 1.152}
+K0 = K
 WALK = 0.6  # big map px per frame: the random walk that holds frames with nothing else on them
 GAP = 30  # frames off the world screen that split a stretch
 ANIM = (10, 30)  # frames left out before / after a zoom switch's first / last look (it animates ~1 s)
@@ -847,10 +852,10 @@ def locate_all(root: Path, k_out: float | None = None, k_in: float | None = None
     """Every world frame's position: see cmd_locate. Frames `skip` says are left out of the mosaics and are not placed
     in them (an evaluation's held-out frames: their positions then come from the icon and the shifts alone)."""
     info = {}
-    sk = None if k_out else stone_k(root)
-    info["stone_k"] = sk
-    ko = k_out or (sk["k"] if sk else K0["out"])
-    k = {"out": ko, "in": k_in or ko / ZOOM_RATIO}
+    sk = stone_k(root)
+    info["stone_k"] = sk  # a check only (see K)
+    ko = k_out or K["out"]
+    k = {"out": ko, "in": k_in or (K["in"] if not k_out else ko / ZOOM_RATIO)}
     if not quiet:
         print("k", {z_: round(v, 4) for z_, v in k.items()}, "stone", sk)
     dev = device_fixes(root)
@@ -878,7 +883,7 @@ def locate_all(root: Path, k_out: float | None = None, k_in: float | None = None
 
 def cmd_locate(root: Path, k_out: float | None = None, k_in: float | None = None) -> None:
     """<root>/track.json: each world frame's position and zoom, and <root>/locate.json: how they were got.
-    1. k zoomed out: stone_k() (or --k-out), else K0; zoomed in: that over ZOOM_RATIO (or --k-in).
+    1. k: the game's constant K (or --k-out / --k-in); stone_k() is worked out too, as a check.
     2. Everything solved (solve(): the look at the big map pins the zoomed-out frames, the icon both, its offsets
        at the two zooms tied).
     3. ROUNDS times: a mosaic per zoom from that, every other frame placed in it (fixes), solved again. This mends
