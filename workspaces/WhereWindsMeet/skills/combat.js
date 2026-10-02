@@ -13,8 +13,12 @@
 // locked for `idleMs`; at a stronghold the rest of its enemies may be in sight but too far to be part of this fight.
 // Sooner: in a fight the game hides the icons at the top right; once they have been hidden, their coming back for
 // `calmMs` ends it (teacher, explore message after 85: stuck fighting in an empty room with red marks around).
+// Enemy behind: in a fight with no enemy health bar on screen for BAR_MS (the thin red line over its head: teacher,
+// recording 酒肉山林 frame 3040), the camera turns to the nearest red mark on the minimap when that is more than
+// BAR_TURN off the camera; with no mark it stays (no blind turns).
 import { calm as hudCalm } from "./lib/hud.js";
-import { enemies } from "./lib/minimap.js";
+import { angleDiff, cameraHeading, enemies } from "./lib/minimap.js";
+import { turn } from "./move.js";
 
 /** @type {SkillMeta} */
 export const meta = { description: "fight the enemies around with the 陌刀 / 横刀 rotation, healing below half health", timeout: 600_000 };
@@ -66,6 +70,15 @@ const PARRY_AFTER = 2000; // 奇术 recovery cut by 卸势 after this
 const POTION_MS = 3000; // between potion taps
 const LOCK_MS = 2000; // between lock taps when enemies are around but nothing is locked
 const EXECUTE_MS = 300; // between 处决 taps while it still shows
+// The enemy health bar: red, 2 px high, ~55 px long when full (H 174–1, S 120–141, V 147–170); a line at least
+// 25 px long, at most 3 high and filled 70% is one. In the recording's 1231 world frames 89 show one, all in or by
+// the fights (shorter red bits of walls and effects, 12–18 px, are not)
+const BAR = { lower: [[0, 100, 110], [170, 100, 110]], upper: [[10, 255, 255], [180, 255, 255]], method: 40 };
+/** @type {Box} */ const BAR_ROI = [150, 100, 780, 460]; // the scene, off the minimap, the buttons and the chat
+const BAR_MS = 1500;
+const BAR_TURN = 45; // degrees: the mark this far off the camera is turned to
+const TURN_MS = 2000; // between such turns
+const DEG_PX = 0.6; // camera turn per px dragged (move.js)
 
 function tap(p, ms = 50) {
     touch.down(p, 1);
@@ -90,6 +103,9 @@ export default function (args = {}) {
     let lastLock = 0;
     let lastExecute = 0;
     let lows = 0;
+    let lastBar = Date.now(); // an enemy health bar was on screen
+    let lastTurn = 0;
+    let turns = 0;
     let rounds = 0;
     let potions = 0;
     let executions = 0;
@@ -105,6 +121,27 @@ export default function (args = {}) {
         if (Math.min(...boxes.map(([x]) => x)) > HP_LEFT + 8) return null;
         const right = Math.max(...boxes.map(([x, , w]) => x + w));
         return Math.max(0, Math.min(1, (right - HP_LEFT) / (HP_FULL - HP_LEFT)));
+    }
+
+    /** An enemy health bar on the current screenshot. */
+    function bar() {
+        const hit = color({ ...BAR, image: img, roi: BAR_ROI, count: 25, connected: true });
+        return hit.hit && hit.results.some(({ box: [, , w, h], count }) => w >= 25 && h <= 3 && (count ?? 0) >= 0.7 * w * h);
+    }
+
+    /** No bar in sight: the enemy is behind; turn to the nearest red mark (within `within`) if it is off the camera. */
+    function behind() {
+        const foe = enemies(img).find((e) => e.dist <= (args.within ?? Infinity));
+        const cam = cameraHeading(img);
+        if (!foe || cam == null) return;
+        const d = angleDiff(foe.bearing, cam);
+        if (Math.abs(d) <= BAR_TURN) return;
+        log(`no health bar in sight: turning ${Math.round(d)}° to the mark`);
+        turn(Math.max(-300, Math.min(300, Math.round(d / DEG_PX))));
+        lastTurn = Date.now();
+        lastBar = lastTurn;
+        turns++;
+        img = screenshot();
     }
 
     /** 处决 on the current screenshot: tap it. */
@@ -136,6 +173,8 @@ export default function (args = {}) {
             if (now - calmSince > (args.calmMs ?? 1500)) throw new Over("out of combat");
         }
         if (now > until) throw new Over("time");
+        if (bar()) lastBar = now;
+        else if (fought && !calm && now - lastBar > BAR_MS && now - lastTurn > TURN_MS) behind();
         if (foes && !locked && now - lastLock > LOCK_MS) {
             tap(LOCK);
             lastLock = now;
@@ -232,6 +271,6 @@ export default function (args = {}) {
     } finally {
         touch.up(1);
     }
-    log(`fight over (${why}): ${rounds} rounds, ${potions} potions, ${executions} 处决`);
-    return { reason: why, rounds, potions, executions };
+    log(`fight over (${why}): ${rounds} rounds, ${potions} potions, ${executions} 处决, ${turns} turns to an enemy behind`);
+    return { reason: why, rounds, potions, executions, turns };
 }
