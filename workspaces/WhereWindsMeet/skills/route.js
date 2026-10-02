@@ -241,7 +241,10 @@ function act(p, last) {
     return { cam, done };
 }
 
-const RETRIES = 2; // a leg that lost the track, went astray or got stuck: found again and gone on this many times
+const RETRIES = 3; // a leg that lost the track, went astray or got stuck: found again and gone on this many times
+const AHEAD = 12; // after finding it again, it goes on from the nearest of this many points ahead
+const STEP_BACK = 4; // stepBack(): big map steps at most
+const STEP_REACH = 3; // px: back on the way this close to one of its points
 const FINISH = 2; // at the chest point with no chest: rounds of doing what is left and coming back
 
 /** @param {Point} a @param {Point} b */
@@ -290,7 +293,17 @@ function follow(args) {
 
     /** Find the character on the whole reference; false when it cannot tell. */
     const again = () => {
-        const at = relocate(args.locate, undefined, layer);
+        let at = relocate(args.locate, undefined, layer);
+        if (!at && !inFight()) {
+            // the minimap could not tell (a day sky's sun behind it washes the disc out: 酒肉山林's west yard,
+            // 2026-10-02, 77 frames unmatched and the whole reference no help): the big map can
+            const w = where(args.stronghold);
+            maps++;
+            if (w) {
+                at = [w.x, w.y];
+                log(`found again on the big map at ${at.map(Math.round)}`);
+            }
+        }
         if (!at) return false;
         relocs++;
         log(`found again at ${at.map(Math.round)} (${Math.round(distTo(pos, at))} px from where it was put)`);
@@ -309,6 +322,28 @@ function follow(args) {
         return f;
     };
 
+    /**
+     * Back onto the way by the big map, the way a survey walks: run toward the nearest of points `ks` for a while and
+     * read where() again, STEP_BACK times at most, until within STEP_REACH of it. For a place the minimap reference
+     * does not reach (a fight pushed it off the way: 酒肉山林's bonfire field, 15 px east, 2026-10-02), where goto finds
+     * no match to go by.
+     * @param {number[]} ks
+     */
+    const stepBack = (ks) => {
+        for (let s = 0; s < STEP_BACK; s++) {
+            const k = ks.slice(0, AHEAD).reduce((b, m) => (away(m) < away(b) ? m : b));
+            const d = away(k);
+            if (d <= STEP_REACH) return;
+            const ms = Math.round(Math.max(LEG_MS[0], Math.min(3000, (SHORT * d * 1000) / V_RUN)));
+            log(`back onto the way: ${Math.round(d)} px to point ${k}, running ${Math.round(bearingTo(pos, P[k].at))}° for ${ms} ms`);
+            runSkill("move", { face: true, bearing: bearingTo(pos, P[k].at), ms, pickup: false });
+            const w = where(args.stronghold);
+            maps++;
+            if (!w) return;
+            pos = [w.x, w.y];
+        }
+    };
+
     /** Walk through the points `ks` (indexes), to the last. @param {number[]} ks */
     const walk = (ks) => {
         let rest = ks;
@@ -317,7 +352,8 @@ function follow(args) {
             let length = 0;
             seg.reduce((a, b) => ((length += distTo(a, b)), b), pos);
             const ms = Math.round(Math.max(GOTO_MS[0], (GOTO_MS[1] * length * 1000) / V_RUN));
-            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, k, bias, layer, reach: args.reach ?? 2, ms });
+            // no sprint on a route: it carries on past the turns and the doors, and the matches fall behind (teacher)
+            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, k, bias, layer, reach: args.reach ?? 2, ms, sprint: false });
             k = r.k ?? k;
             bias = r.bias ?? bias;
             layer = r.layer ?? layer;
@@ -325,6 +361,7 @@ function follow(args) {
             /** @type {Record<string, any>} */
             const leg = { i: rest[0], j, why: r.why, ms: r.ms, fixes: r.fixes, misses: r.misses, maxMissRun: r.maxMissRun, stuck: r.stuck.length, taps: r.taps, at: r.at };
             legs.push(leg);
+            event("route_leg", leg);
             if (r.at) pos = r.at;
             if (r.why === "arrived") return leg;
             if (r.why === "fight") {
@@ -336,8 +373,12 @@ function follow(args) {
                 if (++tries > RETRIES) fail(`points ${rest[0]}–${named(j)}: ${r.why} at ${pos.map(Math.round)}`);
                 log(`points ${rest[0]}–${j}: ${r.why} at ${pos.map(Math.round)}, finding it again`);
                 if (!again()) fail(`points ${rest[0]}–${named(j)}: ${r.why} at ${pos.map(Math.round)}, not found again`);
+                if (r.why === "lost" && !r.fixes) stepBack(rest);
             }
-            const n = rest.reduce((b, k, m) => (away(k) < away(rest[b]) ? m : b), 0);
+            // the nearest of the next AHEAD points only: a way out and back passes the same place twice, and the nearest
+            // of all was on the way back (酒肉山林 2026-10-02: from the bonfire field it went on at the return, the west
+            // yard left out)
+            const n = rest.slice(0, AHEAD).reduce((b, k, m) => (away(k) < away(rest[b]) ? m : b), 0);
             rest = rest.slice(n);
         }
     };

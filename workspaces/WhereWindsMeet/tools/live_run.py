@@ -45,9 +45,26 @@ def summary(route: dict) -> dict:
     }
 
 
+def last_event() -> int:
+    from maalow.client import Client
+
+    ev = Client().get("/events?since=0")
+    return max((e["id"] for e in ev), default=0)
+
+
+def save_events(since: int, out: Path) -> None:
+    """The route's skill events since `since` (move.js "goto" traces every 2 s, route.js "route_leg"): <out>/events.json.
+    They are there when the run was stopped too, which returns no logs."""
+    from maalow.client import Client
+
+    ev = [e for e in Client().get(f"/events?since={since}&type=skill_event") if e.get("name") in ("goto", "route_leg")]
+    json.dump(ev, open(out / "events.json", "w", encoding="utf-8"), ensure_ascii=False)
+
+
 def main() -> None:
     name, out = sys.argv[1], Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
+    since = last_event()
     g = Grabber(out / "frames")
     try:
         t = sh.teleport(name)
@@ -61,6 +78,7 @@ def main() -> None:
         json.dump(r, open(out / "route.json", "w", encoding="utf-8"), ensure_ascii=False)
     finally:
         frames = g.stop()
+        save_events(since, out)
     s = summary(r) | {"frames": frames}
     json.dump(s, open(out / "summary.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(json.dumps(s, ensure_ascii=False, indent=1))

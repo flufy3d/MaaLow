@@ -166,6 +166,11 @@ const SEARCH = [10, 8, 40]; // search radius around the reckoning: px, + px per 
 const GATE_PX = 4;
 const GATE_MS = 1500;
 const LOST_MS = 3000; // no match this long: lost
+// No running on the reckoning alone: before the first match of a leg it stands (where it was put can be wrong: a
+// resumed route set off west from a misread place and ran off 酒肉山林's west yard, over the edge), and with no match
+// for STALL_MS it stops until one comes (or LOST_MS: lost, the route finds it again)
+const STALL_MS = 1500;
+const EVENT_MS = 2000; // the trace sent as a "goto" event this often
 const PASS = 2.5; // a point on the way counts as passed this close,
 const PASS_SIDE = 6; // or once past it (over the line across the way there) no farther than this to the side
 const LOOKAHEAD = 3; // steering: at the point this far ahead along the way from where it is across the leg (big map px)
@@ -187,7 +192,8 @@ const SETTLE_MS = 600; // at the end: coasting, then the match that says it is t
 // wall's corner 4 px off the way), and the joystick goes by it; the difference, smoothed, is taken off the steering.
 const BIAS_MS = 600;
 const BIAS_RUN = 0.7; // only while it runs at least this share of the speed (sliding along a wall is slower)
-const BIAS_GAIN = 0.5;
+const BIAS_GAIN = 0; // off (teacher, 2026-10-02): with bad matches it learns a wrong bias and steers off the way the
+// whole leg (酒肉山林's 4th live run went 8 px south of the road, 37° off, onto the rocks before the gate)
 const BIAS_MAX = 60;
 const FIGHT_BIG = 30; // the top right icons hidden and a red mark this close (big map px): a fight; in minimap px
 // (by the k of the level matched last) that is ~26 in the courtyard but ~13 outside, so the enemies behind the wall
@@ -351,7 +357,15 @@ function goTo(args) {
         const now = Date.now();
         if (!pos || (trace.length && now - t0 - trace[trace.length - 1].t < 250)) return;
         trace.push({ t: now - t0, seq: image.seq, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, ...(r ? { lv: r.layer ?? r.zoom } : {}), ...(bias ? { b: Math.round(bias) } : {}), i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}) });
+        // the trace as it goes, as events (/events): a run stopped by the teacher returns no logs
+        if (now - sentAt >= EVENT_MS) {
+            event("goto", { goal: path[path.length - 1], trace: trace.slice(sent) });
+            sent = trace.length;
+            sentAt = now;
+        }
     };
+    let sent = 0;
+    let sentAt = 0;
     /**
      * Point k is behind: close to it, or past the line across the way at it (and not far off to the side).
      * @param {Point} at @param {number} k
@@ -500,6 +514,15 @@ function goTo(args) {
                 coastFast = true;
                 releasedAt = brakeAt = now;
                 release();
+                continue;
+            }
+            if (!fixes || now - lastFix > STALL_MS) {
+                if (held) {
+                    releasedAt = now;
+                    coastFast = fast;
+                    release();
+                }
+                note(image, r, dist);
                 continue;
             }
             if (!held && (!brakeAt || now - brakeAt >= BRAKE_MS)) {
