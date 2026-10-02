@@ -6,7 +6,7 @@
 
 | | 内容 |
 |---|---|
-| 流水线 `pipeline/` | 启动登录 `LaunchAndLogin`、每日签到 `DailySignIn`、各种弹窗（商城、奖励、物品提示、空闲幻灯片）、自动拾取 `AutoPickup`、找怪开打 `SeekAndFight`、据点 `Cixin`（一键）/ `CixinTeleport` / `CixinRoute` / `StrongholdFight` |
+| 流水线 `pipeline/` | 启动登录 `LaunchAndLogin`、每日签到 `DailySignIn`、各种弹窗（商城、奖励、物品提示、空闲幻灯片）、自动拾取 `AutoPickup`、找怪开打 `SeekAndFight`、据点 `Cixin`（一键）/ `CixinTeleport` / `CixinRoute`、`Foye`（一键）/ `FoyeTeleport` / `FoyeRoute`、`StrongholdFight` |
 | 技能 `skills/` | `move.js` 移动（摇杆、疾跑、追怪、按路点连续定位跑）、`combat.js` 战斗、`route.js` 据点路线、`stronghold.js` 据点检查、`where()` 开地图读位置、任务栏 OCR、一键入口、传送时找石碑、`auto_pickup.js` 拾取、`pinch.js` 双指缩放；`lib/minimap.js` 读小地图（镜头朝向、红点、据点橙色区域），`lib/hud.js` 右上角图标 |
 | 守护规则 | `AutoPickup`（500 ms）、`DismissIdleSlideshow`、`CloseItemTip`（1000 ms） |
 | OCR 模型 `model/ocr/` | PaddleOCR v4 中文（MaaCommonAssets），onnx 走 Git LFS；读任务栏、据点卡片、宝箱面板。每次只读一小块，约 240 ms，App 多占约 60 MB |
@@ -36,6 +36,16 @@
 * **补的中间点**：「绕开第二个毒花旁的石像」(6,−28.5)。从第二朵花直线去精英怪会撞上花旁的石像，照解困后走的路补的
 
 **调试**：`uv run python workspaces/WhereWindsMeet/tools/route_seg.py FROM TO [x y] [key=json …] out=…json` 用 CixinRoute 的参数只跑一段（比如 `1 6` 石碑到第一朵花，`'skip=[14]'` 留下第四朵），返回带完整日志；goto 的轨迹每 250 ms 一条，带帧号 `seq`，配合 `scripts/grab_frames.py` 抓的帧能对上画面；`tools/plot_seg.py RUN.json OUT.png`（要 `--extra cv`）把轨迹画到大地图上（底图是 `data/wwm/bigmap/composite.png`）。
+
+## 据点：佛爷寨
+
+**一键：`Foye`**，照慈心山院做的：关弹窗 → `FoyeTeleport` → `FoyeRoute`。任务是剿灭 7 个破戒头陀（任务栏按 `tracker` 读「破戒头陀」），没有毒花和固定精英怪；最后开据点宝箱，面板和慈心山院一样（默认领取三份）。2026-10-02 夜里据点已攻占时空跑：传送 + 路线连跑 3 趟都到了宝箱点，路线 56–66 秒、全程不开地图，终点 `where()` 核对 1 px；据点活着时（有橙色区域、有敌人、要打）还没跑过
+
+* **传送**：`FoyeTeleport` 用 `Foye_` 开头的菜单 → 江湖行 → 挑战 → 卡片几步（它们的 next 指向佛爷寨卡片 `stronghold_card_foye.png`，第二张卡），后面说明面板、石碑、传送、落地和慈心山院共用。石碑叫「佛爷寨」，在据点图标西边约 147 px。落地点是 (−154.5, 18.5)，在石碑旁的石头上，往东直走会撞木栅栏，路线第 1 点先往东北下到土路
+* **路点**：老师 2026-10-02 用 `where()` 记的 14 个点，加两个补的：「下石碑上土路」和「往南绕过两块立石」（第 7 点直线去篝火会卡在两块立石中间）。宝箱点人站在图标旁边，箭头挡住图标，`where()` 改认名字标签 `map_label_foye.png`（离图标 (−21.5, −110)；同一个标签每次开图分数在 0.68–1.0 之间跳，门槛 0.6，别的地名 ≤ 0.35）
+* **小地图缩放和慈心山院不一样的地方**：比例一样（院外 1 小地图像素 = 2.29 大地图像素，进大门后 1.17，按据点图标在小地图上的距离对 33 个锚点拟合，残差 < 1 px），但**关掉大地图后不会先缩小**，从关图后第一帧起就是当前位置该有的缩放，只看在不在大门里面（x ≈ −49 切换）。所以 `track` 要加 `--gate -49`，按锚点位置定缩放；用默认的 `track`（靠大地图参考图逐帧判缩放）会把院内的帧判成院外，拼出来东边那条路是歪的
+* **参考图**：`locate/foye_mosaic`（主力）和 `locate/foye_bigmap`（兜底；这一带大地图几乎是空白，单用它离线只有约 1/4 的帧能可信定位）。拼图数据在 `data/wwm_foye`：survey2 是整条路线一趟（开图走、记锚点，47 个锚点），survey4 是东边那条路一趟（`route {dwell: 3500}`：每个锚点站 3.5 秒，攒下位置和缩放都确定的静止帧）。离线测：老师记点时的 12 张截图（据点活着、有橙色）误差都在 1.2 px 内，check 跑的 10 个点和另一趟采集的 13 个锚点都在 1.7 px 内
+* **没刷新就停**：说明面板写「势力重新占据时间」时 `Teleport_NotRefreshed` 认出来，`Foye` 在石碑报错停下（2026-10-02 验证）。这个节点原来写的是 `custom_recognition: "stronghold.waiting"`，App 每个技能只注册一个自定义识别 `<技能>.recognize`，所以它从来没认出过（慈心山院的一键入口也一样）；现在是 `stronghold.recognize` 加参数 `{waiting: true}`
 
 ## 小地图的几个坑（2026-09-30 采集时发现）
 
@@ -69,12 +79,13 @@
 数据放在仓库根目录的 `data/wwm/`（不入库），命令都在仓库根目录跑，要先 `uv sync --extra cv`。
 
 1. **传送节点**：照 `CixinTeleport` 做一个，裁这个据点卡片和石碑的模板
-2. **录路点**：老师边走边说「记点」，用 `stronghold.js {where: true}` 读坐标；已有参考图的地方也可以用 `{locate: [...]}` 同时对比
+2. **录路点**：老师边走边说「记点」，用 `stronghold.js {where: true}` 读坐标；已有参考图的地方也可以用 `{locate: [...]}` 同时对比。**老师开走之前就开着抓帧**（下面第 3 步的 `grab_frames.py`），每次记点就是一个锚点（开图前最后一张大世界帧，位置是这次读的），老师这一趟就是第一趟采集；转弯、绕障碍的地方请老师多记几个点，路线按直线连点走，没记的弯会切角撞上（佛爷寨的草垛、立石）。新据点的名字标签也要裁一个（`where()` 的 `LABELS`）
 3. **采集**：
    * 一边抓帧：`uv run python scripts/grab_frames.py data/wwm/survey<N> --seconds 1500`
    * 一边让路线用开地图的方式走一遍，每次开地图前停稳记锚点：`route {points, from, to, anchors: "teaching/survey/s<M>"}`
    * 锚点截图用 `maalow sync WhereWindsMeet --pull --screenshots` 拉回来；锚点列表（结果或日志里的 `anchor {...}`）存成 `data/wwm/survey<N>/anchors.json`，每条加上 `run`
    * 最好多走一趟，留作评测
+   * 先量一下这个据点关掉大地图后小地图会不会先缩小（看据点图标在小地图上离箭头的距离，从关图后第一帧起是不是就和关图前一样）：不会就用 `track --gate X`（见佛爷寨）。开图走的路线没有参考图时很不稳，窄路差 1–2 px 就撞，**拼图做好之前别拿它给老师空跑**
 4. **离线处理**（`uv run --extra cv python workspaces/WhereWindsMeet/tools/wwm_locate.py …`）：
    * `cache data/wwm --survey survey<N>`：截出每帧的小地图、判断是不是大世界画面、读镜头朝向
    * `track data/wwm --survey survey<N> --relocate mosaic_s1_s2_s3_s4`：用锚点加逐帧配准给每帧定位；链条漂移超过 4 px 的段改用已有参考图定位

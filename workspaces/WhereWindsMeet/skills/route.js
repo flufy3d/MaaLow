@@ -21,6 +21,9 @@
 //   anchors: "teaching/survey/a"  surveying: before each look at the big map, wait until the character has stopped and
 //                            save the screenshot there (<anchors>/NNN.png); the result lists them with the frame number
 //                            and the position read ({n, seq, time, x, y, cam}), to line up frames grabbed meanwhile
+//   dwell: 3500            surveying: after each look, stand this long (ms) first: the minimap, reset to zoomed out by
+//                            the big map, zooms back in after 1–2 s in a courtyard; frames standing there at a known
+//                            place and zoom fill the zoomed-in mosaic (佛爷寨's east path, 2026-10-02)
 import { calm } from "./lib/hud.js";
 import { angleDiff, bearingOf, cameraHeading, CENTER, enemies } from "./lib/minimap.js";
 import { relocate, turn } from "./move.js";
@@ -403,7 +406,7 @@ function follow(args) {
     return out;
 }
 
-/** @param {{points: {at: Point, name?: string, snap?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string, locate?: string | string[], start?: Point, check?: boolean, nodo?: boolean}} args */
+/** @param {{points: {at: Point, name?: string, snap?: string, cam?: number, do?: string}[], from?: number, to?: number, reach?: number, speed?: number, anchors?: string, dwell?: number, locate?: string | string[], start?: Point, check?: boolean, nodo?: boolean}} args */
 export default function (args) {
     if (args.locate) return follow(/** @type {any} */ (args));
     const reach = args.reach ?? 6;
@@ -432,6 +435,7 @@ export default function (args) {
             log(`anchor ${JSON.stringify(anchors[anchors.length - 1])}`); // kept in the logs if the walk fails later
         }
         known = true;
+        if (args.dwell) sleep(args.dwell);
         return p;
     };
     for (let i = from; i <= (args.to ?? args.points.length - 1); i++) {

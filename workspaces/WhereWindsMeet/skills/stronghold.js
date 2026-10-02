@@ -5,7 +5,7 @@
 //              tapping the minimap opens the big map centered on the character (the arrow at PLAYER); the icon is
 //              template matched (templates/map_stronghold.png ~0.97; map_stronghold_done.png, the gray icon with an
 //              hourglass once taken, ~0.99 / ~0.91 on the live one; positions in taken-icon terms, LIVE_AT); null
-//              when not found, which includes standing on it (the arrow hides it): then the name label (慈心山院)
+//              when not found, which includes standing on it (the arrow hides it): then the name label (慈心山院, 佛爷寨)
 //              above it, a fixed step from the icon, is read instead; no guessing otherwise, a wrong position sends a
 //              route off in a wrong direction;
 //              also the camera heading (compass degrees, from the minimap before opening the map)
@@ -13,8 +13,8 @@
 //   {locate: ["locate/cixin_mosaic", "locate/cixin_bigmap"], n: 5}  compare locate() (minimap in a reference image,
 //                  no big map) with where(): each reference n times, with the time each look took
 //   progress():  the stronghold's tasks on the tracker under the minimap (OCR), e.g. 击败绣金卫 3/7
-//   waiting:     (recognition) the stronghold's card on the big map says when it comes back (势力重新占据时间): not
-//                refreshed yet; the text is kept in memory for start()
+//   waiting:     (recognition stronghold.recognize with {waiting: true}) the stronghold's card on the big map says when
+//                it comes back (势力重新占据时间): not refreshed yet; the text is kept in memory for start()
 //   {relocate: ["locate/cixin_mosaic", "locate/cixin_bigmap"]}  where the character is from the minimap alone, over the
 //                  whole reference (move.js relocate(), used by the route after a fight)
 //   {stone: true}  (node Teleport_ClosePanel) on the big map the stronghold card opened: close its panel and tap the
@@ -36,18 +36,36 @@ const PLAYER = [537, 362]; // the arrow on the big map opened from the minimap (
 const MAP_BACK = [1025, 37]; // the big map's back button
 const MAP_ROI = /** @type {Box} */ ([0, 60, 1080, 660]);
 const ICONS = ["map_stronghold.png", "map_stronghold_done.png"];
-const LABEL = "map_label_cixin.png"; // 慈心山院 over the stronghold (a label per stronghold: one reference for now)
-/** @type {Point} */
-const LABEL_AT = [53, -50.5]; // the label's middle from the icon's (7 big map shots, all the same)
+/** @type {[string, Point][]} */
+const LABELS = [
+    ["map_label_cixin.png", [53, -50.5]], // 慈心山院 over the stronghold; its middle from the icon's (7 big map shots, all the same)
+    ["map_label_foye.png", [-21.5, -110]], // 佛爷寨 (the place name above the stronghold, 1 shot, explore 2026-10-02)
+];
 const LABEL_AFTER = 3000; // the icons have shown by then
+const LABEL_MIN = 0.6; // the same label scores 0.68–1.0 from one look to the next (its text drawn a fraction of a px off); other place names ≤ 0.35
 /** @type {Point} */
 const LIVE_AT = [-1, -2]; // the live icon's middle from the taken one's: positions are given in taken-icon terms, as
 // the label's step and the locate references (surveyed once taken) are; the route points taken live were 1, 2 px off
 
 /**
- * Open the big map, read the character's position from the stronghold icon, close it. Standing on or next to the
- * icon, the arrow hides it: then the stronghold's name label is read instead (templates/map_label_cixin.png, always
- * LABEL_AT from the icon). null: neither found, or not on the world screen (no camera fan: a menu, a loading screen,
+ * The stronghold icon nearest the arrow (another stronghold's can be on the map too and match better, 佛爷寨 next to
+ * 慈心山院's, explore 2026-10-02), from icon or label matches (`at`: the match's middle from the icon's); of those
+ * matched at the same place (the live and the taken icon), the better one.
+ * @param {{h: Match, at: Point}[]} cands @param {Point} [to] nearest this (default: the arrow)
+ */
+function nearestIcon(cands, to = PLAYER) {
+    const icon = (/** @type {{h: Match, at: Point}} */ c) => [middle(c.h.box)[0] - c.at[0], middle(c.h.box)[1] - c.at[1]];
+    const d = (/** @type {{h: Match, at: Point}} */ c, /** @type {number[]} */ p) => Math.hypot(icon(c)[0] - p[0], icon(c)[1] - p[1]);
+    const near = cands.reduce((a, c) => (a == null || d(c, to) < d(a, to) ? c : a), /** @type {any} */ (null));
+    if (!near) return null;
+    const at = icon(near);
+    return cands.filter((c) => d(c, at) <= 6).reduce((a, c) => ((c.h.score ?? 0) > (a.h.score ?? 0) ? c : a));
+}
+
+/**
+ * Open the big map, read the character's position from the stronghold icon nearest it, close it. Standing on or next
+ * to the icon, the arrow hides it: then the stronghold's name label is read instead (LABELS, each a fixed step from its
+ * icon). null: neither found, or not on the world screen (no camera fan: a menu, a loading screen,
  * where tapping the minimap's place opens no map and the icons could be matched on something else).
  */
 export function where() {
@@ -64,11 +82,11 @@ export function where() {
         const image = screenshot();
         const live = match(ICONS[0], { image, roi: MAP_ROI, threshold: 0.85 });
         const done = match(ICONS[1], { image, roi: MAP_ROI, threshold: 0.85 });
-        if (live.hit && (!done.hit || (live.score ?? 0) >= (done.score ?? 0))) return { h: live, at: LIVE_AT, by: "icon" };
-        if (done.hit) return { h: done, at: [0, 0], by: "icon" };
+        const icon = nearestIcon([...live.results.map((m) => ({ h: m, at: LIVE_AT })), ...done.results.map((m) => ({ h: m, at: /** @type {Point} */ ([0, 0]) }))]);
+        if (icon) return { ...icon, by: "icon" };
         if (Date.now() - t0 < LABEL_AFTER) return null;
-        const l = match(LABEL, { image, roi: MAP_ROI, threshold: 0.7 });
-        return l.hit ? { h: l, at: LABEL_AT, by: "label" } : null;
+        const label = nearestIcon(LABELS.flatMap(([t, at]) => match(t, { image, roi: MAP_ROI, threshold: LABEL_MIN }).results.map((m) => ({ h: m, at }))));
+        return label ? { ...label, by: "label" } : null;
     }, { timeout: 6000, interval: 300 }); // the icons show ~2.5 s after the map
     click(MAP_BACK);
     sleep(800);
@@ -141,6 +159,9 @@ const STONE_PX = [100, 220]; // the stone from the stronghold icon, fully zoomed
 /** @type {Box} */
 const TELEPORT_ROI = [850, 640, 150, 70]; // 传送 on the stone's panel
 const STONE_TRIES = 3;
+/** @type {Point} */
+const CARD_AT = [538, 358]; // where the card puts its stronghold on the map
+const CARD_NEAR = 60;
 
 /** @param {Box} b @returns {Point} */
 const middle = (b) => [b[0] + b[2] / 2, b[1] + b[3] / 2];
@@ -154,13 +175,20 @@ function toStone() {
     for (let i = 0; i < STONE_TRIES; i++) {
         if (teleport()) return "stone";
         const image = screenshot();
-        const icon = match(ICONS, { image, roi: MAP_LEFT, threshold: 0.9 });
-        if (!icon.hit || !icon.box) {
-            runSkill("pinch", { center: [538, 358], times: 4 }); // zoomed out: in, around where the card put it
+        // the card's stronghold is the icon in the middle (another one can be in sight and match better); with the
+        // character standing by it, the arrow hides it: its name label then
+        const mid = (/** @type {{h: Match, at: Point}[]} */ cands) => {
+            const c = nearestIcon(cands, CARD_AT);
+            return c && Math.hypot(middle(c.h.box)[0] - c.at[0] - CARD_AT[0], middle(c.h.box)[1] - c.at[1] - CARD_AT[1]) <= CARD_NEAR ? c : null;
+        };
+        const icon = mid(match(ICONS, { image, roi: MAP_LEFT, threshold: 0.9 }).results.map((m) => ({ h: m, at: /** @type {Point} */ ([0, 0]) })))
+            ?? mid(LABELS.flatMap(([t, at]) => match(t, { image, roi: MAP_LEFT, threshold: 0.75 }).results.map((m) => ({ h: m, at }))));
+        if (!icon) {
+            runSkill("pinch", { center: CARD_AT, times: 4 }); // zoomed out: in, around where the card put it
             sleep(1000);
             continue;
         }
-        const c = middle(icon.box);
+        const c = [middle(icon.h.box)[0] - icon.at[0], middle(icon.h.box)[1] - icon.at[1]];
         const stones = match("map_teleport_stone.png", { image, roi: MAP_LEFT, threshold: 0.7 }).results
             .map((m) => ({ box: m.box, score: m.score ?? 0, d: Math.hypot(middle(m.box)[0] - c[0], middle(m.box)[1] - c[1]) }));
         const near = stones.filter((s) => s.d >= STONE_PX[0] && s.d <= STONE_PX[1]).sort((a, b) => a.d - b.d);
@@ -194,6 +222,8 @@ function start(node) {
 
 /** @param {{zoneAt?: number}} args @param {SkillContext} ctx */
 export function recognize(args, ctx) {
+    // the app registers one custom recognition per skill (stronghold.recognize): {waiting: true} picks that one
+    if (args?.waiting) return waiting(args, ctx);
     const image = ctx.image ?? screenshot();
     const z = zone(image);
     if (!z || z.dist > (args?.zoneAt ?? 8)) return null;

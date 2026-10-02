@@ -321,9 +321,12 @@
         ]
     },
     "Teleport_NotRefreshed": {
-        "desc": "据点说明面板写着「势力重新占据时间」：据点还没刷新。只做记号（剩余时间记进 memory 的 stronghold_wait），照样去传送；一键入口 Cixin 看到走过这个节点就停",
+        "desc": "据点说明面板写着「势力重新占据时间」：据点还没刷新。只做记号（剩余时间记进 memory 的 stronghold_wait），照样去传送；一键入口 Cixin 看到走过这个节点就停。认的是 skills/stronghold.js 的 waiting（App 每个技能只注册一个自定义识别 stronghold.recognize，用参数 waiting 选；原来写成 stronghold.waiting，App 里没有这个名字，从来没认出过，2026-10-02 查出）",
         "recognition": "Custom",
-        "custom_recognition": "stronghold.waiting",
+        "custom_recognition": "stronghold.recognize",
+        "custom_recognition_param": {
+            "waiting": true
+        },
         "roi": [
             790,
             340,
@@ -442,5 +445,283 @@
     "Teleport_Done": {
         "desc": "落地后的弹窗关完了",
         "recognition": "DirectHit"
+    },
+    "Foye": {
+        "desc": "佛爷寨一键跑完：从任意画面关弹窗 → FoyeTeleport 传送到石碑 → FoyeRoute 走完路线（路上遇到破戒头陀就打，打完接着走，最后开据点宝箱）。卡片上写着「势力重新占据时间」（还没刷新）就在石碑停下报错，不跑路线。照 Cixin 做的（教学 explore 2026-10-02 消息 2–45），技能 skills/stronghold.js 的 teleport 模式",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "stronghold",
+        "custom_action_param": {
+            "teleport": "FoyeTeleport"
+        },
+        "next": [
+            "FoyeRoute"
+        ]
+    },
+    "FoyeRoute": {
+        "desc": "佛爷寨：从传送石碑沿录好的路线走（路点坐标是大地图放到最大时相对据点图标的像素，2026-10-02 老师边走边说「记点」用 where() 记的，教学 explore 消息 7–41）。连续定位，和慈心山院一样（locate：每帧用小地图在拼图 locate/foye_mosaic 里找位置，认不出再用大地图 locate/foye_bigmap，中间航位推算，不开大地图；只在有动作的点和终点停下）。拼图是 2026-10-02 夜里一趟采集（开大地图走、每次开图前停稳记锚点、全程抓帧，47 个锚点）拼的，院外 1 小地图像素 = 2.29 大地图像素、进大门后 1.17（和慈心山院的 2.30 / 1.15 一样，数据在 data/wwm_foye）。路上遇敌交给 combat，打完全图重定位从最近的点接着走；任务栏按 tracker 读「破戒头陀」，到宝箱点没有宝箱、头陀还没清完就跑 StrongholdFight 清场再回宝箱。任务是剿灭 7 个破戒头陀，没有毒花、没有固定精英怪；最后在「据点宝箱」点开宝箱领奖（默认领取三份，老师同意）。「据点宝箱」点人站在图标旁边，箭头挡住图标，是按名字标签 map_label_foye.png 读的。传送落地在 (-154.5,18.5)（石碑旁的石头上，2026-10-02 空跑时从大地图帧读的），老师录的第一点其实已经下到了土路上；从落地直接朝第 1 点跑会撞上东边的木栅栏，所以先往东北下到土路「下石碑上土路」再沿路走（老师 explore 消息 52）。「往南绕过两块立石」是 2026-10-02 补的：第 7 点直线去篝火（第 9 点）会卡在两块立着的石碑中间，先往正南走 10 px 从石碑东边绕过。技能 skills/route.js",
+        "recognition": "DirectHit",
+        "action": "Custom",
+        "custom_action": "route",
+        "custom_action_param": {
+            "locate": [
+                "locate/foye_mosaic",
+                "locate/foye_bigmap"
+            ],
+            "tracker": {
+                "foes": "破戒头陀",
+                "flowers": "毒花"
+            },
+            "points": [
+                {
+                    "at": [
+                        -154.5,
+                        18.5
+                    ],
+                    "cam": 82,
+                    "name": "传送石碑（落地）"
+                },
+                {
+                    "at": [
+                        -146.5,
+                        10.5
+                    ],
+                    "cam": 82,
+                    "name": "下石碑上土路"
+                },
+                {
+                    "at": [
+                        -122.5,
+                        8.5
+                    ],
+                    "cam": 85
+                },
+                {
+                    "at": [
+                        -91.5,
+                        1.5
+                    ],
+                    "cam": 82
+                },
+                {
+                    "at": [
+                        -53.5,
+                        -1.5
+                    ],
+                    "cam": 93,
+                    "name": "大门口"
+                },
+                {
+                    "at": [
+                        -37.5,
+                        -0.5
+                    ],
+                    "cam": 98,
+                    "name": "进入庭院"
+                },
+                {
+                    "at": [
+                        -37.5,
+                        -12.5
+                    ],
+                    "cam": 13
+                },
+                {
+                    "at": [
+                        -19.5,
+                        -1.5
+                    ],
+                    "cam": 192
+                },
+                {
+                    "at": [
+                        -20.5,
+                        8.5
+                    ],
+                    "name": "往南绕过两块立石"
+                },
+                {
+                    "at": [
+                        -28.5,
+                        14.5
+                    ],
+                    "cam": 204
+                },
+                {
+                    "at": [
+                        -4.5,
+                        25.5
+                    ],
+                    "cam": 87
+                },
+                {
+                    "at": [
+                        13.5,
+                        20.5
+                    ],
+                    "cam": 70
+                },
+                {
+                    "at": [
+                        17.5,
+                        -14.5
+                    ],
+                    "cam": 4
+                },
+                {
+                    "at": [
+                        9.5,
+                        -17.5
+                    ],
+                    "cam": 270
+                },
+                {
+                    "at": [
+                        -17.5,
+                        -15.5
+                    ],
+                    "cam": 203
+                },
+                {
+                    "at": [
+                        -18.5,
+                        -0.5
+                    ],
+                    "cam": 85,
+                    "name": "据点宝箱",
+                    "do": "chest"
+                }
+            ]
+        }
+    },
+    "FoyeTeleport": {
+        "desc": "传送到佛爷寨的传送石碑（石碑也叫佛爷寨，在据点图标西边约 147 px）：菜单 → 江湖行 → 挑战 → 据点挑战「佛爷寨」卡片 → 大地图上找离据点图标最近的石碑 → 传送 → 回到大世界；从中间哪一页开始都能接着走，开着别处的大地图就先退出来。照 CixinTeleport 做的，菜单到卡片这几步换成 Foye_ 开头的节点（它们的 next 指向佛爷寨卡片），后面的说明面板、石碑、传送、落地和慈心山院共用。路线 FoyeRoute 从这里开始",
+        "recognition": "DirectHit",
+        "next": [
+            "Teleport_NotRefreshed",
+            "Teleport_Go",
+            "Teleport_ClosePanel",
+            "Foye_Card",
+            "Foye_Challenge",
+            "Foye_Jianghu",
+            "Foye_OpenMenu",
+            "Foye_LeaveMap",
+            "[JumpBack]CloseItemTip",
+            "[JumpBack]DismissIdleSlideshow"
+        ]
+    },
+    "Foye_OpenMenu": {
+        "desc": "大世界右上角菜单按钮（去佛爷寨）",
+        "recognition": "TemplateMatch",
+        "template": "world_menu_button.png",
+        "roi": [
+            990,
+            0,
+            89,
+            60
+        ],
+        "threshold": 0.6,
+        "green_mask": true,
+        "action": "Click",
+        "post_delay": 1500,
+        "next": [
+            "Foye_Jianghu"
+        ]
+    },
+    "Foye_Jianghu": {
+        "desc": "菜单面板「玩法」里的「江湖行」（去佛爷寨）",
+        "recognition": "TemplateMatch",
+        "template": "menu_jianghu.png",
+        "roi": [
+            680,
+            440,
+            100,
+            80
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "post_delay": 2000,
+        "next": [
+            "Foye_Challenge",
+            "Foye_Jianghu"
+        ]
+    },
+    "Foye_Challenge": {
+        "desc": "江湖行页的「挑战」大卡片（默认打开「据点挑战」页，去佛爷寨）",
+        "recognition": "TemplateMatch",
+        "template": "jianghu_challenge.png",
+        "roi": [
+            60,
+            490,
+            150,
+            80
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "target": [
+            262,
+            410,
+            1,
+            1
+        ],
+        "post_delay": 2000,
+        "next": [
+            "Foye_Card",
+            "Foye_Challenge"
+        ]
+    },
+    "Foye_Card": {
+        "desc": "据点挑战页的「佛爷寨」卡片（第二张；认卡片标题，点标题下方卡片中间）",
+        "recognition": "TemplateMatch",
+        "template": "stronghold_card_foye.png",
+        "roi": [
+            60,
+            170,
+            960,
+            70
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "target": true,
+        "target_offset": [
+            0,
+            150,
+            0,
+            0
+        ],
+        "post_delay": 3000,
+        "next": [
+            "Teleport_NotRefreshed",
+            "Teleport_Go",
+            "Teleport_ClosePanel",
+            "Foye_Card"
+        ]
+    },
+    "Foye_LeaveMap": {
+        "desc": "开着的是别处的大地图（左下「标点筛选」）：点右上返回退出来，再从菜单或据点挑战页接着走（去佛爷寨）",
+        "recognition": "TemplateMatch",
+        "template": "map_filter_button.png",
+        "roi": [
+            20,
+            640,
+            150,
+            80
+        ],
+        "threshold": 0.8,
+        "action": "Click",
+        "target": [
+            1025,
+            37,
+            1,
+            1
+        ],
+        "post_delay": 2000,
+        "next": [
+            "Foye_Card",
+            "Foye_Challenge",
+            "Foye_Jianghu",
+            "Foye_OpenMenu",
+            "Foye_LeaveMap"
+        ]
     }
 }

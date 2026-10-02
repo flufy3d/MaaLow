@@ -9,6 +9,7 @@ colors (MINIMAP), the camera fan's heading, the big map, the survey runs.
     uv run --extra cv python workspaces/WhereWindsMeet/tools/wwm_locate.py cache data/wwm      # minimap discs of the grabbed frames
     uv run --extra cv python workspaces/WhereWindsMeet/tools/wwm_locate.py bigmap data/wwm     # source 1 reference
     uv run --extra cv python workspaces/WhereWindsMeet/tools/wwm_locate.py track data/wwm      # frame positions from the anchors
+    uv run --extra cv python workspaces/WhereWindsMeet/tools/wwm_locate.py track data/wwm_foye --survey survey2 --gate -49 --relocate mosaic_v2   # 佛爷寨: zoom by place
     uv run --extra cv python workspaces/WhereWindsMeet/tools/wwm_locate.py stitch data/wwm --runs s1      # source 2 reference
     uv run --extra cv python workspaces/WhereWindsMeet/tools/wwm_locate.py eval data/wwm       # errors per image, source and preprocessing
     uv run --extra cv python workspaces/WhereWindsMeet/tools/wwm_locate.py export data/wwm --runs s1,s2   # the app's references
@@ -284,6 +285,55 @@ def track(root: Path, sd: Path, p: Config, relocate: list[tuple[list[Ref], Confi
     return out
 
 
+def track_gate(root: Path, sd: Path, p: Config, gate: float, relocate: list[Ref] | None = None) -> list[dict]:
+    """track() for a stronghold where closing the big map does not reset the minimap (佛爷寨, 2026-10-02: the icon's
+    distance on the minimap stays the same from the first frame after the map closes): the zoom is "in" past the gate
+    (x > gate) and "out" before it, from where the stretch's anchors are; stretches crossing the gate are left out.
+    Each stretch is chained between its anchors at that zoom, its drift spread along the way; one that drifted more
+    than MAX_DRIFT has its frames placed by locate() in `relocate` (a mosaic, one Ref per zoom) instead, trusted
+    matches only."""
+    z = frames_of(sd)
+    seq, D, cam = z["seq"], z["disc"], z["cam"]
+    good = good_frames(z["world"])
+    anchors = json.load(open(sd / "anchors.json"))
+    out = []
+    for a0, a1 in zip(anchors, anchors[1:]):
+        if a1["run"] != a0["run"] or a1["n"] != a0["n"] + 1:
+            continue
+        seg = f"{a0['run']}:{a0['n']}"
+        if (a0["x"] > gate) != (a1["x"] > gate):
+            print(seg, "crosses the gate, left out")
+            continue
+        zm = "in" if a0["x"] > gate else "out"
+        j = next(i for i in range(len(seq)) if seq[i] > a0["seq"] and not good[i])
+        fr = [i for i in range(j, len(seq)) if seq[i] <= a1["seq"] and good[i]]
+        if len(fr) < 3:
+            continue
+        A, B = np.array([a0["x"], a0["y"]], float), np.array([a1["x"], a1["y"]], float)
+        raw, _ = ml.chain(D, cam, fr, p, 1.0, np.zeros(2))
+        pos = A + ZOOMS[zm] * raw
+        steps = np.r_[0, np.cumsum(np.linalg.norm(np.diff(pos, axis=0), axis=1))]
+        drift = B - pos[-1]
+        pos = pos + np.outer(steps / max(steps[-1], 1e-6), drift)
+        print(seg, zm, len(fr), "drift", np.round(drift, 1), "path", round(float(steps[-1]), 1))
+        row = {"zoom": zm, "seg": seg, "run": a0["run"][:2]}
+        if np.linalg.norm(drift) <= MAX_DRIFT or not relocate:
+            out += [{"seq": int(seq[i]), "x": round(float(pos[t][0]), 2), "y": round(float(pos[t][1]), 2), "how": "spread",
+                     "drift": round(float(np.linalg.norm(drift)), 1), **row} for t, i in enumerate(fr)]
+            continue
+        ref = [r for r in relocate if r.name.endswith(zm)]
+        n = 0
+        for t, i in enumerate(fr):
+            prior = tuple(A + (B - A) * t / max(1, len(fr) - 1))
+            r = ml.best_of(D[i], ref, PREPS[APP_PREPS["mosaic"]], prior, 45, None if np.isnan(cam[i]) else float(cam[i]))
+            if r and r[0]["score"] >= 0.5 and r[0]["score"] - r[0]["second"] >= 0.15:
+                n += 1
+                out.append({"seq": int(seq[i]), "x": round(float(r[0]["x"]), 2), "y": round(float(r[0]["y"]), 2), "how": "locate", **row})
+        print("   relocated", n, "of", len(fr))
+    json.dump(out, open(sd / "track.json", "w"), indent=0)
+    return out
+
+
 def build_bigmap(root: Path) -> None:
     """Source 1: the big map screenshots (bigmap/shots.json) lined up on the stronghold icon, the arrow, panels,
     gold marks and labels (not on the minimap) left out, the median where several cover a spot."""
@@ -444,6 +494,7 @@ def main() -> None:
     ap.add_argument("root", type=Path)
     ap.add_argument("--survey", default="survey1", help="cache / track: the survey directory")
     ap.add_argument("--relocate", default="", help="track: a mosaic directory (e.g. mosaic_s1_s2) to place drifted stretches with")
+    ap.add_argument("--gate", type=float, help="track: the zoom by where the anchors are, zoomed in past x > GATE (no reset on closing the map; 佛爷寨 -49)")
     ap.add_argument("--runs", default="s1", help="stitch: the survey runs that make the mosaic (the rest test it)")
     ap.add_argument("--preps", default="", help="eval: preprocessings to try (PREPS keys), default all")
     ap.add_argument("--every", type=int, default=2, help="eval: every n-th tracked frame")
@@ -459,6 +510,8 @@ def main() -> None:
         cache_frames(a.root, sd)
     elif a.cmd == "bigmap":
         build_bigmap(a.root)
+    elif a.cmd == "track" and a.gate is not None:
+        track_gate(a.root, sd, TRACK_PREP, a.gate, [mosaic_ref(a.root, z, a.relocate) for z in ZOOMS] if a.relocate else None)
     elif a.cmd == "track":
         rel = None
         if a.relocate:  # the references made so far: the mosaic, then the big map
