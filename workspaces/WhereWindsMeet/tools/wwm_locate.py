@@ -51,6 +51,13 @@ RED = (((0, 45, 150), (8, 255, 255)), ((170, 45, 150), (180, 255, 255)))
 # The zone is a see-through orange over the map (S ~50-60 against ~5 for the bare map); the buildings under it still
 # show. lib/minimap.js ZONE (S >= 55) only catches its darker half, which is enough to find it but not to erase it.
 ZONE_FILL = ((10, 25, 100), (24, 85, 235))
+# Left out of the crop when the app matches it in a mosaic, besides RED: what is drawn over the map but not in a mosaic
+# (the median of many frames drops what moves), dark marks (enemies and the like: in a courtyard by day the map under the
+# orange zone is so faint that their band-pass rings outweighed it, 酒肉山林 2026-10-03), and the disc washed out to white
+# by the sun behind it. The map itself is never this dark, at night either.
+DARK = ((0, 0, 0), (180, 255, 90))
+GLARE = ((0, 0, 245), (180, 40, 255))
+APP_DROP = RED + (DARK, GLARE)
 
 # The minimap in the 1080x720 screenshot: a 110 px square around (144, 70), the character in its middle (54, 54).
 # Used: within r 44 (the rim is shaded), not the arrow (r 9), not the camera fan (to r 34, heading ± 38°), not the
@@ -465,6 +472,13 @@ def eval_items(root: Path, holdout=("s2", "s4"), every: int = 2):
 APP_PREPS = {"mosaic": "dog1-4", "bigmap": "canny"}
 
 
+def app_config(source: str) -> Config:
+    """The config the app matches a source with: its preprocessing, and for a mosaic APP_DROP left out (the big map
+    has no marks either, but leaving them out did not help there)."""
+    c = PREPS[APP_PREPS[source]]
+    return replace(c, drop=APP_DROP) if source == "mosaic" else c
+
+
 def export(root: Path, name: str, runs, crop=(-320, -260, 640, 580), templates: Path = TEMPLATES) -> None:
     """Write the app's references to the workspace: templates/locate/<name>_<source>.json with a PNG per zoom
     (map_locate.write_reference; positions: big map px from the stronghold icon, off: where() frame), MINIMAP's
@@ -481,7 +495,7 @@ def export(root: Path, name: str, runs, crop=(-320, -260, 640, 580), templates: 
                 # only around the stronghold (the whole composite is large at the courtyard's zoom)
                 levels[zoom] = bigmap_ref(root, zoom).cut(*crop)
         what = "stitched from survey runs " + ", ".join(runs) if source == "mosaic" else "the big map, scaled"
-        ml.write_reference(templates, f"locate/{name}_{source}", levels, PREPS[APP_PREPS[source]],
+        ml.write_reference(templates, f"locate/{name}_{source}", levels, app_config(source),
                            f"{name}: minimap reference ({what}), made by tools/wwm_locate.py export")
 
 

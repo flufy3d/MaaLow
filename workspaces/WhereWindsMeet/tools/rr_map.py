@@ -255,12 +255,16 @@ ICON_RED = (((0, 85, 40), (10, 255, 150)), ((165, 85, 40), (180, 255, 150)))
 MID = wl.MINIMAP.mid  # the character, in the disc
 
 
-def icon_blobs(d: np.ndarray) -> list[dict]:
-    """Dark red blobs in a minimap disc that could be the stronghold icon: middle (disc px, from the character),
-    area, height / width."""
+ICON_R = 47  # icons looked for within this (disc px from the character)
+RIM_R = 51  # and out to this for the rim's (the courtyard's zoom holds a far icon out to r ~50: 酒肉山林's bonfire field)
+
+
+def icon_blobs(d: np.ndarray, r: tuple[float, float] = (0, ICON_R)) -> list[dict]:
+    """Dark red blobs in a minimap disc that could be the stronghold icon, r[0] < distance <= r[1]: middle (disc px,
+    from the character), area, height / width."""
     R, _ = ml.polar(d.shape[0])
     hsv = cv2.cvtColor(d, cv2.COLOR_BGR2HSV)
-    m = (ml.in_range(hsv, ICON_RED) & (R <= 47)).astype(np.uint8)
+    m = (ml.in_range(hsv, ICON_RED) & (R > r[0]) & (R <= r[1])).astype(np.uint8)
     n, lab, st, cen = cv2.connectedComponentsWithStats(m, connectivity=8)
     out = []
     for i in range(1, n):
@@ -291,7 +295,8 @@ def done_icon(d: np.ndarray, t: np.ndarray) -> dict | None:
 
 def cmd_icons(root: Path) -> None:
     """<root>/icons.json: per world frame, the dark red blobs that could be the live stronghold icon on the minimap
-    (`live`) and the best match of the taken one (`done`, templates/minimap_stronghold_done.png)."""
+    (`live`, within ICON_R; `rim`, out to RIM_R) and the best match of the taken one (`done`,
+    templates/minimap_stronghold_done.png)."""
     z = wl.frames_of(root / REC)
     t = ml.imread(T / DONE_ICON) if (T / DONE_ICON).exists() else None
     out = {}
@@ -299,13 +304,34 @@ def cmd_icons(root: Path) -> None:
         if z["world"][i]:
             b = icon_blobs(z["disc"][i])
             g = done_icon(z["disc"][i], t) if t is not None else None
-            out[int(n)] = {"live": b, **({"done": g} if g and g["s"] >= 0.6 and g["m"] >= 0.15 else {})}
+            rim = [q for q in icon_blobs(z["disc"][i], (ICON_R, RIM_R)) if math.hypot(q["dx"], q["dy"]) > ICON_R]
+            out[int(n)] = {"live": b, **({"done": g} if g and g["s"] >= 0.6 and g["m"] >= 0.15 else {}),
+                           **({"rim": rim} if rim else {})}
     json.dump(out, open(root / "icons.json", "w"))
     print(len(out), "world frames;", sum(1 for v in out.values() if v["live"]), "with red blobs;",
           sum(1 for v in out.values() if "done" in v), "with the taken icon")
 
 
 PINNED = 38  # the icon is held on the disc's rim (r ~42-46) when it is farther: past this, its distance says nothing
+
+
+def rim_icons(root: Path, track: dict) -> dict[int, tuple[str, float, float]]:
+    """Icons that only tell the way to the stronghold (its distance says nothing): the track's pinned ones and the
+    live icon out on the rim (icons.json `rim`, past ICON_R), the latter where only one is there and it agrees with
+    its neighbours as in icon_track. {n: (live | done, dx, dy)}"""
+    out = {n: (kind[: -len("_rim")], dx, dy) for n, (kind, dx, dy) in track.items() if kind.endswith("_rim")}
+    raw = json.load(open(root / "icons.json"))
+    obs = {int(n): (v["rim"][0]["dx"], v["rim"][0]["dy"]) for n, v in raw.items()
+           if len(v.get("rim", [])) == 1 and not v["live"] and int(n) not in track}
+    keys = sorted(obs)
+    for j, n in enumerate(keys):
+        near = [obs[m] for m in keys[max(0, j - 4) : j + 5] if abs(m - n) <= 8]
+        if len(near) < 3:
+            continue
+        mx, my = np.median([o[0] for o in near]), np.median([o[1] for o in near])
+        if math.hypot(obs[n][0] - mx, obs[n][1] - my) <= 1.5:
+            out[n] = ("live", *obs[n])
+    return out
 
 
 def icon_track(root: Path) -> dict[int, tuple[str, float, float]]:
@@ -378,6 +404,7 @@ K = {"out": 2.31, "in": 1.152}
 K0 = K
 WALK = 0.6  # big map px per frame: the random walk that holds frames with nothing else on them
 GAP = 30  # frames off the world screen that split a stretch
+RIM_SIGMA = (0.5, 0.02)  # the rim icon's bearing: big map px off the line, at least, and per px of distance (~1°)
 ANIM = (10, 30)  # frames left out before / after a zoom switch's first / last look (it animates ~1 s)
 
 
@@ -520,7 +547,14 @@ def solve(root: Path, k: dict[str, float], fixes=(), iters: int = 4, only: str |
     for a in json.load(open(root / "anchors.json")):  # standing at the look's place: never dropped
         fix += [(n, a["x"], a["y"], 0.5) for n in frames if a["last"] < n <= a["last"] + 15 or a["first"] - 15 <= n < a["first"]]
     icons = [(n, kind, dx, dy) for n, (kind, dx, dy) in track.items() if n in col and not kind.endswith("_rim")]
+    # the icon out on the rim: only its bearing, the frame on the line from the icon's place that way (n·(p - c) = 0)
+    rims = [(n, kind, dx, dy) for n, (kind, dx, dy) in rim_icons(root, track).items() if n in col]
     keep_reg, keep_ic, keep_fix = np.ones(len(regs), bool), np.ones(len(icons), bool), np.ones(len(fix), bool)
+    keep_rim = np.ones(len(rims), bool)
+    far = np.array([1.3 * k[zoom_of[n]] * math.hypot(dx, dy) for n, _, dx, dy in rims])  # its distance, guessed
+    # and at least as far as it is shown (held on the rim it is farther, never nearer): where a solve put it nearer,
+    # the next one holds it there (a lower bound, active only where it was broken)
+    near = np.zeros(len(rims), bool)
     for it in range(iters):
         rows, cols, vals, rhs = [], [], [], []
 
@@ -540,6 +574,15 @@ def solve(root: Path, k: dict[str, float], fixes=(), iters: int = 4, only: str |
                 kz = k[zoom_of[n]]
                 for ax, d in ((0, dx), (1, dy)):
                     add([(2 * col[n] + ax, 1.0), (P[f"{kind}_{zoom_of[n]}"] + ax, -1.0)], -kz * d, 0.5 * kz)
+        for m, (n, kind, dx, dy) in enumerate(rims):
+            if keep_rim[m]:
+                r = math.hypot(dx, dy)
+                nx, ny = -dy / r, dx / r
+                c_ = P[f"{kind}_{zoom_of[n]}"]
+                add([(2 * col[n], nx), (2 * col[n] + 1, ny), (c_, -nx), (c_ + 1, -ny)], 0.0, max(RIM_SIGMA[0], RIM_SIGMA[1] * far[m]))
+                if near[m]:
+                    ux, uy = dx / r, dy / r
+                    add([(c_, ux), (c_ + 1, uy), (2 * col[n], -ux), (2 * col[n] + 1, -uy)], k[zoom_of[n]] * r, 0.5 * k[zoom_of[n]])
         for a, b in zip(frames, frames[1:]):
             if zoom_of[a] == zoom_of[b] and b - a <= GAP:
                 for ax in (0, 1):
@@ -563,6 +606,15 @@ def solve(root: Path, k: dict[str, float], fixes=(), iters: int = 4, only: str |
         res_reg = np.array([np.hypot(*(p(b) - p(a) + k[zoom_of[a]] * np.array([dx, dy]))) for a, b, dx, dy, _ in regs])
         res_ic = np.array([np.hypot(*(p(n) - cv[f"{kd}_{zoom_of[n]}"] + k[zoom_of[n]] * np.array([dx, dy]))) for n, kd, dx, dy in icons])
         res_fix = np.array([np.hypot(*(p(n) - np.array([x, y]))) for n, x, y, _ in fix]) if fix else np.zeros(0)
+        res_rim = np.zeros(len(rims))
+        for m, (n, kd, dx, dy) in enumerate(rims):
+            v = cv[f"{kd}_{zoom_of[n]}"] - p(n)  # to the icon
+            r = math.hypot(dx, dy)
+            far[m] = max(float(np.hypot(*v)), k[zoom_of[n]] * r)
+            res_rim[m] = abs(-dy / r * v[0] + dx / r * v[1]) if v @ np.array([dx, dy]) > 0 else far[m]  # behind: off
+            near[m] = near[m] or (v @ np.array([dx, dy])) / r < k[zoom_of[n]] * r - 0.3
+        if len(rims):
+            keep_rim = res_rim <= np.maximum(RIM_SIGMA[0], RIM_SIGMA[1] * far) * 3
         if len(regs):
             keep_reg = res_reg <= max(1.0, 4 * np.median(res_reg[keep_reg]))
         if len(icons):
@@ -573,7 +625,8 @@ def solve(root: Path, k: dict[str, float], fixes=(), iters: int = 4, only: str |
         if not quiet:
             print(f"  solve {it}: c " + " ".join(f"{c} {np.round(cv[c], 1)}" for c in CS) + "; shift resid med "
                   f"{np.median(res_reg):.2f} (out {int((~keep_reg).sum())}/{len(regs)}), icon {np.median(res_ic) if len(icons) else 0:.2f} "
-                  f"(out {int((~keep_ic).sum())}/{len(icons)}), fixes {np.median(res_fix) if fix else 0:.2f} (out {int((~keep_fix).sum())}/{len(fix)})")
+                  f"(out {int((~keep_ic).sum())}/{len(icons)}), fixes {np.median(res_fix) if fix else 0:.2f} (out {int((~keep_fix).sum())}/{len(fix)}), "
+                  f"rim {np.median(res_rim) if len(rims) else 0:.2f} (out {int((~keep_rim).sum())}/{len(rims)}, held off {int(near.sum())})")
     out = {n: (float(pos[col[n]][0]), float(pos[col[n]][1]), zoom_of[n]) for n in frames}
     return out, {c: [round(float(v), 2) for v in cv[c]] for c in CS}, {"reg": res_reg, "icon": res_ic, "fix": res_fix}
 
@@ -670,7 +723,7 @@ def zone_fixes(root: Path, pos: dict, k: dict, before: int = 300, search: float 
 # ---- mosaics
 
 LOOK_MOSAIC = wl.look(zone="flat")  # the zone's pixels kept (filtered apart when matched)
-MATCH = wl.PREPS[wl.APP_PREPS["mosaic"]]  # what the app matches a mosaic with (dog 1/4)
+MATCH = wl.app_config("mosaic")  # what the app matches a mosaic with (dog 1/4, marks and glare left out)
 
 
 def build_mosaic(root: Path, pos: dict, zoom: str, k: float, skip=lambda n: False, extra=()) -> ml.Ref:
@@ -1042,7 +1095,7 @@ def write_levels(name: str, levels: list[tuple[str, str, ml.Ref]], desc: str, te
         out.append({"zoom": zm, **({"layer": layer} if layer else {}), "image": png, "k": round(ref.k, 4),
                     "origin": [round(float(v), 2) for v in ref.origin], "off": [round(float(v), 2) for v in ref.off]})
     path = templates / f"{name}.json"
-    cfg = wl.look(kind=MATCH.prep.kind, pre=MATCH.prep.pre, sigma=MATCH.prep.sigma).json()
+    cfg = MATCH.json()
     json.dump({"desc": desc, "levels": out, **cfg}, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=4)
     print("wrote", path)
     return path
