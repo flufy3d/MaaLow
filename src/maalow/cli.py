@@ -110,7 +110,7 @@ def _add_rec_parser(sub) -> None:
     p = ops.add_parser("start", help="start recording the tablet screen (at most 20 minutes)")
     p.add_argument("--name", help="recording name")
     p.add_argument("--note", help="a note on the recording")
-    p.add_argument("--bitrate", type=int, help="bits per second (default: the app's, 3000000)")
+    p.add_argument("--bitrate", type=int, help="bits per second (default: the app's setting, 10000000 out of the box)")
     ops.add_parser("stop", help="stop recording and wait until it is saved")
     ops.add_parser("list", help="list recordings")
     ops.add_parser("status", help="recording state")
