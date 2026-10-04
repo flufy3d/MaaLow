@@ -206,6 +206,9 @@ const bearingTo = (from, to) => (Math.atan2(to[0] - from[0], -(to[1] - from[1]))
 /** @param {Point} a @param {Point} b */
 const distTo = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
 
+/** @type {number | null} */
+let camSeen = null; // the last camera heading read off the fan (fix())
+
 /**
  * locate() near `prior` (null: the whole reference) in each reference in turn (a stitched one where it was surveyed,
  * the big map where not), only the levels of `layer` and those with none (no layer: all); the first match that can
@@ -216,8 +219,14 @@ const distTo = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
  * @param {string | string[]} ref @param {Image} image @param {number | null} cam @param {Point | null} prior @param {number} radius @param {string} [layer]
  */
 function fix(ref, image, cam, prior, radius, layer) {
+    if (cam != null) camSeen = cam;
+    // no fan found: leave out a wedge where it was last seen (or north), not all it could cover. Without a heading
+    // locate() leaves out the whole inner disc (r <= 34), where most of the map is; 怜花禅院's gate (the disc washed
+    // out, the fan under FAN_MIN, 2026-10-04) then matched nowhere and the route stood still. Offline on frames with
+    // no fan there: no wedge 28% trusted (14 > 4 px off), a wedge at any heading 74–98% (none > 4 px)
+    const wedge = cam ?? camSeen ?? 0;
     for (const one of Array.isArray(ref) ? ref : [ref]) {
-        const r = locate(one, { image, wedge: cam, prior: prior ?? undefined, radius, layer });
+        const r = locate(one, { image, wedge, prior: prior ?? undefined, radius, layer });
         if (r && r.score >= FIX_MIN && r.score - r.second >= FIX_MARGIN) return r;
     }
     return null;

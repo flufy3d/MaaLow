@@ -10,6 +10,7 @@ import json
 import math
 import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -88,7 +89,21 @@ def classify(img: np.ndarray, root: Path) -> str:
         if score(img, _tpl(t), roi)[0] >= th:
             return name
     d = wl.disc(img)
-    return "world" if disc_lit(d) and wl.heading(d) is not None else "other"
+    return "world" if disc_lit(d) and (wl.heading(d) is not None or arrow_shows(img)) else "other"
+
+
+ARROW_HSV = ((18, 60, 180), (32, 170, 255))  # lib/minimap.js arrowShows(): the gold arrow in the minimap's middle
+ARROW_ROI = (135, 61, 19, 19)
+ARROW_PX = 30
+
+
+def arrow_shows(img: np.ndarray) -> bool:
+    """The minimap's gold arrow is there (the world screen; ~32-67 px, menus and the big map 0), as the app's
+    arrowShows(). For frames whose fan is not found: 怜花禅院's recording lost 180 frames at the gate (1682-1864, a
+    bright sky behind the disc, the fan under 0.4) and with them the way through the gate and the zoom switch."""
+    x, y, w, h = ARROW_ROI
+    hsv = cv2.cvtColor(img[y:y + h, x:x + w], cv2.COLOR_BGR2HSV)
+    return int((cv2.inRange(hsv, np.array(ARROW_HSV[0]), np.array(ARROW_HSV[1])) > 0).sum()) >= ARROW_PX
 
 
 def disc_lit(d: np.ndarray) -> bool:
@@ -469,7 +484,10 @@ _PREP: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 def prepped(z: dict, i: int, c: ml.Config = TRACK) -> tuple[np.ndarray, np.ndarray]:
     if i not in _PREP:
         w = None if np.isnan(z["cam"][i]) else float(z["cam"][i])
-        _PREP[i] = ml.prep(z["disc"][i], ml.crop_mask(z["disc"][i], c, w), c)
+        # no fan found (a world frame told by the arrow, classify()): the disc is washed out and the fan with it, so
+        # nothing to leave out; leaving out all it could cover (r <= 34) leaves nothing to register (怜花禅院's gate)
+        m = ml.crop_mask(z["disc"][i], c if w is not None else replace(c, wedge=(0, 0)), w)
+        _PREP[i] = ml.prep(z["disc"][i], m, c)
     return _PREP[i]
 
 

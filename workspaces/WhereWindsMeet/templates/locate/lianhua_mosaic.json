@@ -1,0 +1,148 @@
+{
+    "desc": "lianhua: minimap reference stitched from recording ? (levels: zoom out / in, before and after the stronghold was taken), made by tools/rec_route.py mosaic",
+    "levels": [
+        {
+            "zoom": "out",
+            "image": "locate/lianhua_mosaic_out.png",
+            "k": 2.31,
+            "origin": [
+                50.31,
+                83.06
+            ],
+            "off": [
+                0.0,
+                0.0
+            ]
+        },
+        {
+            "zoom": "in",
+            "layer": "live",
+            "image": "locate/lianhua_mosaic_in_live.png",
+            "k": 1.152,
+            "origin": [
+                66.29,
+                62.77
+            ],
+            "off": [
+                0.0,
+                0.0
+            ]
+        },
+        {
+            "zoom": "in",
+            "layer": "taken",
+            "image": "locate/lianhua_mosaic_in_taken.png",
+            "k": 1.152,
+            "origin": [
+                66.45,
+                67.73
+            ],
+            "off": [
+                0.0,
+                0.0
+            ]
+        }
+    ],
+    "crop": {
+        "center": [
+            144,
+            70
+        ],
+        "size": 110
+    },
+    "mask": {
+        "circle": [
+            9,
+            44
+        ],
+        "wedge": {
+            "r": 34,
+            "half": 38
+        },
+        "drop": [
+            {
+                "h": [
+                    0,
+                    8
+                ],
+                "s": [
+                    45,
+                    255
+                ],
+                "v": [
+                    150,
+                    255
+                ]
+            },
+            {
+                "h": [
+                    170,
+                    180
+                ],
+                "s": [
+                    45,
+                    255
+                ],
+                "v": [
+                    150,
+                    255
+                ]
+            },
+            {
+                "h": [
+                    0,
+                    180
+                ],
+                "s": [
+                    0,
+                    255
+                ],
+                "v": [
+                    0,
+                    90
+                ]
+            },
+            {
+                "h": [
+                    0,
+                    180
+                ],
+                "s": [
+                    0,
+                    40
+                ],
+                "v": [
+                    245,
+                    255
+                ]
+            }
+        ],
+        "grow": 5,
+        "sat_max": 0
+    },
+    "regions": {
+        "h": [
+            10,
+            24
+        ],
+        "s": [
+            25,
+            85
+        ],
+        "v": [
+            100,
+            235
+        ],
+        "mode": "flat",
+        "gain": 1.0,
+        "open": 3,
+        "min_px": 60,
+        "close": 5,
+        "edge": 5
+    },
+    "prep": {
+        "kind": "dog",
+        "pre": 1,
+        "sigma": 4
+    }
+}
