@@ -195,6 +195,26 @@ const BIAS_RUN = 0.7; // only while it runs at least this share of the speed (sl
 const BIAS_GAIN = 0; // off (teacher, 2026-10-02): with bad matches it learns a wrong bias and steers off the way the
 // whole leg (酒肉山林's 4th live run went 8 px south of the road, 37° off, onto the rocks before the gate)
 const BIAS_MAX = 60;
+// No fan on the minimap: steer by the last heading read (nothing turns the camera but the face turns, which update
+// it), or the one the route says the last leg ended with (cam0), and better, by the way it runs (two matches BIAS_MS
+// apart, the stick held about the same way, running at least BIAS_RUN of the speed) minus the stick's angle. Before,
+// the stick just stayed where it was when the fan went, or pointed straight ahead when there was none at the start: at
+// 怜花禅院's gate (the fan unread for whole legs, 2026-10-04) a leg that started there ran on in the camera's direction,
+// 36° off, along the wall past the door and into it. The fan, once read again, takes over.
+const CAM_RUN_TURN = 15; // the stick moved more than this since the first match: start over
+// A door (route points with door: true, args.doors) narrower than the matches are sure: zoomed out, 1 minimap px is
+// 2.3 big map px, and 怜花禅院's gate (2026-10-04) is ~1.5 px wide between two piers standing out of the wall; the
+// zoomed-out matches there were 0.5–2 px west of where() with the character in the doorway, so the steering put it
+// against the wall beside the east pier, again and again (steering on from there goes back to the same place; sliding
+// along the wall stops at the pier; the ways out in UNSTICK edge 60° a second each way, which only comes back).
+// Stuck within DOOR_NEAR of a door: back off, step sideways (across the way through the door) by DOOR_STEPS (side:
+// +1 toward the door as matched, −1 the other way; ms), then run straight along the way through the door for
+// DOOR_RUN ms, not steering by the matches; the next one if still stuck there, then UNSTICK.
+const DOOR_NEAR = 3.5;
+const DOOR_BACK = 400;
+/** @type {[number, number][]} */
+const DOOR_STEPS = [[1, 250], [1, 500], [-1, 250], [-1, 500]];
+const DOOR_RUN = 1500;
 const FIGHT_BIG = 30; // the top right icons hidden and a red mark this close (big map px): a fight; in minimap px
 // (by the k of the level matched last) that is ~26 in the courtyard but ~13 outside, so the enemies behind the wall
 // that spot it at the gate do not stop it
@@ -276,7 +296,13 @@ export function relocate(ref, ms = 4000, layer, near) {
  * `bias`: the steering bias (see BIAS_MS) carried from leg to leg too; the result's `bias` is where it ended.
  * `layer`: the stronghold's state known so far ("live" | "taken", carried from leg to leg like `k`); it changes when
  * the minimap shows the other (strongholdState(), two looks in a row), and picks the reference levels tried (fix()).
- * @param {{goto: Point[], ref: string | string[], from?: Point, k?: number, bias?: number, layer?: string, reach?: number, ms?: number, sprint?: boolean, face?: boolean, pickup?: boolean}} args
+ * `doors`: points of the way that are narrow doors (DOOR_STEPS). `outs`: for each point, where the zoomed-out level of
+ * the reference has it if that differs (null: as given), used while the last match was zoomed out: the two levels can
+ * be a px apart at a zoom switch, more than a door is wide (怜花禅院's gate, see DOOR_STEPS: the zoomed-out matches
+ * there ~1 px north-west of the zoomed-in ones and where()).
+ * `cam0`: the camera heading to go by until the fan is read or the way it runs tells (the last leg's `cam`, the fan's
+ * or that guess, when nothing turned the camera since); the result's `cam` is where it ended.
+ * @param {{goto: Point[], ref: string | string[], from?: Point, k?: number, bias?: number, layer?: string, reach?: number, ms?: number, sprint?: boolean, face?: boolean, pickup?: boolean, doors?: Point[], outs?: (Point | null)[], cam0?: number | null}} args
  */
 function goTo(args) {
     const path = args.goto;
@@ -310,6 +336,17 @@ function goTo(args) {
     let bias = args.bias ?? 0; // the way it runs minus the way it is steered (degrees)
     /** @type {{t: number, p: Point, dir: number} | null} */
     let ran = null; // the last match it measured the way it runs from
+    /** @type {number | null} */
+    let camGuess = args.cam0 ?? null; // no fan: the camera heading from the way it runs (CAM_RUN_TURN); to start
+    // with, where the last leg left it (route.js: nothing turned it since)
+    /** @type {{t: number, p: Point, rel: number} | null} */
+    let camRun = null; // the match that guess is measured from
+    let guesses = 0;
+    const doors = args.doors ?? [];
+    const outs = args.outs ?? [];
+    /** Point i where the zoomed-out level put it (args.outs) while matched there, else as given. @param {number} i @returns {Point} */
+    const pt = (i) => (zoomAt === "out" && outs[i]) || path[i];
+    let doorTries = 0; // DOOR_STEPS tried
     let lastT = t0;
     let closest = Infinity;
     let nearest = Infinity; // the last point: closest so far, to the fraction
@@ -343,8 +380,8 @@ function goTo(args) {
      * @param {Point} p @param {number} i @returns {Point}
      */
     const aim = (p, i) => {
-        const a = i ? path[i - 1] : start ?? p;
-        const b = path[i];
+        const a = i ? pt(i - 1) : start ?? p;
+        const b = pt(i);
         const vx = b[0] - a[0];
         const vy = b[1] - a[1];
         const l2 = vx * vx + vy * vy;
@@ -354,7 +391,7 @@ function goTo(args) {
         let k = i;
         let rest = LOOKAHEAD;
         for (;;) {
-            const end = path[k];
+            const end = pt(k);
             const d = distTo(cur, end);
             if (rest <= d || k >= path.length - 1) {
                 const f = d > 1e-6 ? Math.min(1, rest / d) : 1;
@@ -369,7 +406,7 @@ function goTo(args) {
     const note = (image, r, dist) => {
         const now = Date.now();
         if (!pos || (trace.length && now - t0 - trace[trace.length - 1].t < 250)) return;
-        trace.push({ t: now - t0, seq: image.seq, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, ...(r ? { lv: r.layer ?? r.zoom } : {}), ...(bias ? { b: Math.round(bias) } : {}), i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}) });
+        trace.push({ t: now - t0, seq: image.seq, x: Math.round(pos[0] * 10) / 10, y: Math.round(pos[1] * 10) / 10, sc: r ? Math.round(r.score * 100) / 100 : null, ...(r ? { lv: r.layer ?? r.zoom } : {}), ...(bias ? { b: Math.round(bias) } : {}), i: idx, d: Math.round(dist), ...(fast ? { fast } : {}), ...(slow ? { slow } : {}), ...(cam == null && camGuess != null ? { g: Math.round(camGuess) } : {}) });
         // the trace as it goes, as events (/events): a run stopped by the teacher returns no logs
         if (now - sentAt >= EVENT_MS) {
             event("goto", { goal: path[path.length - 1], trace: trace.slice(sent) });
@@ -384,11 +421,12 @@ function goTo(args) {
      * @param {Point} at @param {number} k
      */
     const passed = (at, k) => {
-        const d = distTo(at, path[k]);
+        const q = pt(k);
+        const d = distTo(at, q);
         if (d <= PASS) return true;
-        const prev = k ? path[k - 1] : start;
+        const prev = k ? pt(k - 1) : start;
         if (!prev || d > PASS_SIDE) return false;
-        return (at[0] - path[k][0]) * (path[k][0] - prev[0]) + (at[1] - path[k][1]) * (path[k][1] - prev[1]) >= 0;
+        return (at[0] - q[0]) * (q[0] - prev[0]) + (at[1] - q[1]) * (q[1] - prev[1]) >= 0;
     };
     const release = () => {
         if (holding) touch.up(1);
@@ -410,6 +448,10 @@ function goTo(args) {
             const dt = (now - lastT) / 1000;
             lastT = now;
             cam = cameraHeading(image, cam);
+            if (cam != null) {
+                camGuess = cam; // the camera only turns by face turns (below), so the last reading holds until then
+                camRun = null;
+            }
             // dead reckoning
             if (pos && dir != null) {
                 const v = held ? (fast ? V_SPRINT : V_RUN) : now - releasedAt < COAST_MS ? (coastFast ? V_COAST : 1) : 0;
@@ -443,6 +485,19 @@ function goTo(args) {
                     ran = null;
                 }
                 if (!ran && held && dir != null) ran = { t: now, p: at, dir };
+                // no fan: the camera from the way it ran since camRun with the stick held about the same way
+                if (cam == null && held && !holding) {
+                    if (camRun && Math.abs(angleDiff(rel, camRun.rel)) > CAM_RUN_TURN) camRun = null;
+                    else if (camRun && now - camRun.t >= BIAS_MS) {
+                        const d = distTo(camRun.p, at);
+                        if (d >= Math.max(1.5, (BIAS_RUN * (fast ? V_SPRINT : V_RUN) * (now - camRun.t)) / 1000)) {
+                            camGuess = (bearingTo(camRun.p, at) - camRun.rel + 360) % 360;
+                            guesses++;
+                        }
+                        camRun = null;
+                    }
+                    if (!camRun) camRun = { t: now, p: at, rel };
+                } else camRun = null;
                 pos = at;
                 k = r.k;
                 zoomAt = r.zoom;
@@ -473,7 +528,7 @@ function goTo(args) {
                 closest = Infinity;
                 level = 0;
             }
-            const goal = path[idx];
+            const goal = pt(idx);
             const last = idx === path.length - 1;
             const dist = distTo(pos, goal);
             if (last && (dist <= reach || (dist <= REACH_BACK && dist > nearest + 1))) {
@@ -514,8 +569,29 @@ function goTo(args) {
                     touch.up(1);
                     holding = 0;
                 }
+                const d = doors.findIndex((q) => distTo(/** @type {Point} */ (pos), q) <= DOOR_NEAR);
+                const c = cam ?? camGuess;
+                if (d >= 0 && doorTries < DOOR_STEPS.length && c != null) {
+                    // the way through the door: from the point before it to the one after (as given)
+                    const at = path.findIndex((q) => distTo(q, doors[d]) < 1e-6);
+                    const way = at >= 0 ? bearingTo(at ? path[at - 1] : start ?? pos, at < path.length - 1 ? path[at + 1] : path[at]) : bearingTo(pos, aim(pos, idx));
+                    const toDoor = angleDiff(bearingTo(pos, doors[d]), way);
+                    const [side, ms] = DOOR_STEPS[doorTries++];
+                    const across = (toDoor < 0 ? -90 : 90) * side;
+                    stuck.push([now - t0, `door ${Math.round(across)}`, Math.round(pos[0]), Math.round(pos[1])]);
+                    const r0 = angleDiff(way, c);
+                    unstick([[180, DOOR_BACK], [across, ms], [0, DOOR_RUN]], r0);
+                    rel = r0;
+                    dir = way;
+                    camRun = null;
+                    since = Date.now();
+                    lastT = Date.now();
+                    wide = true;
+                    continue;
+                }
                 stuck.push([now - t0, level, Math.round(pos[0]), Math.round(pos[1])]);
                 unstick(UNSTICK[level++], rel);
+                camRun = null;
                 since = Date.now();
                 lastT = Date.now(); // the way out's moves are not reckoned: look wide next
                 wide = true;
@@ -539,13 +615,15 @@ function goTo(args) {
                 continue;
             }
             if (!held && (!brakeAt || now - brakeAt >= BRAKE_MS)) {
-                if (cam != null) rel = angleDiff(bearingTo(pos, aim(pos, idx)) - bias, cam);
+                const c = cam ?? camGuess;
+                if (c != null) rel = angleDiff(bearingTo(pos, aim(pos, idx)) - bias, c);
                 press();
                 ran = null;
             }
             const bearing = bearingTo(pos, aim(pos, idx));
-            if (cam != null) {
-                rel = angleDiff(bearing - bias, cam);
+            const steerBy = cam ?? camGuess;
+            if (steerBy != null) {
+                rel = angleDiff(bearing - bias, steerBy);
                 if (dir != null && Math.abs(angleDiff(bearing, dir)) >= 15) ran = null; // steered another way: start over
                 dir = bearing;
             }
@@ -555,6 +633,7 @@ function goTo(args) {
                 const dx = Math.max(-300, Math.min(300, Math.round(rel / DEG_PX)));
                 turn(dx);
                 cam = (cam + dx * DEG_PX + 360) % 360;
+                camGuess = cam;
                 lastFace = Date.now();
                 ran = null; // the run during a turn sweeps round
                 continue;
@@ -585,7 +664,7 @@ function goTo(args) {
     } finally {
         release();
     }
-    const out = { ms: Date.now() - t0, why, at: pos && [Math.round(pos[0] * 10) / 10, Math.round(pos[1] * 10) / 10], k, bias: Math.round(bias), layer, layers, idx, fixes, misses, gated, maxMissRun, stuck, taps, trace };
+    const out = { ms: Date.now() - t0, why, at: pos && [Math.round(pos[0] * 10) / 10, Math.round(pos[1] * 10) / 10], k, bias: Math.round(bias), layer, layers, idx, fixes, misses, gated, maxMissRun, stuck, taps, guesses, cam: cam ?? camGuess, trace };
     log(JSON.stringify(out));
     return out;
 }

@@ -561,6 +561,35 @@ def checks_of(root: Path, pts: list[dict], legs: list[dict]) -> list[int]:
     return sorted(out)
 
 
+def hand_points(root: Path, pts: list[dict], legs: list[dict]) -> tuple[list[dict], list[dict]]:
+    """<root>/points_hand.json, optional: points put in by hand after walking the place on the device, each
+    {after: [x, y], at: [x, y], name?, door?}: put in right after the route point nearest `after` (its leg split in two,
+    both halves with the old leg's flags); with no `after`, the fields go onto the route point at `at` (within 0.5 px;
+    e.g. door: true, see move.js DOOR_SLIDES). 怜花禅院 (2026-10-04): the gate's point marked a door, and one past it on
+    the line through the doorway, so the turn after it does not start inside (the steering looks 3 px ahead)."""
+    f = root / "points_hand.json"
+    if not f.exists():
+        return pts, legs
+    pts, legs = list(pts), list(legs)
+    for h in json.load(open(f, encoding="utf-8")):
+        if "after" not in h:
+            i = min(range(len(pts)), key=lambda j: math.hypot(pts[j]["at"][0] - h["at"][0], pts[j]["at"][1] - h["at"][1]))
+            if math.hypot(pts[i]["at"][0] - h["at"][0], pts[i]["at"][1] - h["at"][1]) > 0.5:
+                raise SystemExit(f"points_hand.json: no route point at {h['at']}")
+            pts[i] = pts[i] | h
+            continue
+        i = min(range(len(pts)), key=lambda j: math.hypot(pts[j]["at"][0] - h["after"][0], pts[j]["at"][1] - h["after"][1]))
+        pts.insert(i + 1, {k_: v for k_, v in h.items() if k_ != "after"})
+        if i < len(legs):
+            lg = legs[i]
+            halves = [lg | {"to": h["at"]}, lg | {"from": h["at"]}]
+            for hv in halves:
+                if "from" in hv and "to" in hv:
+                    hv["length"] = round(math.hypot(hv["to"][0] - hv["from"][0], hv["to"][1] - hv["from"][1]), 1)
+            legs[i:i + 1] = halves
+    return pts, legs
+
+
 def cmd_emit(root: Path, name: str, title: str | None, rec: str | None) -> None:
     """The stronghold's config into pipeline/stronghold_<id>.json (tools/strongholds.py; its one-click node <Name>):
     title, the card's template (cut from the recording), the stone's step from the icon, k, the tracker words, the
@@ -577,7 +606,7 @@ def cmd_emit(root: Path, name: str, title: str | None, rec: str | None) -> None:
     card, _ = card_template(root, title, name)
     old = sh.load(name) if sh.path(name).exists() else {}
     k = info["k"]
-    pts = plan_["points"]
+    pts, legs = hand_points(root, plan_["points"], plan_["legs"])
     src = f"录像 {rec}（{title}）" if rec else title
     words = "、".join(f"{g['word']} {g['of']} 个" for g in tg["tasks"].values())
     stone = (info.get("stone_k") or {}).get("big") or stone_step(root)
@@ -585,7 +614,7 @@ def cmd_emit(root: Path, name: str, title: str | None, rec: str | None) -> None:
            "k": {z_: round(v, 4) for z_, v in k.items()},
            "zoom": old.get("zoom") or {"after_map": "kept", "note": "按录像判的：进院门切到院内档"},
            "tracker": {"foes": "破戒头陀", "flowers": "毒花"} | plan_["tracker"], "locate": [mosaic_ref(name)],
-           "checks": checks_of(root, pts, plan_["legs"]), **({"recording": rec} if rec else {}), "points": pts}
+           "checks": checks_of(root, pts, legs), **({"recording": rec} if rec else {}), "points": pts}
     desc = (f"{title}一键跑完：从任意画面关弹窗 → 通用传送 StrongholdTeleport（填这个据点的卡片）到石碑 → 照老师录像里的顺序走到据点宝箱"
             f"（路上遇敌就打，宝箱点没清完就 StrongholdFight 清场），开据点宝箱（默认领取三份，老师同意）。卡片上写着「势力重新占据时间」"
             f"（还没刷新）就在石碑停下报错，不跑路线。参数就是这个据点的配置，tools/rec_route.py emit 从{src}全自动生成：路点途经录像里每次"

@@ -284,6 +284,10 @@ function follow(args) {
     let k; // the scale of the reference level matched last, for goto's fight check before a leg's first match
     /** @type {string | undefined} */
     let layer = args.layer;
+    /** @type {number | null} */
+    let camLast = null; // the camera heading goto had at the end of the last leg (the fan, or guessed from the way it
+    // ran), for the next leg to start by when the fan is not read there (daytime at 怜花禅院's gate: a dry run's leg
+    // after the look at point 17 set off the camera's way, east, away from the gate); dropped when anything turns it
     let bias = 0; // goto's steering bias, carried from leg to leg // the stronghold's state, live | taken, as goto saw it last (picks the reference's levels)
     /** @type {Map<number, boolean>} */
     const flowers = new Map(); // flower point → destroyed
@@ -321,6 +325,7 @@ function follow(args) {
     /** A fight: fought by `how`, what it dropped picked up, then what the tracker says. @param {() => any} how */
     const fight = (how) => {
         fights++;
+        camLast = null;
         const f = how();
         runSkill("auto_pickup", {});
         const tasks = progress(undefined, args.tracker);
@@ -364,7 +369,12 @@ function follow(args) {
             seg.reduce((a, b) => ((length += distTo(a, b)), b), pos);
             const ms = Math.round(Math.max(GOTO_MS[0], (GOTO_MS[1] * length * 1000) / V_RUN));
             // no sprint on a route: it carries on past the turns and the doors, and the matches fall behind (teacher)
-            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, k, bias, layer, reach: args.reach ?? 2, ms, sprint: false });
+            // points marked door: true (a narrow door): stuck there, it steps aside and runs through (move.js DOOR_STEPS);
+            // out: [x, y], where the zoomed-out reference level has the point (move.js outs)
+            const doors = rest.filter((k) => P[k].door).map((k) => P[k].at);
+            const outs = rest.some((k) => P[k].out) ? rest.map((k) => P[k].out ?? null) : undefined;
+            const r = runSkill("move", { goto: seg, ref: args.locate, from: pos, k, bias, layer, reach: args.reach ?? 2, ms, sprint: false, doors, outs, cam0: camLast });
+            camLast = r.cam ?? null;
             k = r.k ?? k;
             bias = r.bias ?? bias;
             layer = r.layer ?? layer;
@@ -389,7 +399,10 @@ function follow(args) {
                 if (++tries > RETRIES) fail(`points ${rest[0]}–${named(j)}: ${r.why} at ${pos.map(Math.round)}`);
                 log(`points ${rest[0]}–${j}: ${r.why} at ${pos.map(Math.round)}, finding it again`);
                 if (!again()) fail(`points ${rest[0]}–${named(j)}: ${r.why} at ${pos.map(Math.round)}, not found again`);
-                if (r.why === "lost" && !r.fixes) stepBack(rest);
+                if (r.why === "lost" && !r.fixes) {
+                    stepBack(rest);
+                    camLast = null;
+                }
             }
             // the nearest of the next AHEAD points only: a way out and back passes the same place twice, and the nearest
             // of all was on the way back (酒肉山林 2026-10-02: from the bonfire field it went on at the return, the west
@@ -468,6 +481,7 @@ function follow(args) {
             done = fight(() => act(p, j === to).done);
             again(); // the fight moved it
         } else ({ cam, done } = act(p, j === to));
+        if (!nodo) camLast = null; // the action may turn the camera (faceTo, fights, the chest)
         if (p.do === "flower" && !nodo) flowers.set(j, done === "destroyed");
         if (p.do === "chest" && done === "chest not offered") done = finish(j);
         log(`point ${j} (${p.name ?? ""}) reached at ${pos.map(Math.round)}${leg.err != null ? ` (where() ${leg.where}, ${leg.err} px off)` : ""}${cam != null ? `, camera ${Math.round(cam)}°` : ""}${done ? `: ${done}` : ""}`);
