@@ -22,6 +22,8 @@
 //   {stone: true, stronghold: {label, stone}}  (node Teleport_ClosePanel, filled in by the teleport) on the big map the
 //                  stronghold card opened: close its panel and tap the teleport stone nearest the stronghold icon,
 //                  zooming in first if the map was left zoomed out
+//   {card: "stronghold_card_<id>.png"}  (node Teleport_FindCard) on the 据点挑战 page: scroll the strip of cards to
+//                  this card and tap it
 //   {stronghold: <config>}  one-click run (nodes Cixin, Foye, Jiurou: pipeline/stronghold_<id>.json, each its config):
 //                  close popups, teleport to the stone (the generic chain StrongholdTeleport with the config's card), stop
 //                  with an error if on the way the card said the stronghold has not come back yet (marker node
@@ -257,6 +259,41 @@ function toStone(cfg) {
     throw new Error(`big map: ${missed} (${STONE_TRIES} tries)`);
 }
 
+// The 据点挑战 page is a strip of cards that keeps where it was last scrolled to (2026-10-04: left at 怜花禅院 /
+// 龙虎寨, 酒肉山林's title cut off at the left edge, Teleport_Card waited on it for good), so the card is looked for
+// scrolling the strip: first back towards its start, then on to its end (the cards' titles stop changing at either end).
+/** @type {Box} */
+const CARDS_ROI = [60, 170, 960, 70]; // the cards' titles (Teleport_Card's roi)
+/** @type {Box} */
+const TITLES_ROI = [60, 185, 960, 40];
+const CARD_SWIPES = 6; // each way; a swipe moves the strip about two cards
+const CARD_SWIPE = 450; // px
+const CARD_Y = 380;
+
+/** Find the card (its title template) on the 据点挑战 page, scrolling its strip, and tap it. @param {string} card */
+function toCard(card) {
+    const find = () => match(card, { image: screenshot(), roi: CARDS_ROI, threshold: 0.8 });
+    const titles = () => ocr({ image: screenshot(), roi: TITLES_ROI }).results.map((m) => m.text ?? "").join("|");
+    for (const dir of [1, -1]) { // 1: drag right (earlier cards), -1: drag left (later ones)
+        let last = titles();
+        for (let i = 0; i <= CARD_SWIPES; i++) {
+            const h = find();
+            if (h.hit && h.box) {
+                log(`card ${card} at ${middle(h.box).map(Math.round)} after ${i} swipe(s) ${dir > 0 ? "right" : "left"}`);
+                click(middle(h.box)[0], middle(h.box)[1] + 150); // the card's middle, below its title (Teleport_Card's offset)
+                return "card";
+            }
+            const x0 = dir > 0 ? 300 : 300 + CARD_SWIPE;
+            swipe([x0, CARD_Y], [x0 + dir * CARD_SWIPE, CARD_Y], 700);
+            sleep(1200); // the strip settles
+            const now = titles();
+            if (now === last) break; // the strip's end
+            last = now;
+        }
+    }
+    throw new Error(`据点挑战: no card ${card} along the whole strip`);
+}
+
 const TELEPORT = "StrongholdTeleport";
 
 /**
@@ -267,7 +304,7 @@ const TELEPORT = "StrongholdTeleport";
 function start(cfg) {
     runSkill("clear_popups", {});
     memory.delete(WAIT_KEY);
-    const nodes = { Teleport_Card: { template: cfg.card }, Teleport_ClosePanel: { custom_action_param: { stone: true, stronghold: { label: cfg.label ?? null, stone: cfg.stone ?? null } } } };
+    const nodes = { Teleport_Card: { template: cfg.card }, Teleport_FindCard: { custom_action_param: { card: cfg.card } }, Teleport_ClosePanel: { custom_action_param: { stone: true, stronghold: { label: cfg.label ?? null, stone: cfg.stone ?? null } } } };
     const node = `${TELEPORT} (${cfg.title})`;
     let r = runNode(TELEPORT, { nodes });
     if (!r.hit && !r.nodes.includes(NOT_BACK)) {
@@ -315,10 +352,11 @@ function compare(refs, n, cfg) {
 /**
  * Report what the minimap shows: the patch and the enemies on / off it, and the tasks on the tracker; {where: true}:
  * the position.
- * @param {{where?: boolean, locate?: string[], n?: number, stronghold?: any, route?: boolean, relocate?: string[], stone?: boolean}} args
+ * @param {{where?: boolean, locate?: string[], n?: number, stronghold?: any, route?: boolean, relocate?: string[], stone?: boolean, card?: string}} args
  */
 export default function (args = {}) {
     if (args.stone) return toStone(args.stronghold);
+    if (args.card) return toCard(args.card);
     if (args.stronghold && !args.where && !args.locate) {
         const t = start(args.stronghold);
         if (args.route === false) return t; // the PC tools: dry runs are made before it comes back

@@ -76,24 +76,31 @@ const LIST_ROI = [690, 360, 130, 220]; // the interaction list on the right (aut
 const FLOWER = { lower: [118, 70, 80], upper: [160, 255, 255], method: 40 };
 /** @type {Box} */
 const FLOWER_ROI = [40, 200, 860, 390]; // the scene around the character, under the tracker, above the chat box
+/** @type {Box} */
+const FLOWER_RIGHT = [900, 200, 100, 340]; // and right of it down to the skill buttons: 慈心山院's third flower stood at
+// x 840–1060 when the point was reached (2026-10-04, 0.9 px and 3° off), all but its edge out of FLOWER_ROI, and the
+// blind steps went past it
 const FLOWER_PX = [400, 8000]; // a flower a step or two away (up close it fills ~1000–6000; more is something else)
 const FLOWER_NEAR = 90; // blobs this close to the biggest are petals of the same flower
 /** @type {Box} */
-const FLOWER_AT = [30, 230, 810, 360]; // where a flower that close shows: around the character (at 第四个毒花 low left)
+const FLOWER_AT = [30, 230, 970, 360]; // where a flower that close shows: around the character (at 第四个毒花 low left)
 const SCREEN_DEG = 0.08; // steering: degrees per screen px off the middle (the view is ~85° wide)
 const STEPS = 3; // steps toward the flower before giving up (the route comes back for it at the chest)
 
 /** The flower on screen (its purple blobs' middle), or null. @param {Image} image */
 function flowerAt(image) {
-    const hit = color({ ...FLOWER, image, roi: FLOWER_ROI, count: 30, connected: true });
-    if (!hit.hit) return null;
+    const blobs = [FLOWER_ROI, FLOWER_RIGHT].flatMap((roi) => {
+        const h = color({ ...FLOWER, image, roi, count: 30, connected: true });
+        return h.hit ? h.results : [];
+    });
+    if (!blobs.length) return null;
     const mid = (/** @type {Match} */ m) => [m.box[0] + m.box[2] / 2, m.box[1] + m.box[3] / 2];
-    const top = hit.results.reduce((a, b) => ((b.count ?? 0) > (a.count ?? 0) ? b : a));
+    const top = blobs.reduce((a, b) => ((b.count ?? 0) > (a.count ?? 0) ? b : a));
     const [tx, ty] = mid(top);
     let n = 0;
     let sx = 0;
     let sy = 0;
-    for (const m of hit.results) {
+    for (const m of blobs) {
         const [x, y] = mid(m);
         if (Math.hypot(x - tx, y - ty) > FLOWER_NEAR) continue;
         n += m.count ?? 0;
@@ -412,7 +419,10 @@ function follow(args) {
             const all = range(from, to).filter((k) => P[k].do === "flower" && !args.skip?.includes(k));
             let left = all.filter((k) => !flowers.get(k));
             const destroyed = all.length - left.length;
-            if (tasks.lines.length && !tasks.flowers) left = [];
+            // (its line still there with the count misread, "…毒花" / "…毒花3", is not done: 慈心山院 2026-10-04 left
+            // the third flower that way and went to the chest twice)
+            const word = args.tracker?.flowers ?? "毒花";
+            if (tasks.lines.length && !tasks.flowers && !tasks.lines.some((l) => l.includes(word))) left = [];
             else if (tasks.flowers && tasks.flowers[0] < destroyed) left = all;
             for (const k of left) {
                 walkTo(k);

@@ -41,6 +41,7 @@
             "Teleport_Go",
             "Teleport_ClosePanel",
             "Teleport_Card",
+            "Teleport_FindCard",
             "Teleport_Challenge",
             "Teleport_Jianghu",
             "Teleport_OpenMenu",
@@ -100,6 +101,7 @@
         "post_delay": 2000,
         "next": [
             "Teleport_Card",
+            "Teleport_FindCard",
             "Teleport_Challenge"
         ],
         "target": [
@@ -168,6 +170,7 @@
         "post_delay": 2000,
         "next": [
             "Teleport_Card",
+            "Teleport_FindCard",
             "Teleport_Challenge",
             "Teleport_Jianghu",
             "Teleport_OpenMenu",
@@ -240,7 +243,33 @@
             "Teleport_NotRefreshed",
             "Teleport_Go",
             "Teleport_ClosePanel",
-            "Teleport_Card"
+            "Teleport_Card",
+            "Teleport_FindCard"
+        ]
+    },
+    "Teleport_FindCard": {
+        "desc": "据点挑战页（底部「发布悬赏」）上没看到这个据点的卡片：卡片条会停在上次滑到的地方（2026-10-04 停在怜花禅院、龙虎寨，酒肉山林的标题被左边切掉，Teleport_Card 一直等），先往回滑、再往后滑找卡片标题，找到就点；整条都没有就报错停下。技能 skills/stronghold.js 的 card 模式，卡片模板由 stronghold.js 按据点配置填进来",
+        "recognition": "TemplateMatch",
+        "template": "challenge_bounty_button.png",
+        "roi": [
+            130,
+            640,
+            180,
+            80
+        ],
+        "threshold": 0.8,
+        "action": "Custom",
+        "custom_action": "stronghold",
+        "custom_action_param": {
+            "card": "stronghold_card_cixin.png"
+        },
+        "post_delay": 3000,
+        "next": [
+            "Teleport_NotRefreshed",
+            "Teleport_Go",
+            "Teleport_ClosePanel",
+            "Teleport_Card",
+            "Teleport_FindCard"
         ]
     }
 }

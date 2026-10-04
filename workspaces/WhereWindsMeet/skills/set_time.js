@@ -13,7 +13,7 @@ export const meta = { description: "set the game's time of day (时辰)", timeou
 const ORDER = "子丑寅卯辰巳午未申酉戌亥";
 // OCR's look-alikes on the wheel (卯 came back as 卵 on 2026-10-03)
 /** @type {Record<string, string>} */
-const ALIKE = { 卵: "卯", 戍: "戌", 戊: "戌", 已: "巳", 己: "巳", 末: "未", 甲: "申", 由: "申", 西: "酉", 于: "子" };
+const ALIKE = { 卵: "卯", 戍: "戌", 戊: "戌", 已: "巳", 己: "巳", 末: "未", 甲: "申", 由: "申", 中: "申", 西: "酉", 于: "子" };
 /** @type {Point} */
 const MENU = [1039, 22]; // world: the menu button
 /** @type {Point} */
