@@ -194,6 +194,7 @@ const STONE_PX = [100, 220]; // the stone from the stronghold icon, fully zoomed
 /** @type {Box} */
 const TELEPORT_ROI = [850, 640, 150, 70]; // 传送 on the stone's panel
 const STONE_TRIES = 3;
+const STONE_AT = 10; // px: the config's stone this close to its step from the icon
 /** @type {Point} */
 const CARD_AT = [538, 358]; // where the card puts its stronghold on the map
 const CARD_NEAR = 60;
@@ -234,7 +235,14 @@ function toStone(cfg) {
         const c = [middle(icon.h.box)[0] - icon.at[0], middle(icon.h.box)[1] - icon.at[1]];
         const stones = match("map_teleport_stone.png", { image, roi: MAP_LEFT, threshold: 0.7 }).results
             .map((m) => ({ box: m.box, score: m.score ?? 0, d: Math.hypot(middle(m.box)[0] - c[0], middle(m.box)[1] - c[1]) }));
-        const near = stones.filter((s) => s.d >= STONE_PX[0] && s.d <= STONE_PX[1]).sort((a, b) => a.d - b.d);
+        // the config's stone (its step from the icon, from the recording): the teacher's stone, not just the nearest one
+        // (龙虎寨's is 99 px off, inside STONE_PX[0]; the nearest past that, 145 px east, landed somewhere else and the
+        // route was lost from the start, 2026-10-04); the nearest one only if it is not seen by the last try
+        const step = stonesOf(cfg)[0];
+        const off = (/** @type {{box: Box}} */ s) => (step ? Math.hypot(middle(s.box)[0] - c[0] - step[0], middle(s.box)[1] - c[1] - step[1]) : 0);
+        const mine = step ? stones.filter((s) => off(s) <= STONE_AT).sort((a, b) => off(a) - off(b)) : [];
+        const near = step && (mine.length || i < STONE_TRIES - 1) ? mine
+            : stones.filter((s) => s.d >= STONE_PX[0] && s.d <= STONE_PX[1]).sort((a, b) => a.d - b.d);
         const seen = stones.map((s) => `${middle(s.box).map(Math.round)} ${Math.round(s.score * 100) / 100} ${Math.round(s.d)} px`).join("; ");
         log(`stone: icon at ${c.map(Math.round)}, stones: ${seen || "none"}`);
         if (!near.length) {

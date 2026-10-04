@@ -280,6 +280,11 @@ def icon_blobs(d: np.ndarray, r: tuple[float, float] = (0, ICON_R)) -> list[dict
 
 DONE_ICON = "minimap_stronghold_done.png"  # templates/: the taken icon on the minimap (gray, an hourglass above right;
 # cut from 酒肉山林's recording, frame 4800; the same for every stronghold)
+DONE_BODY = (7, 15, 0, 9)  # rows, cols of DONE_ICON: the gray tower without the hourglass. Once taken, the black chest
+# icon can sit on the hourglass (龙虎寨, zoomed out north of it: the whole template 0.4–0.6, the body 0.8–0.94); the body
+# alone also fits the live icon, so it is only a fallback (`body` in icons.json) and icon_track takes "done" only after
+# the last red blob anyway
+DONE_BODY_MIN = (0.75, 0.04)  # its score and margin (the chest icon right above keeps the margin low)
 
 
 def done_icon(d: np.ndarray, t: np.ndarray) -> dict | None:
@@ -304,8 +309,16 @@ def cmd_icons(root: Path) -> None:
         if z["world"][i]:
             b = icon_blobs(z["disc"][i])
             g = done_icon(z["disc"][i], t) if t is not None else None
+            if t is not None and not (g["s"] >= 0.6 and g["m"] >= 0.15):
+                r0, r1, c0, c1 = DONE_BODY
+                g = done_icon(z["disc"][i], t[r0:r1, c0:c1])
+                # its middle in the whole template's terms
+                g.update(dx=round(g["dx"] + (t.shape[1] - 1) / 2 - (c0 + c1 - 1) / 2, 2),
+                         dy=round(g["dy"] + (t.shape[0] - 1) / 2 - (r0 + r1 - 1) / 2, 2), body=True)
+                if not (g["s"] >= DONE_BODY_MIN[0] and g["m"] >= DONE_BODY_MIN[1]):
+                    g = None
             rim = [q for q in icon_blobs(z["disc"][i], (ICON_R, RIM_R)) if math.hypot(q["dx"], q["dy"]) > ICON_R]
-            out[int(n)] = {"live": b, **({"done": g} if g and g["s"] >= 0.6 and g["m"] >= 0.15 else {}),
+            out[int(n)] = {"live": b, **({"done": g} if g else {}),
                            **({"rim": rim} if rim else {})}
     json.dump(out, open(root / "icons.json", "w"))
     print(len(out), "world frames;", sum(1 for v in out.values() if v["live"]), "with red blobs;",
@@ -413,8 +426,11 @@ def segments(root: Path, track) -> list[dict]:
     one is zoomed out (the character starts outside, at the teleport stone; a survey's survey.json says otherwise)."""
     z = wl.frames_of(root / REC)
     good = good_world(root)
-    sw = zoom_switches(track)
-    cuts = [(s["from"] - ANIM[0], s["to"] + ANIM[1], s["way"]) for s in sw]
+    hand = zoom_conf(root).get("switches")
+    if hand is not None:  # looked at by hand: the animation's own first and last frames, nothing added
+        cuts = [(a, b, way) for a, b, way in hand]
+    else:
+        cuts = [(s["from"] - ANIM[0], s["to"] + ANIM[1], s["way"]) for s in zoom_switches(track)]
     zoom, out, cur = survey_conf(root).get("zoom0", "out"), [], []
     for i in np.nonzero(good)[0]:
         n = int(z["seq"][i])
@@ -660,18 +676,31 @@ def _to_map(x: float, y: float, k: float, box) -> np.ndarray:
     return np.float32([[k * s, 0, (x - k * MID - X0) * s], [0, k * s, (y - k * MID - Y0) * s]])
 
 
-def zone_fixes(root: Path, pos: dict, k: dict, before: int = 300, search: float = 16.0) -> list[tuple[int, float, float, float]]:
-    """Where the first zoomed-in frames are, from the zone: the zoomed-out frames' zone masks drawn into a map (big
-    map px; the zone only shrinks when an enemy falls, so only the last zoomed-out stretch is used), each zoomed-in
-    frame's mask (within `before` frames of the switch) slid over it, the best place by correlation (it is a crisp
-    outline, ~0.95 where it fits). The minimap's texture is no help here: it is drawn differently at the two zooms."""
+def zoom_changes(pos: dict) -> list[tuple[int, str, str, int]]:
+    """Where the track's zoom changes: (first frame past it, zoom before, zoom after, first frame of the next change
+    or past the end)."""
+    seq = sorted(pos)
+    at = [(b, pos[a][2], pos[b][2]) for a, b in zip(seq, seq[1:]) if pos[a][2] != pos[b][2]]
+    return [(b, za, zb, at[i + 1][0] if i + 1 < len(at) else seq[-1] + 1) for i, (b, za, zb) in enumerate(at)]
+
+
+def zone_fixes(root: Path, pos: dict, k: dict, before: int = 300, search: float = 16.0, change=None) -> list[tuple[int, float, float, float]]:
+    """Where the frames just past a zoom switch are, from the zone: the frames before it drawn into a zone map (big
+    map px; the zone only shrinks when an enemy falls, so only the last stretch before the switch is used), each frame
+    after it (within `before` frames, up to the next switch) slid over it, the best place by correlation (it is a crisp
+    outline, ~0.95 where it fits). The minimap's texture is no help here: it is drawn differently at the two zooms.
+    `change`: one of zoom_changes(); by default the first zoom in (the gate)."""
     z = wl.frames_of(root / REC)
-    out_fr = [n for n, v in sorted(pos.items()) if v[2] == "out"]
-    in_fr = [n for n, v in sorted(pos.items()) if v[2] == "in"]
-    if not out_fr or not in_fr:
-        return []
-    switch = in_fr[0]
-    last_out = [n for n in out_fr if switch - before <= n < switch][::2]
+    if change is None:
+        out_fr = [n for n, v in sorted(pos.items()) if v[2] == "out"]
+        in_fr = [n for n, v in sorted(pos.items()) if v[2] == "in"]
+        if not out_fr or not in_fr:
+            return []
+        change = (in_fr[0], "out", "in", 1 << 30)
+    switch, z_near, z_far, upto = change
+    near_fr = [n for n, v in sorted(pos.items()) if v[2] == z_near and switch - before <= n < switch]
+    far_fr = [n for n, v in sorted(pos.items()) if v[2] == z_far and switch <= n < min(upto, switch + before)]
+    last_out = near_fr[::2]
     if not last_out:  # zoomed in from the start (a survey begun inside)
         return []
     xs = [pos[n][0] for n in last_out]
@@ -682,7 +711,7 @@ def zone_fixes(root: Path, pos: dict, k: dict, before: int = 300, search: float 
     cnt = np.zeros((H, W), np.float32)
     for n in last_out:
         m, v = zone_mask(z, z["idx"][n])
-        M = _to_map(pos[n][0], pos[n][1], k["out"], box)
+        M = _to_map(pos[n][0], pos[n][1], k[z_near], box)
         acc += cv2.warpAffine(m * v, M, (W, H), flags=cv2.INTER_LINEAR)
         cnt += cv2.warpAffine(v.astype(np.float32), M, (W, H), flags=cv2.INTER_LINEAR)
     known = cnt > 0.5
@@ -692,7 +721,7 @@ def zone_fixes(root: Path, pos: dict, k: dict, before: int = 300, search: float 
 
     def corr(i, x, y):
         m, v = zone_mask(z, i)
-        M = _to_map(x, y, k["in"], box)
+        M = _to_map(x, y, k[z_far], box)
         mw = cv2.warpAffine(m, M, (W, H), flags=cv2.INTER_NEAREST)
         sel = (cv2.warpAffine(v.astype(np.uint8), M, (W, H), flags=cv2.INTER_NEAREST) > 0) & known
         if sel.sum() < 300:
@@ -701,7 +730,7 @@ def zone_fixes(root: Path, pos: dict, k: dict, before: int = 300, search: float 
         return float(((a - a.mean()) * (b - b.mean())).mean() / (a.std() * b.std() + 1e-6))
 
     fixes = []
-    for n in [n for n in in_fr if n < switch + before][::4]:
+    for n in far_fr[::4]:
         i = z["idx"][n]
         x0, y0, _ = pos[n]
         best = (-1.0, 0.0, 0.0)
@@ -716,7 +745,7 @@ def zone_fixes(root: Path, pos: dict, k: dict, before: int = 300, search: float 
             fixes.append((n, x0 + best[1], y0 + best[2], 1.5))
     if fixes:
         off = np.median(np.array([(f[1] - pos[f[0]][0], f[2] - pos[f[0]][1]) for f in fixes]), axis=0)
-        print(f"zone: {len(fixes)} zoomed-in frames placed, moved by {np.round(off, 1)}")
+        print(f"zone: {len(fixes)} frames past the switch at {switch} ({z_near} -> {z_far}) placed, moved by {np.round(off, 1)}")
     return fixes
 
 
@@ -864,7 +893,10 @@ SURE = 15  # track.json "sure": the icon or a mosaic placed a frame this close (
 
 def zone_check(root: Path, pos: dict, k: dict) -> list | None:
     """How far the zone outline says the first zoomed-in frames are from where they are put: [dx, dy], or None."""
-    zf = zone_fixes(root, pos, k)
+    return zone_shift(pos, zone_fixes(root, pos, k))
+
+
+def zone_shift(pos: dict, zf: list) -> list | None:
     if not zf:
         return None
     return [round(float(v), 2) for v in np.median(np.array([(f[1] - pos[f[0]][0], f[2] - pos[f[0]][1]) for f in zf]), axis=0)]
@@ -915,17 +947,36 @@ def locate_all(root: Path, k_out: float | None = None, k_in: float | None = None
     info["device_fixes"] = len(dev)
     pos, c, res = solve(root, k, dev, quiet=True)
     info["zone_before"] = zone_check(root, pos, k)
+    # zoom_hand.json "zone_ties" (a recording that leaves the zone and comes back, 龙虎寨): the zone outline places the far
+    # side of every zoom switch (zone_fixes, made again after each solve: they are worked out from the near side as it
+    # is) and the icon's offsets at the two zooms are not tied. There the tie was what did not fit: with it the zone
+    # said 4–7.5 px off at both switches and the track jumped 6 px coming back in while the character stood; without
+    # it, 2.5 / 0.5 px and 0.4. Otherwise the zone is only a check (zone_check), as before
+    zt = bool(zoom_conf(root).get("zone_ties"))
+    tie = {} if not zt else {"tie": None}
+
+    def zone_ties(pos):
+        return [f for ch in zoom_changes(pos) for f in zone_fixes(root, pos, k, change=ch) if not skip(f[0])] if zt else []
+
+    later = zone_ties(pos)
+    for _ in range(2 if later else 0):
+        pos, c, res = solve(root, k, list(dev) + later, quiet=True, **tie)
+        later = zone_ties(pos)
+    info["zone_ties"] = len(later)
     fixes = []
     for it in range(ROUNDS):
         zooms = [zm for zm in ("out", "in") if sum(1 for n, v in pos.items() if v[2] == zm and not skip(n)) >= 10]
         refs = {zm: build_mosaic(root, pos, zm, k[zm], skip=skip) for zm in zooms}
-        fixes = list(dev)
+        later = zone_ties(pos) if later else []
+        fixes = list(dev) + later
         for zm in zooms:
             fixes += [(n, x, y, 1.0) for n, (x, y, s) in place(root, pos, refs[zm], zm).items() if not skip(n)]
         if not quiet:
             print(f"round {it}: {len(fixes)} frames placed in the mosaics")
-        pos, c, res = solve(root, k, fixes, quiet=quiet or it < ROUNDS - 1)
+        pos, c, res = solve(root, k, fixes, quiet=quiet or it < ROUNDS - 1, **tie)
     info["zone_after"] = zone_check(root, pos, k)
+    # the zone across the later switches (out of the zone and back), a check
+    info["zone_later"] = [zone_shift(pos, zone_fixes(root, pos, k, change=ch)) for ch in zoom_changes(pos)[1:]]
     held = {f[0] for f in fixes} | {n for n, v in icon_track(root).items() if not v[0].endswith("_rim")}
     info["_held"] = held
     info.update({"k": k, "c": c, "fixes": len(fixes), "shift_resid_median": round(float(np.median(res["reg"])), 3),
@@ -995,9 +1046,11 @@ def taken_at(root: Path) -> int | None:
     taken-icon frames TAKEN_RUN long, gaps up to TAKEN_GAP, after the landing). Not the last red blob seen: enemies'
     red marks look like the live icon, and 酒肉山林's was put at 5256 though the icon was gray from 4422 on (the last
     頭陀 fell in the west yard), which left the teacher's way back to the chest out of the taken level."""
+    if "taken_at" in zoom_conf(root):
+        return zoom_conf(root)["taken_at"]
     raw = json.load(open(root / "icons.json"))
     live = [int(n) for n, v in raw.items() if v["live"]]
-    done = sorted(int(n) for n, v in raw.items() if "done" in v)
+    done = sorted(int(n) for n, v in raw.items() if "done" in v and not v["done"].get("body"))  # the body fits live too
     if not live or not done:
         return None
     first_live = min(live)  # after the landing: the icon is red at first
@@ -1017,14 +1070,17 @@ def levels_of(root: Path, pos: dict, k: dict, skip=lambda n: False) -> list[tupl
     """The reference's levels: (zoom, tag, mosaic). Zoomed in, one from before the stronghold was taken (its orange
     zone over most of it) and one after (the bare map): a frame of either kind matches its own much better (bare
     frames in the zone mosaic: 61% trusted, the other way round 38%; 酒肉山林, 2026-10-02). Surveys (survey<N>/, made
-    with the stronghold taken) go into the after level, or into the only one."""
+    with the stronghold taken) go into the after level, or into the only one. Zoomed out is one level whatever the
+    state: the way there was walked live, so a taken-state run would have nothing for it in an "after" level (龙虎寨:
+    the teacher walked out of the zone after the last kill, zoomed out, and came back in), and the zone is at most
+    an edge of the disc out there."""
     t = taken_at(root)
     sv = [(d, load_track(d)) for d in surveys_of(root)]  # surveyed on the device: the stronghold taken
     out = []
     for zm in ("out", "in"):
         n_zm = [n for n, v in pos.items() if v[2] == zm and not skip(n)]
         ex = [(d, q) for d, q in sv if any(v[2] == zm for v in q.values())]
-        if t is None or not n_zm or min(n_zm) > t or max(n_zm) < t:
+        if zm == "out" or t is None or not n_zm or min(n_zm) > t or max(n_zm) < t:
             out.append((zm, zm, build_mosaic(root, pos, zm, k[zm], skip=skip, extra=ex)))
             continue
         before = [n for n in n_zm if n <= t]
@@ -1129,6 +1185,16 @@ SURVEY = "survey"  # <root>/survey<N>/: rec/ (grab_frames: <seq>.jpg, frames.jso
 
 def surveys_of(root: Path) -> list[Path]:
     return sorted((d for d in root.glob(f"{SURVEY}*") if (d / "track.json").exists()), key=lambda d: int(d.name[len(SURVEY):] or 0))
+
+
+def zoom_conf(root: Path) -> dict:
+    """<root>/zoom_hand.json, optional, written by hand after looking at the minimap frames, for where the icon cannot
+    tell: {"switches": [[first, last, "in" | "out"], ...] (each zoom animation's frames, replacing zoom_switches()),
+    "taken_at": n (replacing taken_at()'s guess), "note": ...}. 龙虎寨 (2026-10-04): the live icon was under the
+    camera fan when it zoomed in, and once taken the chest icon sits on the gray one, so the icon saw neither the
+    zoom in at the gate nor the one coming back in after the stretch outside; it called the icon turning gray a switch."""
+    f = root / "zoom_hand.json"
+    return json.load(open(f, encoding="utf-8")) if f.exists() else {}
 
 
 def survey_conf(root: Path) -> dict:

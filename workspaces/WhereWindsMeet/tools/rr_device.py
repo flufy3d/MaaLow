@@ -201,6 +201,58 @@ def cmd_survey(root: Path, name: str, a: int, b: int, at: tuple[float, float] | 
     return sd
 
 
+SZ_K = {"in": (0.9, 1.45), "out": (1.85, 2.8)}  # big map px per minimap px read off the icon next to a look, per zoom
+SZ_SEEN = 36  # minimap px: the taken icon this close is in sight (not on the rim)
+
+
+def survey_zoom(sd: Path, an: list[dict], k: dict, c_done: np.ndarray, n: int = 12) -> dict | None:
+    """The survey's zoom per stretch between looks at the big map, from the looks themselves: where() gives the place
+    just after a look and just before the next, the taken icon on the minimap there its offset d, so |p - c| / |d| is k
+    (~2.31 zoomed out, ~1.15 in). No icon in sight where it would be zoomed out (|p - c| / k out within SZ_SEEN): zoomed
+    in. A stretch whose two ends agree has that zoom; one that does not (it zoomed on the way) is left out, as the
+    animation is. Returns {zoom0, switches} for zoom_hand.json (segments()), or None (no stretch told).
+    Why not the icon's jumps (zoom_switches): 龙虎寨's survey (2026-10-04) crossed the gate and the zone's north edge
+    twice each and they caught one; the taken icon sits under the chest icon there and the gate's switch is not where
+    the recording's was (the minimap stayed zoomed out 5 px further in, the stronghold taken)."""
+    icons = json.load(open(sd / "icons.json"))
+    scr = json.load(open(sd / "screens.json"))
+    st, cur = [], []
+    for r in scr:
+        if r["screen"] == "world":
+            cur.append(r["n"])
+        elif cur:
+            st.append(cur)
+            cur = []
+    if cur:
+        st.append(cur)
+
+    def zoom_at(frames, a):
+        if a is None:
+            return None
+        dist = float(np.hypot(a["x"] - c_done[0], a["y"] - c_done[1]))
+        ks = [dist / math.hypot(v["done"]["dx"], v["done"]["dy"]) for v in (icons.get(str(q), {}) for q in frames)
+              if "done" in v and 3 < math.hypot(v["done"]["dx"], v["done"]["dy"]) <= PINNED]
+        if len(ks) >= 3:
+            m = float(np.median(ks))
+            return next((z for z, (lo, hi) in SZ_K.items() if lo <= m <= hi), None)
+        if not ks and 3 < dist / k["out"] <= SZ_SEEN:
+            return "in"
+        return None
+
+    told = []  # (first, last, zoom) of the stretches whose ends agree
+    for s_ in st:
+        prev = max((a for a in an if a["last"] < s_[0]), key=lambda a: a["last"], default=None)
+        nxt = min((a for a in an if a["first"] > s_[-1]), key=lambda a: a["first"], default=None)
+        za, zb = zoom_at(s_[:n], prev), zoom_at(s_[-n:], nxt)
+        if za is not None and za == zb:
+            told.append((s_[0], s_[-1], za))
+    if not told:
+        return None
+    switches = [[a[1] + 1, b[0], b[2]] for a, b in zip(told, told[1:]) if a[2] != b[2]]
+    print(sd.name, "zoom from the looks:", len(told), "of", len(st), "stretches told, switches", switches)
+    return {"zoom0": told[0][2], "switches": switches, "note": "survey_zoom(): from the looks at the big map and the icon"}
+
+
 def survey_build(root: Path, sd: Path) -> None:
     """Place a survey's frames: cache, icons, anchors from its looks, register, locate (k and the starting zoom from the
     recording's track)."""
@@ -215,6 +267,11 @@ def survey_build(root: Path, sd: Path) -> None:
     keys = np.array(sorted(main))
     P = np.array([main[q][:2] for q in keys])
     zoom0 = main[int(keys[int(np.argmin(np.hypot(*(P - [an[0]["x"], an[0]["y"]]).T)))])][2]
+    c = json.load(open(root / "locate.json"))["c"]
+    sw = survey_zoom(sd, an, k, np.array(c.get("done_in", [0, 0]), float))
+    if sw:
+        zoom0 = sw["zoom0"]
+        json.dump(sw, open(sd / "zoom_hand.json", "w"), indent=1)
     json.dump({"zoom0": zoom0, "k": k}, open(sd / "survey.json", "w"))
     cmd_register(sd)
     cmd_locate(sd, k["out"], k["in"])

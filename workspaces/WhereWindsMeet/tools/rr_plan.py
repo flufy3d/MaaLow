@@ -60,6 +60,15 @@ def find_targets(root: Path, pos: dict) -> dict:
             stops.append({"do": act, "frames": [r[0], r[-1]], "at": [round(float(np.median(xs)), 1), round(float(np.median(ys)), 1)],
                           "cam": int(round(float(np.median(cams)))) if cams else None, "zoom": pos[fr[len(fr) // 2]][2]})
     stops.sort(key=lambda s: s["frames"][0])
+    # the same action shown twice in a row a step apart is one: the row came up, the teacher stepped off it and came
+    # back (龙虎寨's chest: 5950–5971 and 6042–6108, 2 px apart, opened at 6102); the later run is where it was done
+    merged: list[dict] = []
+    for st in stops:
+        if merged and merged[-1]["do"] == st["do"] and math.dist(merged[-1]["at"], st["at"]) <= SAME_STOP:
+            merged[-1] = st
+        else:
+            merged.append(st)
+    stops = merged
     tasks: dict[str, dict] = {}  # by kind and count: OCR misreads a character now and then (破或头陀), the count holds
     for t in text:
         for name, done, of in task_lines(t["tracker"]):
@@ -77,6 +86,12 @@ def find_targets(root: Path, pos: dict) -> dict:
     if inside:
         after = [t["n"] for t in text if t["n"] > inside[-1]]
         done_at = after[0] if after else None
+    # the last kill: the stronghold's block leaves the tracker as the count reaches the total, so the last count is
+    # often never read (龙虎寨: 6/7 at 5112, the next quest's line at 5118); it is where the block went
+    for g in tasks.values():
+        if done_at is not None and g["counts"] and g["counts"][-1][1] == g["of"] - 1 and g["counts"][-1][0] < done_at:
+            n = near(done_at)
+            g["counts"].append([done_at, g["of"]] + ([round(pos[n][0], 1), round(pos[n][1], 1)] if n is not None and abs(n - done_at) <= 60 else []))
     return {"stops": stops, "tasks": tasks, "done_at": done_at, "taken_at": taken_at(root)}
 
 
@@ -89,6 +104,7 @@ SIMPLIFY = 1.5  # big map px: a leg may leave the planned way by this much
 MIN_CLEAR = 1.0  # big map px: every point of a leg this far inside what was walked
 NARROW = 2.0  # big map px: the way this close to the edge of what was walked is narrow (a door): legs keep to its
 CENTER_SLACK = 0.3  # middle there, this far off it at most
+SAME_STOP = 3.0  # big map px: the same action again this close to the one before is that one (find_targets)
 VIA_NEAR = 12.0  # big map px: a task count going up this close to the stop before is the same place
 BRIDGE = (60, 15)  # frames, big map px: a step over frames left out that is still walked (straight)
 
@@ -482,7 +498,13 @@ def card_template(root: Path, title: str, name: str) -> tuple[str, list]:
     from wwm_ocr import ocr
 
     scr = json.load(open(root / "screens.json"))
-    for r in [r for r in scr if r["screen"] == "challenge"][::5]:
+    pages = [r for r in scr if r["screen"] == "challenge"]
+    if not pages:  # the page is told by 慈心山院's card coming first; it may open scrolled (龙虎寨's recording: 酒肉山林
+        # first), then it is what came between the 江湖行 page and the card's map
+        j = next((i for i, r in enumerate(scr) if r["screen"] == "jianghu"), None)
+        m = next((i for i, r in enumerate(scr) if r["screen"] in ("card_map", "map") and j is not None and i > j), None)
+        pages = [r for r in scr[j:m] if r["screen"] == "other"] if j is not None and m is not None else []
+    for r in pages[::5]:
         img = frame(root, r["n"])
         for text, (x, y, w, h), _ in ocr(img, CARD_ROI):
             if title in text or text in title and len(text) >= len(title) - 1:
@@ -509,28 +531,31 @@ def checks_of(root: Path, pts: list[dict], legs: list[dict]) -> list[int]:
     around it with the minimap switching zoom, was taken for stuck 5 times and jumped (the unstick moves)."""
     out = {len(pts) - 1}
     pos = load_track(root)
-    seq = sorted(pos)
-    n_in = next((n for n in seq if pos[n][2] == "in"), None)
-    if n_in is not None:
-        n_out = max((n for n in seq if n < n_in and pos[n][2] == "out"), default=n_in)
-        qa, qb = np.array(pos[n_out][:2]), np.array(pos[n_in][:2])
 
-        def seg(i, q):  # how far the leg from point i to i + 1 passes from q
-            a_, b_ = np.array(pts[i]["at"], float), np.array(pts[i + 1]["at"], float)
-            t = np.clip(np.dot(q - a_, b_ - a_) / max(np.dot(b_ - a_, b_ - a_), 1e-9), 0, 1)
-            return float(np.hypot(*(a_ + t * (b_ - a_) - q)))
+    def seg(i, q):  # how far the leg from point i to i + 1 passes from q
+        a_, b_ = np.array(pts[i]["at"], float), np.array(pts[i + 1]["at"], float)
+        t = np.clip(np.dot(q - a_, b_ - a_) / max(np.dot(b_ - a_, b_ - a_), 1e-9), 0, 1)
+        return float(np.hypot(*(a_ + t * (b_ - a_) - q)))
 
-        far = lambda i, q: float(np.hypot(*(np.array(pts[i]["at"], float) - q))) >= SWITCH_CLEAR
-        i = min(range(len(pts) - 1), key=lambda j: seg(j, qa))
+    far = lambda i, q: float(np.hypot(*(np.array(pts[i]["at"], float) - q))) >= SWITCH_CLEAR
+    # every switch (龙虎寨: in at the gate, out past the last kill, back in), in the order walked: each one's legs are
+    # looked for from the one before on (the way out and back passes the same place twice)
+    ends, start = [], 0
+    for n_far, _, _, _ in zoom_changes(pos):
+        n_near = max(n for n in pos if n < n_far)  # the last frame before it (zoom_changes: the zoom it left)
+        qa, qb = np.array(pos[n_near][:2]), np.array(pos[n_far][:2])
+        i = min(range(start, len(pts) - 1), key=lambda j: seg(j, qa))
+        j = min(range(i, len(pts) - 1), key=lambda m: seg(m, qb)) + 1
+        ends.append((qa, qb))
+        start = i
         while i > 1 and not far(i, qa):
             i -= 1
-        j = min(range(len(pts) - 1), key=lambda m: seg(m, qb)) + 1
         while j < len(pts) - 1 and not far(j, qb):
             j += 1
         out |= {max(1, i), j}
     for i, lg in enumerate(legs, start=1):
-        # the leg bridged over the switch itself is looked at from both sides of it (above), not at its ends
-        across = n_in is not None and min(seg(i - 1, qa), seg(i - 1, qb)) < SWITCH_CLEAR
+        # a leg bridged over a switch itself is looked at from both sides of it (above), not at its ends
+        across = any(min(seg(i - 1, qa), seg(i - 1, qb)) < SWITCH_CLEAR for qa, qb in ends)
         if lg.get("unsure", 0) > 0 and not across:
             out.add(i)
     return sorted(out)
