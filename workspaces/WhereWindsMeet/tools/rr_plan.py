@@ -562,12 +562,12 @@ def checks_of(root: Path, pts: list[dict], legs: list[dict]) -> list[int]:
 
 
 def hand_points(root: Path, pts: list[dict], legs: list[dict]) -> tuple[list[dict], list[dict]]:
-    """<root>/points_hand.json, optional: points put in by hand after walking the place on the device, each
+    """points_hand.json (hand_file()), optional: points put in by hand after walking the place on the device, each
     {after: [x, y], at: [x, y], name?, door?}: put in right after the route point nearest `after` (its leg split in two,
     both halves with the old leg's flags); with no `after`, the fields go onto the route point at `at` (within 0.5 px;
     e.g. door: true, see move.js DOOR_SLIDES). 怜花禅院 (2026-10-04): the gate's point marked a door, and one past it on
     the line through the doorway, so the turn after it does not start inside (the steering looks 3 px ahead)."""
-    f = root / "points_hand.json"
+    f = hand_file(root, "points_hand.json")
     if not f.exists():
         return pts, legs
     pts, legs = list(pts), list(legs)

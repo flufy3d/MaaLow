@@ -1,0 +1,10 @@
+{
+ "switches": [
+  [
+   1874,
+   1907,
+   "in"
+  ]
+ ],
+ "note": "2026-10-04 looked at the minimap discs frame by frame: the zone grows 1874-1907 (area x3.5, ~2x linear) (at the gate, the fan lost over a bright sky 1682-1890); no zoom out after (the zone vanishes at the last kill ~4175, the icon offset goes on smoothly); the icon's zoom_switches found none"
+}

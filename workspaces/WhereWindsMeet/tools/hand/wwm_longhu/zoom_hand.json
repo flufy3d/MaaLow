@@ -1,0 +1,22 @@
+{
+ "switches": [
+  [
+   2240,
+   2266,
+   "in"
+  ],
+  [
+   5120,
+   5145,
+   "out"
+  ],
+  [
+   5451,
+   5468,
+   "in"
+  ]
+ ],
+ "taken_at": 5231,
+ "note": "2026-10-04 looked at the minimap discs frame by frame: zone doubles 2244-2262 (gate, the live icon under the camera fan); zooms out 5122-5142 (teacher's label 5100: after the last kill, out of the zone); back in 5453-5466 (label 5436); the zone vanishes and the icon turns gray at 5232 (tracker 7/7). icon zoom_switches said 4209 in (a fast move), 5125 out, 5231 out (the icon turning gray); taken_at said 5510 (the chest icon over the gray one). zone_ties: with the icon offsets tied the zone said 4-7.5 px off at both switches and the track jumped 6 px at 5450->5469 where the character stands",
+ "zone_ties": true
+}

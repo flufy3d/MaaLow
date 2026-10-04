@@ -25,6 +25,13 @@ from wwm_locate import ml  # noqa: E402
 WS = wl.WS
 T = wl.TEMPLATES
 REC = "rec"
+HAND = TOOLS / "hand"  # hand-written inputs, committed: hand/<root dir name>/zoom_hand.json, points_hand.json
+
+
+def hand_file(root: Path, name: str) -> Path:
+    """tools/hand/<root.name>/<name> if there, else <root>/<name> (survey dirs keep theirs, written by rr_device)."""
+    f = HAND / root.name / name
+    return f if f.exists() else root / name
 
 
 def tpl(name: str) -> np.ndarray:
@@ -1206,12 +1213,12 @@ def surveys_of(root: Path) -> list[Path]:
 
 
 def zoom_conf(root: Path) -> dict:
-    """<root>/zoom_hand.json, optional, written by hand after looking at the minimap frames, for where the icon cannot
+    """zoom_hand.json (hand_file()), optional, written by hand after looking at the minimap frames, for where the icon cannot
     tell: {"switches": [[first, last, "in" | "out"], ...] (each zoom animation's frames, replacing zoom_switches()),
     "taken_at": n (replacing taken_at()'s guess), "note": ...}. 龙虎寨 (2026-10-04): the live icon was under the
     camera fan when it zoomed in, and once taken the chest icon sits on the gray one, so the icon saw neither the
     zoom in at the gate nor the one coming back in after the stretch outside; it called the icon turning gray a switch."""
-    f = root / "zoom_hand.json"
+    f = hand_file(root, "zoom_hand.json")
     return json.load(open(f, encoding="utf-8")) if f.exists() else {}
 
 
