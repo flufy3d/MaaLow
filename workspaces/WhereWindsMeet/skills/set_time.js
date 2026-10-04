@@ -68,10 +68,23 @@ function openPage() {
 
 /** The 时辰 page → the menu → the world. */
 function closePage() {
-    click(...PAGE_BACK);
-    if (!waitFor("SignIn_CloseMenu", { timeout: 5000 })) log("the menu did not show after the page's back");
-    click(...MENU_BACK);
-    if (!waitFor("SignIn_InWorld", { timeout: 5000 })) throw new Error("not back on the world screen");
+    // each back by what is on screen, a few rounds: a back tapped while the page or the menu was still coming or going
+    // was lost now and then (ended on the menu, 3 times on 2026-10-04; a dry run then went on with the menu open and
+    // every where() came back null)
+    for (let i = 0; i < 4; i++) {
+        if (recognize("SignIn_InWorld").hit && !recognize("SignIn_CloseMenu").hit) return;
+        if (onPage()) {
+            click(...PAGE_BACK);
+            if (!waitFor("SignIn_CloseMenu", { timeout: 5000 })) log("the menu did not show after the page's back");
+        }
+        if (recognize("SignIn_CloseMenu").hit) {
+            click(...MENU_BACK);
+            if (waitFor("SignIn_InWorld", { timeout: 5000 }) && !recognize("SignIn_CloseMenu").hit) return;
+            log("not back on the world screen after the menu's «, again");
+        }
+        sleep(1000);
+    }
+    throw new Error("not back on the world screen");
 }
 
 /** Swipe the wheel n rows: up (later) for n > 0, down for n < 0. @param {number} n */
