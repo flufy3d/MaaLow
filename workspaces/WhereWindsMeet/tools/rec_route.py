@@ -28,6 +28,7 @@ the interaction list, a task count going up) is planned (A*, kept off the edges)
 On the device (the stronghold taken; tell the teacher first, these open the big map a lot):
     dryrun     the route with check: true; how far it got (each point's where() within CHECK_OFF)
     survey     walk points a-b the old way (big map, step, look again) grabbing frames: survey<N>/, placed by its looks
+               (--live: the stronghold not taken yet, its frames go into the live level)
     auto       dry run → survey from where it went wrong → mosaic, plan, view, emit, push → again, until it passes
 
 After a dry run with check: true, `anchors --run RUN.json` puts its where() readings into <root>/device_anchors.json
@@ -63,6 +64,7 @@ def main() -> None:
     ap.add_argument("--every", action="store_true", help="dryrun: read where() at every point, not just the config's checks")
     ap.add_argument("--points", help="survey: the route points to walk, e.g. 10-31")
     ap.add_argument("--at", help="survey: where the character is (x,y from where()), to go on from the nearest point")
+    ap.add_argument("--live", action="store_true", help="survey: the stronghold is live (its frames go into the live level)")
     ap.add_argument("--rounds", type=int, default=4, help="auto: dry run / survey rounds at most")
     ap.add_argument("--run", help="anchors: route_seg.py out= files of dry runs with check=true, comma separated")
     ap.add_argument("--title", help="emit: the stronghold's name on its card (default: the recording's name)")
@@ -116,7 +118,7 @@ def main() -> None:
         cmd_dryrun(a.root, a.name, a.start, a.every)
     elif a.cmd == "survey":
         a_, b_ = (int(v) for v in a.points.split("-"))
-        cmd_survey(a.root, a.name, a_, b_, tuple(float(v) for v in a.at.split(",")) if a.at else None)
+        cmd_survey(a.root, a.name, a_, b_, tuple(float(v) for v in a.at.split(",")) if a.at else None, a.live)
     elif a.cmd == "survey-build":
         for d in sorted(a.root.glob(f"{SURVEY}*")):
             if d.is_dir() and (d / "route.json").exists():

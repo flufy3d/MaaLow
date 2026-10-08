@@ -784,6 +784,9 @@ def build_mosaic(root: Path, pos: dict, zoom: str, k: float, skip=lambda n: Fals
     """A mosaic of the frames at `zoom` (not skipped), and of `extra` [(survey dir, its positions)] too."""
     def samples():
         for src, ps, sk in [(root, pos, skip)] + [(d, q, lambda n: False) for d, q in extra]:
+            if (src / PNG / "frames.jsonl").exists():
+                yield from png_samples(src, zoom)
+                continue
             z = wl.frames_of(src / REC)
             for n, (x, y, zm) in sorted(ps.items()):
                 if zm == zoom and not sk(n):
@@ -793,6 +796,31 @@ def build_mosaic(root: Path, pos: dict, zoom: str, k: float, skip=lambda n: Fals
     ref, spread, _ = ml.mosaic(samples(), wl.MINIMAP.size, LOOK_MOSAIC, k, 0.7)
     ref.name = f"mosaic-{zoom}"
     return ref
+
+
+PNG_NEAR = 6  # frame numbers (~0.2 s): a PNG between tracked frames this close to it on both sides is placed
+
+
+def png_samples(sd: Path, zoom: str):
+    """A survey's lossless frames (<sd>/png/, grabbed beside the JPEGs, ~1 a second) at `zoom`, each placed between
+    the tracked JPEG frames just before and after it (same zoom, both within PNG_NEAR, both sure: the stretch before
+    the first look at the big map has nothing to place it and is solved to wherever, 0, 0 in 怜花禅院's): mosaic
+    samples."""
+    pos = {n: v for n, v in load_track(sd, sure=True).items() if v[3]}
+    keys = np.array(sorted(pos))
+    for f in (json.loads(l) for l in open(sd / PNG / "frames.jsonl", encoding="utf-8")):
+        n = f["seq"]
+        j = int(np.searchsorted(keys, n))
+        if j == 0 or j == len(keys):
+            continue
+        a, b = int(keys[j - 1]), int(keys[j])
+        if n - a > PNG_NEAR or b - n > PNG_NEAR or pos[a][2] != zoom or pos[b][2] != zoom:
+            continue
+        t = (n - a) / (b - a)
+        x, y = (1 - t) * pos[a][0] + t * pos[b][0], (1 - t) * pos[a][1] + t * pos[b][1]
+        d = wl.disc(ml.imread(sd / PNG / f"{n}.png")).copy()
+        cam = wl.heading(d)
+        yield d, x, y, cam
 
 
 def rescaled(ref: ml.Ref, k: float) -> ml.Ref:
@@ -1095,25 +1123,35 @@ def levels_of(root: Path, pos: dict, k: dict, skip=lambda n: False) -> list[tupl
     """The reference's levels: (zoom, tag, mosaic). Zoomed in, one from before the stronghold was taken (its orange
     zone over most of it) and one after (the bare map): a frame of either kind matches its own much better (bare
     frames in the zone mosaic: 61% trusted, the other way round 38%; 酒肉山林, 2026-10-02). Surveys (survey<N>/, made
-    with the stronghold taken) go into the after level, or into the only one. Zoomed out is one level whatever the
-    state: the way there was walked live, so a taken-state run would have nothing for it in an "after" level (龙虎寨:
+    with the stronghold taken) go into the after level, or into the only one; those made live (survey.json `layer`:
+    "live") into the before one, and zoomed out into a live level of their own (怜花禅院 2026-10-08: on the way
+    from the stone to the gate the live zone showed on the zoomed-out minimap, not in the recording). Else zoomed
+    out is one level whatever the state: the way there was walked live, so a taken-state run would have nothing for it in an "after" level (龙虎寨:
     the teacher walked out of the zone after the last kill, zoomed out, and came back in), and the zone is at most
     an edge of the disc out there."""
     t = taken_at(root)
-    sv = [(d, load_track(d)) for d in surveys_of(root)]  # surveyed on the device: the stronghold taken
+    sv = [(d, load_track(d)) for d in surveys_of(root)]  # surveyed on the device: the stronghold taken, or live (--live)
     out = []
     for zm in ("out", "in"):
         n_zm = [n for n, v in pos.items() if v[2] == zm and not skip(n)]
         ex = [(d, q) for d, q in sv if any(v[2] == zm for v in q.values())]
+        ex_live = [(d, q) for d, q in ex if survey_conf(d).get("layer") == "live"]
+        ex_taken = [(d, q) for d, q in ex if survey_conf(d).get("layer") != "live"]
+        if zm == "out" and ex_live:
+            # live, the zone and its red marks show zoomed out too on the way in (怜花禅院 2026-10-08, from the stone
+            # to the gate; not in the recording): a level of the live surveys alone, next to the one of the rest
+            out.append((zm, zm, build_mosaic(root, pos, zm, k[zm], skip=skip, extra=ex_taken)))
+            out.append((zm, f"{zm}_live", build_mosaic(root, {}, zm, k[zm], extra=ex_live)))
+            continue
         if zm == "out" or t is None or not n_zm or min(n_zm) > t or max(n_zm) < t:
             out.append((zm, zm, build_mosaic(root, pos, zm, k[zm], skip=skip, extra=ex)))
             continue
         before = [n for n in n_zm if n <= t]
         after = [n for n in n_zm if n > t + 20]
-        if len(before) > 50:
-            out.append((zm, f"{zm}_live", build_mosaic(root, pos, zm, k[zm], skip=lambda n: skip(n) or n > t)))
-        if len(after) > 50 or ex:
-            out.append((zm, f"{zm}_taken", build_mosaic(root, pos, zm, k[zm], skip=lambda n: skip(n) or n <= t + 20, extra=ex)))
+        if len(before) > 50 or ex_live:
+            out.append((zm, f"{zm}_live", build_mosaic(root, pos, zm, k[zm], skip=lambda n: skip(n) or n > t, extra=ex_live)))
+        if len(after) > 50 or ex_taken:
+            out.append((zm, f"{zm}_taken", build_mosaic(root, pos, zm, k[zm], skip=lambda n: skip(n) or n <= t + 20, extra=ex_taken)))
     return out
 
 
@@ -1204,6 +1242,7 @@ def cmd_mosaic(root: Path, name: str | None = None, rec: str | None = None) -> N
 
 # ---- data layout of surveys (rr_device makes them)
 
+PNG = "png"  # <survey>/png/: lossless frames grabbed beside rec/ (rr_device.Grabber png), stitched instead of them
 SURVEY = "survey"  # <root>/survey<N>/: rec/ (grab_frames: <seq>.jpg, frames.jsonl), route.json, survey.json, and
 # what cache / icons / register / locate write, as for the recording
 

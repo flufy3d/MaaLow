@@ -71,13 +71,16 @@ def survey_anchors(sd: Path) -> list[dict]:
 
 
 class Grabber:
-    """scripts/grab_frames.py in a thread: the app's live frames to <out>/<seq>.jpg and frames.jsonl until stop()."""
+    """scripts/grab_frames.py in a thread: the app's live frames to <out>/<seq>.jpg and frames.jsonl until stop().
+    png: lossless <seq>.png instead (~1 a second, not ~10), for frames that go into a reference: the app matches the
+    raw frame, and on a faint stretch the JPEG's smoothing alone moved a match from 0.39 (wrong place) to 0.83
+    (怜花禅院's way to the gate, 2026-10-08), so a reference stitched from JPEGs did not fit the app's frames."""
 
-    def __init__(self, out: Path):
+    def __init__(self, out: Path, png: bool = False):
         import threading
         from maalow.client import Client
 
-        self.out, self.c, self.n = out, Client(), 0
+        self.out, self.c, self.n, self.png = out, Client(), 0, png
         out.mkdir(parents=True, exist_ok=True)
         self._stop = threading.Event()
         self.t = threading.Thread(target=self._run, daemon=True)
@@ -90,13 +93,13 @@ class Grabber:
         with open(self.out / "frames.jsonl", "a", encoding="utf-8") as log:
             while not self._stop.is_set():
                 try:
-                    with self.c._open("GET", "/screen", timeout=10) as r:
+                    with self.c._open("GET", "/screen?fmt=png" if self.png else "/screen", timeout=10) as r:
                         data, seq = r.read(), int(r.headers["X-Frame"])
                 except OSError:
                     time.sleep(0.5)
                     continue
                 if seq != last:
-                    (self.out / f"{seq}.jpg").write_bytes(data)
+                    (self.out / f"{seq}.{'png' if self.png else 'jpg'}").write_bytes(data)
                     log.write(json.dumps({"seq": seq, "t": round(time.time() * 1000)}) + "\n")
                     log.flush()
                     last, self.n = seq, self.n + 1
@@ -173,13 +176,14 @@ def densify(P: list[dict], a: int, b: int, step: float = SURVEY_STEP) -> tuple[l
     return out, 1, len(out) - 1
 
 
-def cmd_survey(root: Path, name: str, a: int, b: int, at: tuple[float, float] | None = None) -> Path:
+def cmd_survey(root: Path, name: str, a: int, b: int, at: tuple[float, float] | None = None, live: bool = False) -> Path:
     """Walk points a..b of the route the old way (open the big map, where(), run toward the next point, again: no
     reference needed), grabbing frames all along; each look is an anchor. Then the frames are placed (cache, icons,
     anchors, register, locate with the recording's k) into <root>/survey<N>/track.json, which `mosaic` adds to the
     stronghold-taken level. The points' actions are left out (only walking); points are put in every SURVEY_STEP px
     (densify). `at`: where the character is (where()), to go on from the nearest of those points (after a survey
-    that stopped half way)."""
+    that stopped half way). `live`: the stronghold is not taken yet, its frames go into the live level (survey.json
+    `layer`)."""
     cfg = sh.load(name)
     P0 = [{kk: v for kk, v in p.items() if kk != "do"} for p in cfg["points"]]
     P, a, b = densify(P0, a, b)
@@ -189,12 +193,16 @@ def cmd_survey(root: Path, name: str, a: int, b: int, at: tuple[float, float] | 
     n = 1 + max([int(d.name[len(SURVEY):]) for d in root.glob(f"{SURVEY}*") if d.is_dir() and d.name[len(SURVEY):].isdigit()], default=0)
     sd = root / f"{SURVEY}{n}"
     g = Grabber(sd / REC)
+    gp = Grabber(sd / PNG, png=True)  # what the reference is stitched from (png_samples), placed by the JPEGs' track
+    if live:
+        json.dump({"layer": "live"}, open(sd / "survey.json", "w"))
     try:
         # locate: None: the big map way (route.js without a reference); the config for where()'s label and stone
         r = run_skill("route", {"stronghold": cfg, "locate": None, "points": P, "from": a, "to": b, "reach": SURVEY_REACH,
                                 "anchors": f"teaching/survey/{name}_{n}"})
     finally:
         frames = g.stop()
+        gp.stop()
     json.dump(r, open(sd / "route.json", "w", encoding="utf-8"), ensure_ascii=False)
     print(f"survey {sd.name}: points {a}-{b}, {frames} frames, ok {r.get('ok')}", (r.get("error") or {}).get("message", ""))
     survey_build(root, sd)
@@ -272,7 +280,8 @@ def survey_build(root: Path, sd: Path) -> None:
     if sw:
         zoom0 = sw["zoom0"]
         json.dump(sw, open(sd / "zoom_hand.json", "w"), indent=1)
-    json.dump({"zoom0": zoom0, "k": k}, open(sd / "survey.json", "w"))
+    layer = survey_conf(sd).get("layer")  # cmd_survey's, kept when built again
+    json.dump({"zoom0": zoom0, "k": k} | ({"layer": layer} if layer else {}), open(sd / "survey.json", "w"))
     cmd_register(sd)
     cmd_locate(sd, k["out"], k["in"])
 

@@ -188,11 +188,38 @@ function toChest() {
         const image = screenshot();
         if (match("interact_chest.png", { image, roi: LIST_ROI, threshold: 0.8 }).hit) return true;
         const mark = match("minimap_chest.png", { image, roi: DISC_ROI, threshold: 0.8 });
-        if (!mark.hit || !mark.box) return false;
+        if (!mark.hit || !mark.box) return nearChest();
         const [x, y] = [mark.box[0] + mark.box[2] / 2, mark.box[1] + mark.box[3] / 2];
         const d = Math.hypot(x - CENTER[0], y - CENTER[1]);
         runSkill("move", { bearing: bearingOf([x, y]), ms: d > 8 ? 600 : 300, pickup: false });
     }
+    return false;
+}
+
+const NEAR_STEP = 350; // ms: one step of the search by the chest (~1.6 big map px)
+const NEAR_STEPS = 2; // steps out each way
+
+/**
+ * No chest mark on the minimap: standing next to the chest, the arrow covers it (怜花禅院 2026-10-08: 据点宝箱 not
+ * offered at the point, the chest a few steps right of the camera, offered ~4 px from where the recording put it). A
+ * few short steps right, left, ahead and back of the camera, each way out and back again, until it is offered.
+ */
+function nearChest() {
+    const offered = () => match("interact_chest.png", { image: screenshot(), roi: LIST_ROI, threshold: 0.8 }).hit;
+    for (const rel of [90, 270, 0, 180]) {
+        for (let s = 1; s <= NEAR_STEPS; s++) {
+            runSkill("move", { rel, ms: NEAR_STEP, pickup: false });
+            sleep(300);
+            if (offered()) {
+                log(`chest: offered ${s} step(s) toward ${rel}° of the camera`);
+                return true;
+            }
+        }
+        runSkill("move", { rel: (rel + 180) % 360, ms: NEAR_STEP * NEAR_STEPS, pickup: false });
+        sleep(300);
+        if (offered()) return true;
+    }
+    log("chest: not offered within a few steps");
     return false;
 }
 

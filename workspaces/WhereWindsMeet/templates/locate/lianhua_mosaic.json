@@ -1,5 +1,5 @@
 {
-    "desc": "lianhua: minimap reference stitched from recording ? (levels: zoom out / in, before and after the stronghold was taken), made by tools/rec_route.py mosaic",
+    "desc": "lianhua: minimap reference stitched from recording 20261004-013313 (levels: zoom out / in, before and after the stronghold was taken), made by tools/rec_route.py mosaic",
     "levels": [
         {
             "zoom": "out",
@@ -8,6 +8,20 @@
             "origin": [
                 50.31,
                 83.06
+            ],
+            "off": [
+                0.0,
+                0.0
+            ]
+        },
+        {
+            "zoom": "out",
+            "layer": "live",
+            "image": "locate/lianhua_mosaic_out_live.png",
+            "k": 2.31,
+            "origin": [
+                45.89,
+                83.14
             ],
             "off": [
                 0.0,

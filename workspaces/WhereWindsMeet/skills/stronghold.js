@@ -105,6 +105,25 @@ export function where(cfg) {
         if (c == null && !arrowShows(image)) return null;
     }
     const cam = c == null ? null : Math.round(c);
+    let hit = look(cfg);
+    if (!hit) {
+        // nothing at all: the map was left zoomed out (after a login, 怜花禅院 2026-10-08), where the icons are smaller
+        // and match nothing; pinch it in and open it again from the minimap, which centers it on the arrow again
+        click(MINIMAP);
+        sleep(1500);
+        runSkill("pinch", { center: PLAYER, times: 4 });
+        click(MAP_BACK);
+        sleep(800);
+        hit = look(cfg);
+        log(`where: big map zoomed in, ${hit ? `found by ${hit.by}` : "still nothing"}`);
+    }
+    if (!hit) return null;
+    const [x, y, w, h] = /** @type {Box} */ (hit.h.box);
+    return { x: PLAYER[0] - (x + w / 2 - hit.at[0]), y: PLAYER[1] - (y + h / 2 - hit.at[1]), cam, by: hit.by };
+}
+
+/** Open the big map from the minimap, find the stronghold icon nearest the arrow (or its label, or its stone), close it. @param {Marks} [cfg] */
+function look(cfg) {
     click(MINIMAP);
     const t0 = Date.now();
     const hit = waitFor(() => {
@@ -127,9 +146,7 @@ export function where(cfg) {
     }, { timeout: 6000, interval: 300 }); // the icons show ~2.5 s after the map
     click(MAP_BACK);
     sleep(800);
-    if (!hit) return null;
-    const [x, y, w, h] = /** @type {Box} */ (hit.h.box);
-    return { x: PLAYER[0] - (x + w / 2 - hit.at[0]), y: PLAYER[1] - (y + h / 2 - hit.at[1]), cam, by: hit.by };
+    return hit;
 }
 
 /**
