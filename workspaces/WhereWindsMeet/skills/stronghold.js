@@ -27,8 +27,9 @@
 //   {stronghold: <config>}  one-click run (nodes Cixin, Foye, Jiurou: pipeline/stronghold_<id>.json, each its config):
 //                  close popups, teleport to the stone (the generic chain StrongholdTeleport with the config's card), stop
 //                  with an error if on the way the card said the stronghold has not come back yet (marker node
-//                  Teleport_NotRefreshed, recognition waiting), then walk the route (route.js with the config);
-//                  route: false stops at the stone (the PC tools' teleport)
+//                  Teleport_NotRefreshed, recognition waiting), set the time to 子 (set_time; hour: "午" another,
+//                  null leaves it), then walk the route (route.js with the config); route: false stops at the stone
+//                  (the PC tools' teleport)
 //
 // A stronghold's config (written by tools/rec_route.py emit; 慈心山院's and 佛爷寨's moved over from their old nodes):
 //   id, title (the card's name), card (its title template), stone (the teleport stone from the stronghold icon, big map
@@ -39,8 +40,10 @@
 import { arrowShows, cameraHeading, enemies, onZone, zone } from "./lib/minimap.js";
 import { relocate } from "./move.js";
 
+// 30 min, as route.js: the one-click run holds the whole route (200–350 s live, set_time before it); at 180 s it was
+// cut off in a fight half way (佛爷寨 2026-10-08), the character left standing there
 /** @type {SkillMeta} */
-export const meta = { description: "stronghold checks on the minimap", timeout: 180_000 };
+export const meta = { description: "stronghold checks on the minimap", timeout: 1_800_000 };
 
 /** @type {Point} */
 const MINIMAP = [144, 70];
@@ -192,6 +195,7 @@ export function progress(image, tasks = TASKS) {
 const PANEL_ROI = [790, 340, 290, 320]; // the stronghold panel on the big map (under the picture and story)
 const WAIT_KEY = "stronghold_wait";
 const NOT_BACK = "Teleport_NotRefreshed";
+const NIGHT = "子"; // the one-click run's time of day (set_time) unless told otherwise
 
 /** Recognition: the card says when the stronghold comes back (not refreshed yet); the text goes to memory. */
 export function waiting(args, ctx) {
@@ -378,6 +382,11 @@ export default function (args = {}) {
         const t = start(args.stronghold);
         if (args.route === false) return t; // the PC tools: dry runs are made before it comes back
         if (!t.refreshed) throw new Error(`stronghold not refreshed yet (${t.wait}), stopped at the stone`);
+        // night first (hour: null leaves the time alone): at noon the minimap still fails inside the zones (酒肉山林's
+        // bonfire field, 怜花禅院's way to the gate, 2026-10-08) where every night run went through; the game's
+        // time runs fast (子 to 卯 in one run), so it is set here, right before the route
+        const hour = args.hour === undefined ? NIGHT : args.hour;
+        if (hour) log(`set_time: ${JSON.stringify(runSkill("set_time", { to: hour }))}`);
         return runSkill("route", { stronghold: args.stronghold });
     }
     if (args.relocate) return { at: relocate(args.relocate) };

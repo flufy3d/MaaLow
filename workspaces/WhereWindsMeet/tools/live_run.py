@@ -3,7 +3,7 @@ skill calls (stronghold.js with route: false, then route.js with the config), so
 app's live frames are grabbed all along (scripts/grab_frames.py, ~8/s) to line up with the goto traces (their `seq`).
 Exit status: 0 the route went through, 1 it failed (or the teacher stopped it), 2 not refreshed yet (no route run).
 
-    uv run python workspaces/WhereWindsMeet/tools/live_run.py Jiurou data/wwm_live/jiurou1
+    uv run python workspaces/WhereWindsMeet/tools/live_run.py Jiurou data/wwm_live/jiurou1 [时辰, default 子; - leaves it]
 
 <out>/teleport.json and <out>/route.json are the skills' results (logs included), <out>/frames/ the frames, and a
 summary is printed: per leg why it ended, matches and misses, ways out of being stuck; fights (rounds, potions, 处决);
@@ -63,6 +63,7 @@ def save_events(since: int, out: Path) -> None:
 
 def main() -> None:
     name, out = sys.argv[1], Path(sys.argv[2])
+    hour = sys.argv[3] if len(sys.argv) > 3 else "子"
     out.mkdir(parents=True, exist_ok=True)
     since = last_event()
     g = Grabber(out / "frames")
@@ -74,6 +75,9 @@ def main() -> None:
             # as the one-click run does: not refreshed yet, stop at the stone
             print(json.dumps({"teleport": (t.get("error") or {}).get("message") or f"not refreshed yet ({v.get('wait')})"}, ensure_ascii=False))
             sys.exit(2)
+        if hour != "-":  # as the one-click run does: night (子) right before the route
+            st = sh.run_skill("set_time", {"to": hour}, 120_000)
+            json.dump(st, open(out / "set_time.json", "w", encoding="utf-8"), ensure_ascii=False)
         r = sh.route(name)
         json.dump(r, open(out / "route.json", "w", encoding="utf-8"), ensure_ascii=False)
     finally:
