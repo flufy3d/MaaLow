@@ -10,6 +10,7 @@ window.overview = (() => {
     shown[id] = html;
     $(id).innerHTML = html;
     if (id === "ov-guards") delete shown["ov-guard-last"]; // redrawn empty inside it
+    if (id === "ov-device") { delete shown["ov-engine"]; delete shown["ov-frame"]; }
   }
 
   const row = (ok, title, sub, action = "") =>
@@ -58,13 +59,11 @@ window.overview = (() => {
       no_permission: [false, "未授权：在平板上打开 MaaLow 点“授权”"],
       not_running: [false, "未运行：在平板上打开 Shizuku 启动服务"],
     }[st.shizuku] || [null, st.shizuku];
-    const eng = st.engine === "running" ? [true, st.busy ? `运行中 · 忙：${esc(st.busy)}` : "运行中"]
-      : st.engine === "starting" ? [null, "启动中…"] : [false, st.error ? `出错：${esc(st.error)}` : "未运行"];
-    const f = st.frame || {};
+    const eng = st.engine === "running" ? true : st.engine === "starting" ? null : false;
     return `<h2>${svg("cpu")}设备</h2><div class="rows">
       ${row(sh[0], "Shizuku", sh[1])}
-      ${row(eng[0], "引擎", eng[1], `<button class="btn sm" data-act="restart">${svg("refresh", "sm")}重启</button>`)}
-      ${row(st.engine === "running" ? true : null, "画面", `${f.width}×${f.height}${f.seq != null ? ` · 第 ${f.seq} 帧 · ${Math.round(f.age_ms)} ms 前` : ""}`)}
+      ${row(eng, "引擎", `<span id="ov-engine"></span>`, `<button class="btn sm" data-act="restart">${svg("refresh", "sm")}重启</button>`)}
+      ${row(st.engine === "running" ? true : null, "画面", `<span id="ov-frame"></span>`)}
       ${row(st.screen_on, "屏幕", `${st.screen_on ? "亮屏" : "息屏"}${st.keyguard?.locked ? " · 已锁屏" : ""}`)}
       ${row(null, "版本", `MaaLow ${esc(st.app)} · MaaFramework ${esc(st.maa)}`)}
     </div>`;
@@ -127,6 +126,12 @@ window.overview = (() => {
     put("ov-alerts", alerts.map(a => `<div class="banner">${svg("alert")}${esc(a)}</div>`).join(""));
     put("ov-hero", hero());
     put("ov-device", device());
+    if (st) { // their own elements too: the frame number and "忙" (every guard check) change, the restart button should not
+      put("ov-engine", st.engine === "running" ? (st.busy ? `运行中 · 忙：${esc(st.busy)}` : "运行中")
+        : st.engine === "starting" ? "启动中…" : st.error ? `出错：${esc(st.error)}` : "未运行");
+      const f = st.frame || {};
+      put("ov-frame", `${f.width}×${f.height}${f.seq != null ? ` · 第 ${f.seq} 帧 · ${Math.round(f.age_ms)} ms 前` : ""}`);
+    }
     put("ov-guards", guardCard());
     const last = guards?.last; // its own element: "N 秒前" changes every poll, the rows above should not
     put("ov-guard-last", row(guards?.enabled ? true : null, "最近一次",

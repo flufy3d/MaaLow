@@ -641,7 +641,9 @@ window.replay = (() => {
       const el = Math.min(recState.limit_ms, recState.elapsed_ms + (Date.now() - recPolled));
       badge.textContent = `录制中 ${fmtClock(el)}`;
       badge.classList.add("show");
-      if (!recState.stopping) $("rp-rec").innerHTML = `${svg("stop")}<span class="tl">结束 ${fmtClock(el)}</span>`;
+      // only the clock text: rebuilding the button under a press loses the click
+      const tl = $("rp-rec").querySelector(".tl"), t = `结束 ${fmtClock(el)}`;
+      if (!recState.stopping && tl && tl.textContent !== t) tl.textContent = t;
     } else badge.classList.remove("show");
   }
   setInterval(recTimer, 250);
