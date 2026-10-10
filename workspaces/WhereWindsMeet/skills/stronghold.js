@@ -292,7 +292,7 @@ const CARD_SWIPE = 450; // px
 const CARD_Y = 380;
 
 /** Find the card (its title template) on the 据点挑战 page, scrolling its strip, and tap it. @param {string} card */
-function toCard(card) {
+export function toCard(card) {
     const find = () => match(card, { image: screenshot(), roi: CARDS_ROI, threshold: 0.8 });
     const titles = () => ocr({ image: screenshot(), roi: TITLES_ROI }).results.map((m) => m.text ?? "").join("|");
     for (const dir of [1, -1]) { // 1: drag right (earlier cards), -1: drag left (later ones)
