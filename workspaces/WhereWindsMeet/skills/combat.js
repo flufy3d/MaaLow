@@ -62,6 +62,8 @@ const T = {
     ultimate: ["combat/ultimate.png", [815, 391, 75, 75]],
 };
 const THRESHOLD = 0.7;
+const ICON_WHITE = { lower: [0, 0, 216], upper: [180, 59, 255], method: 40 }; // HSV: a lit skill icon's strokes
+const QISHU_LIT_PX = 30;
 
 /**
  * Health bar: light grey on row 683 from x 415, 669 when full (replay frames 130–1300); it goes white for a moment
@@ -76,7 +78,8 @@ const HP_GREY = { lower: [0, 0, 140], upper: [180, 45, 255], method: 40 }; // HS
 const ROUND_MS = 20_000; // 陌刀 part of a round, from switching back
 const CHARGE_MS = 3000;
 const CHARGES = 3;
-const STRIKE_MS = 2500; // after 爆发, waiting for 伤害 (or 突进) to show
+const STRIKE_MS = 4000; // after 爆发, waiting for the 伤害 arrow on the 突进 button
+const SHOTS = 30; // captures of the 横刀 buttons kept per fight (to cut new templates)
 const PARRY_AFTER = 2000; // 奇术 recovery cut by 卸势 after this
 const POTION_MS = 3000; // between potion taps
 const LOCK_MS = 2000; // between lock taps when enemies are around but nothing is locked
@@ -111,7 +114,11 @@ const DODGE_AGAIN_MS = 300; // between dodges in a row
 const FLASH_DODGES = 5; // after a 金光: 0–1.2 s, the ground attack's blows up to ~+44 frames
 const BURST = { lower: [10, 90, 110], upper: [24, 255, 255], method: 40 }; // HSV: the boss's orange burst
 const ALERT_MS = 4000; // 警戒 with no 金光 seen
-const OWN_FX_MS = 1500; // after our 爆发 (and the like) its gold ribbons last ~1 s: no burst read meanwhile
+const OWN_FX_MS = 1500;
+const HENGDAO_FX_MS = 2000;
+const STILL_MS = 600; // after a skill press, no walking this long
+const BURST_MS = 6000; // 爆发 tapped this long at most until it goes out
+const BURST_TAP_MS = 350; // after the 横刀 part, its gold lingers this long // after our 爆发 (and the like) its gold ribbons last ~1 s: no burst read meanwhile
 const LEAP_MS = 2000; // a 金光 this soon after the burst is the leap's (~1 s; the ground attack's ~3 s)
 const LEAP_DELAY = 280; // the leap: from seeing its 金光 to the dodge press (it lights ~3 frames after; lands +16–19)
 const EARLY_MS = 550; // 警戒: dodge this long after the burst anyway: the leap's claw slam lands 21–23 frames after
@@ -179,8 +186,10 @@ export default function (args = {}) {
     let foeHp = null; // enemy health (px of bar) last read
     let lastHit = start; // when it last went down
     let bossSeen = 0; // when the boss bar last showed
+    let shots = 0; // captures/hengdao_* saved
     let walking = false; // walking in at full push
     let charging = false; // 蓄力 held (creeping forward)
+    let stillUntil = 0; // no walking until then (a skill going off)
     let stick = 0; // joystick push now, 0–1
     let turns = 0;
     let rounds = 0;
@@ -242,12 +251,13 @@ export default function (args = {}) {
      * locked on, forward turns into circling the boss once close).
      */
     function walk(on) {
+        if (Date.now() < stillUntil) on = false; // a skill going off: no walking (it cut 突进 short)
         if (on && !walking) {
             log("out of reach: walking in");
             walks++;
         }
         walking = on;
-        stride(on ? 1 : charging ? CREEP : 0);
+        stride(on ? 1 : charging && Date.now() >= stillUntil ? CREEP : 0);
     }
 
     /** Let go of a held 蓄力 and of the joystick. */
@@ -371,6 +381,8 @@ export default function (args = {}) {
             const t = Date.now();
             gap(t);
             heal();
+            // (a window "not before 3.8 s after looking up" was tried and both drops hit: looking up is seen late at
+            // times, so the 金光 can come sooner by the clock; reverted 2026-10-10)
             if (seeNarrow()) {
                 log(`金光 from the sky ${t - skySince} ms after looking up: dodge a moment later`);
                 sleep(SKY_DELAY);
@@ -572,7 +584,11 @@ export default function (args = {}) {
     /** Press p until done() (on a fresh screenshot) says it came out. */
     function press(p, done, name, tries = 4, wait = 300) {
         for (let i = 0; i < tries; i++) {
-            if (p === BUFF || p === DASH) ownFxUntil = Date.now() + OWN_FX_MS; // 增益 / 爆发 / 突进 / 伤害: gold
+            if (p === BUFF || p === DASH) ownFxUntil = Math.max(ownFxUntil, Date.now() + OWN_FX_MS); // gold effects
+            // let go of the joystick first and keep still while it goes off (teacher, 2026-10-10: 突进 tapped while
+            // walking did not come out)
+            stillUntil = Math.max(stillUntil, Date.now() + STILL_MS);
+            walk(false);
             tap(p);
             watch(wait);
             look();
@@ -592,9 +608,22 @@ export default function (args = {}) {
     }
 
     /** 奇术 if lit, then 卸势 once its recovery has run for a while (not after a dodge: that ended it). */
+    /**
+     * 奇术 can be cast: its button there and its icon lit. Without 精力 the same icon shows gray (it still matches the
+     * template): white px in the middle of the button, 60–80 lit, 0 gray (2026-10-10 captures); pressed then it was
+     * tapped three times for nothing (teacher).
+     */
+    function qishuLit() {
+        const hit = match(T.qishu[0], { image: img, roi: T.qishu[1], threshold: THRESHOLD });
+        if (!hit.hit || !hit.box) return false;
+        const [x, y, w, h] = hit.box;
+        const cx = Math.round(x + w / 2), cy = Math.round(y + h / 2);
+        return color({ ...ICON_WHITE, image: img, roi: [cx - 18, cy - 18, 36, 36], count: QISHU_LIT_PX }).hit;
+    }
+
     function qishu() {
-        if (!seen("qishu")) return false;
-        if (!press(QISHU, () => !seen("qishu"), "奇术", 3)) return false;
+        if (!qishuLit()) return false;
+        if (!press(QISHU, () => !qishuLit(), "奇术", 3)) return false;
         if (!watch(PARRY_AFTER - 300)) tap(PARRY);
         look();
         return true;
@@ -620,20 +649,58 @@ export default function (args = {}) {
         qishu();
         if (seen("buff")) press(BUFF, () => !seen("buff"), "增益");
 
-        // 横刀: 爆发 first, while 突进 is ready, since 爆发 turns the 突进 button into 伤害 (swirl, then the arrow);
-        // 突进 pressed first went on cooldown (its number shows) and 伤害 never came: 5 s waiting for it every round
-        // (2026-10-10 captures). 爆发 counts as out when its own button goes (cooldown); then 伤害 if it comes, else
-        // 突进 if it is still there.
+        // 横刀 (teacher, again 2026-10-10): 突进, 爆发, then the 突进 button turns into 伤害 (same place: a swirl while
+        // 爆发 plays, then the arrow), 伤害, and back to 陌刀. 爆发 counts as out once its own button goes (cooldown).
+        // The swirl / arrow templates may be stale (none matched in the 2026-10-10 captures), so the button is tapped
+        // anyway once the wait is over, and what it looks like meanwhile is saved (captures/hengdao_*) to cut new ones.
         if (switchTo("hengdao")) {
-            if (seen("burst")) press(BUFF, () => !seen("burst"), "爆发");
-            const t0 = Date.now();
-            const next = waitFor(() => {
-                look();
-                if (seen("strike")) return "strike";
-                return !seen("damage") && Date.now() - t0 > 800 && seen("dash") ? "dash" : null; // swirl: 伤害 coming
-            }, { timeout: STRIKE_MS, interval: 10 });
-            if (next === "strike") press(DASH, () => !seen("strike"), "伤害");
-            else if (next === "dash") press(DASH, () => !seen("dash"), "突进");
+            // the whole 横刀 part throws gold about (爆发's ribbons outlast 1.5 s): no burst read until it is over
+            // (teacher, 2026-10-10: it dodged its own 爆发 again); the 金光 line is still watched for
+            ownFxUntil = Infinity;
+            stillUntil = Infinity; // no walking for the whole 横刀 part
+            walk(false);
+            if (seen("dash")) press(DASH, () => !seen("dash"), "突进");
+            // 爆发 must go out (teacher, 2026-10-10: hit meanwhile, its taps were swallowed, it gave up after four and
+            // stood there): tapped every BURST_TAP_MS until its button goes (cooldown), for up to BURST_MS
+            let burst = !seen("burst");
+            if (!burst) {
+                const until = Date.now() + BURST_MS;
+                let n = 0;
+                while (Date.now() < until) {
+                    ownFxUntil = Infinity;
+                    tap(BUFF);
+                    n++;
+                    watch(BURST_TAP_MS);
+                    look();
+                    if (!seen("burst")) {
+                        burst = true;
+                        break;
+                    }
+                }
+                log(burst ? (n > 1 ? `爆发 out after ${n} taps` : "爆发") : `爆发: not out after ${n} taps`);
+            }
+            if (burst) { // then 伤害 on the 突进 button; with no 爆发 there is nothing to wait for
+                const t0 = Date.now();
+                let saved = 0;
+                const ready = waitFor(() => {
+                    look();
+                    if (shots < SHOTS && Date.now() - t0 > saved * 300) {
+                        saveImage(img, `captures/hengdao_${rounds}_${saved}.png`);
+                        saved++;
+                        shots++;
+                    }
+                    return seen("strike");
+                }, { timeout: STRIKE_MS, interval: 10 });
+                if (ready) press(DASH, () => !seen("strike"), "伤害");
+                else {
+                    log("伤害: arrow not recognized, tapping the button anyway");
+                    tap(DASH);
+                    watch(300);
+                    look();
+                }
+            }
+            ownFxUntil = Date.now() + HENGDAO_FX_MS;
+            stillUntil = Date.now() + STILL_MS;
         }
 
         switchTo("modao");

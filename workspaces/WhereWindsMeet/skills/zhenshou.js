@@ -33,6 +33,16 @@ const LESS_X = 815; // 镇守奖励: the ◀ left of 领取三份 (fewer shares)
 const MORE_X = 1040; // and the ▶ right of it
 /** @type {Point} */ const PANEL_CLOSE = [1035, 38];
 /** @type {Box} */ const PANEL_TITLE_ROI = [790, 10, 160, 45];
+/** @type {Box} */ const SHORT_ROI = [10, 430, 150, 60]; // the 心力 prompt before 传送: 取消
+/** @type {Box} */ const SHORT_TEXT_ROI = [350, 330, 400, 30];
+/** @type {Point} */ const SHORT_CANCEL = [80, 459];
+/** @type {Point} */ const SHORT_GO = [950, 459]; // 确认前往
+/** @type {Point} */ const BACK_X_Y = [1040, 37]; // the « on the map, challenge pages and the menu
+
+/** Fights only, no chest (teacher, 2026-10-10: out of 心力, fight anyway to see the combat). */
+let practice = false;
+/** @type {Box} */ const LEAVE_TEXT_ROI = [350, 340, 400, 30]; // 奖励尚未领取，是否仍要退出镇守副本？
+/** @type {Point} */ const LEAVE_YES = [950, 459];
 /** @type {Box} */ const AGAIN_ROI = [818, 665, 100, 30]; // 再次挑战: white when it can be taken, gray (V ~57) when not
 const LIT = { lower: [0, 0, 150], upper: [180, 60, 255], method: 40 };
 const AIM_F = 600; // screen px from the middle to the joystick angle: atan(dx / AIM_F) (~90° across the screen)
@@ -41,7 +51,9 @@ const EDGE_PX = 250; // the chest this far off the middle: turn to it before wal
 const FAST_M = 10; // the mark's 米: full speed beyond this, half below
 const SLOW_M = 4; // and short pushes below this (the mark hides at ~3)
 const METERS_MS = 800; // the 米 label read this often (OCR ~240 ms)
-const NUDGE_MS = 150;
+const NUDGE_MS = 120;
+const PULSE_MS = 200; // 4–10 米: one push, then stand and look
+const OFFER_WAIT_MS = 600; // the mark gone: standing this long for 获取奖励 before nudging
 const TURN_STEP = 50; // px dragged per turn toward it (slow drags turn less than fast ones)
 const SETTLE_MS = 400;
 const PILLAR = { lower: [8, 40, 200], upper: [35, 255, 255], method: 40 }; // HSV: the chest's gold light
@@ -60,6 +72,13 @@ const FULL_POTIONS = 6;
 const STONE_STEP_MS = 400;
 /** @type {Box} */ const PICK_ROI = [570, 360, 210, 160]; // icons on top of each other: a list to pick from
 /** @type {Box} */ const PANEL_ROI = [790, 10, 200, 70]; // the picked mark's name and kind (地标·传送), top right
+
+/** Not enough 心力 left for a share: the run is over. */
+class OutOfStamina extends Error {
+    constructor() {
+        super("out of 心力");
+    }
+}
 
 function tapBox(b) {
     click(Math.round(b[0] + b[2] / 2), Math.round(b[1] + b[3] / 2));
@@ -84,6 +103,20 @@ function teleport(card) {
         if (go.hit) {
             log("传送");
             tapBox(go.box);
+            sleep(1500);
+            // short of 心力 for even one share, the game asks first (领取奖励需要消耗20点心力…是否仍要继续前往): no
+            const ask = screenshot();
+            if (match("zhenshou_short_cancel.png", { image: ask, roi: SHORT_ROI, threshold: 0.8 }).hit
+                && ocrIn(ask, SHORT_TEXT_ROI).includes("心力")) {
+                if (!practice) {
+                    click(SHORT_CANCEL[0], SHORT_CANCEL[1]);
+                    sleep(1000);
+                    toWorld(); // the boss map, the challenge page, 江湖行 and the menu are still open (2026-10-10)
+                    throw new OutOfStamina();
+                }
+                log("short of 心力, practice: 确认前往");
+                click(SHORT_GO[0], SHORT_GO[1]);
+            }
             landed("传送");
             return;
         }
@@ -109,6 +142,17 @@ function teleport(card) {
     throw new Error("镇守挑战: never got to 传送");
 }
 
+/** Back out to the world screen with the « at the top right (map, challenge page, 江湖行, menu), a few times. */
+function toWorld() {
+    for (let i = 0; i < 6; i++) {
+        const image = screenshot();
+        if (recognize("Teleport_OpenMenu", { image }).hit && calm(image)) return;
+        click(BACK_X_Y[0], BACK_X_Y[1]);
+        sleep(1500);
+    }
+    log("toWorld: not back on the world screen");
+}
+
 /** Tap a line of OCR text in roi that includes `text`; false if none. */
 function tapText(text, roi, ms = 3000) {
     const hit = waitFor(() => {
@@ -118,6 +162,20 @@ function tapText(text, roi, ms = 3000) {
     if (!hit) return false;
     tapBox(hit.box);
     return true;
+}
+
+/**
+ * Leaving with the chest not taken (out of 心力), the game asks 奖励尚未领取，是否仍要退出镇守副本: 是 (teacher,
+ * 2026-10-10).
+ */
+function confirmLeave() {
+    const ask = waitFor(() => {
+        const t = ocrIn(screenshot(), LEAVE_TEXT_ROI);
+        return t.includes("退出") || t.includes("尚未领取") ? t : null;
+    }, { timeout: 3000, interval: 400 });
+    if (!ask) return;
+    log(`"${ask}": 是`);
+    click(LEAVE_YES[0], LEAVE_YES[1]);
 }
 
 /** Back to the world screen, waiting out the loading after a teleport. */
@@ -151,7 +209,14 @@ function stones() {
  */
 function home() {
     runSkill("clear_popups", {});
-    if (!waitFor("Teleport_OpenMenu", { timeout: 5000 })) throw new Error("home: not on the world screen");
+    // a teleport's loading (a white screen) can be on: wait it out (2026-10-10: 5 s was not enough)
+    if (!waitFor("Teleport_OpenMenu", { timeout: 60_000, interval: 500 })) throw new Error("home: not on the world screen");
+    const hp = health(screenshot());
+    if (hp != null && hp >= 0.99 && (potionsLeft() ?? 0) >= FULL_POTIONS) {
+        log("home: already healed and full");
+        stock = FULL_POTIONS;
+        return "full";
+    }
     openMap();
     click(REGIONS[0], REGIONS[1]);
     sleep(1200);
@@ -193,7 +258,8 @@ function refill() {
         }, { timeout: 1500, interval: 300 });
         if (ok) {
             log("home: healed, potions full");
-            return "full";
+            stock = FULL_POTIONS;
+        return "full";
         }
     }
     log(`home: not healed by the stone (health ${health(screenshot())}, ${potionsLeft()} potions)`);
@@ -214,6 +280,21 @@ function ocrText(roi) {
 function potionsLeft() {
     const t = ocrText(POTION_NUM_ROI).replace(/[^0-9]/g, "");
     return t ? Number(t) : null;
+}
+
+/** Potions known to be left (full at a stone, less what each fight drank); the count read wins when there is one. */
+let stock = /** @type {number | null} */ (null);
+
+/**
+ * Potions left after a fight: read a few times (right after a fight it was unread in the arena, so 再次挑战 was passed
+ * up, 2026-10-10), else what is known.
+ */
+function potionsAfter(/** @type {number} */ drank) {
+    if (stock != null) stock = Math.max(0, stock - drank);
+    const read = waitFor(() => potionsLeft(), { timeout: 2000, interval: 300 });
+    if (read != null) stock = read;
+    else log(`potions unread: ${stock ?? "?"} by count`);
+    return stock;
 }
 
 /** 获取奖励 in the interaction list on this screenshot. */
@@ -259,7 +340,7 @@ function chest() {
     let looks = 0;
     let held = false;
     let nearSeen = 0; // the pillar (close) last seen
-    let meters = Infinity; // the mark's distance label, read now and then
+    let meters = -1; // the mark's distance label, read now and then; -1 unknown (walked as if near)
     let metersAt = 0;
     const go = (/** @type {number} */ x, /** @type {number} */ speed) => {
         const a = Math.atan2(x - 540, AIM_F);
@@ -301,19 +382,37 @@ function chest() {
             }
             if (at && at.box && Date.now() - metersAt > METERS_MS) {
                 const [mx, my, mw, mh] = at.box;
-                const t = ocrIn(image, [Math.max(0, mx - 30), my + mh, mw + 60, 26]).match(/(\d+)\s*米/);
-                if (t) meters = Number(t[1]);
+                const text = ocrIn(image, [Math.max(0, mx - 30), my + mh, mw + 60, 26]);
+                const t = text.match(/(\d+)/); // the 米 itself is often misread
+                const m = t ? Number(t[1]) : -1;
+                if (m !== meters) log(`chest mark: "${text}" → ${m < 0 ? "?" : m + " 米"}`);
+                meters = m;
                 metersAt = Date.now();
             }
-            if (at && !at.near && meters > SLOW_M) { // far: walk, faster the farther
+            // full speed only when the label says far; unread, it is walked in pulses (teacher, 2026-10-10: the label
+            // was not read, it ran at full speed and past the chest)
+            if (at && !at.near && meters > FAST_M) { // far: walk on
                 looks = 0;
-                go(at.x, meters > FAST_M ? 1 : 0.5);
+                go(at.x, 1);
                 sleep(60);
                 continue;
             }
+            if (at && !at.near && (meters > SLOW_M || meters < 0)) { // nearer (or unread): in pulses, standing between
+                looks = 0;
+                go(at.x, 0.5);
+                sleep(PULSE_MS);
+                stop();
+                continue;
+            }
+            if (at && at.near && held) {
+                // the mark just went: that is at the chest. Stand at once and give the offer a moment (teacher,
+                // 2026-10-10: the icon was gone and it kept on, past the chest)
+                stop();
+                nearSeen = Date.now();
+                if (waitFor(() => offered(screenshot()).hit, { timeout: OFFER_WAIT_MS, interval: 60 })) continue;
+            }
             if (at) {
                 // close (the mark a few 米 off, or hidden and the pillar shows): a short push, then stand and look
-                // for the offer (teacher, 2026-10-10: it ran past without slowing down, then wandered off)
                 looks = 0;
                 if (at.near) nearSeen = Date.now();
                 go(at.x, 0.4);
@@ -321,6 +420,11 @@ function chest() {
                 stop();
                 sleep(250);
                 continue;
+            }
+            if (held) { // the mark gone mid-walk, no pillar in sight either: at the chest, most likely
+                stop();
+                if (waitFor(() => offered(screenshot()).hit, { timeout: OFFER_WAIT_MS, interval: 60 })) continue;
+                nearSeen = Date.now();
             }
             stop();
             if (Date.now() - nearSeen < 2000) { // lost it close by: gone past, back a little
@@ -392,7 +496,7 @@ function short(read) {
 }
 
 /**
- * @param {{boss?: string, times?: number, again?: boolean, hp?: number, home?: boolean, here?: boolean, chest?: boolean, probe?: boolean, homeOnly?: boolean}} args
+ * @param {{boss?: string, times?: number, again?: boolean, hp?: number, home?: boolean, here?: boolean, chest?: boolean, probe?: boolean, homeOnly?: boolean, practice?: boolean}} args
  *   boss: the card (镇关吼); times: fights in a row (default 1); again: 再次挑战 between them (default true), else out
  *   and in by teleport (home first); hp: potion below; home: false skips going home first; here: already in the arena;
  *   chest: (with here) the first fight is won already, go for its chest; probe: only report potions and health
@@ -402,12 +506,22 @@ export default function (args = {}) {
     const card = BOSSES[boss];
     if (!card) throw new Error(`no card template for ${boss}`);
     const times = args.times ?? 1;
+    practice = !!args.practice;
     if (args.probe) return { potions: potionsLeft(), health: health(screenshot()), stones: stones() };
     if (args.homeOnly) return home();
     const report = [];
+    const stopped = (e) => {
+        if (!(e instanceof OutOfStamina)) throw e;
+        log("out of 心力: done");
+        return report;
+    };
     if (!args.here) {
         if (args.home !== false) home();
-        teleport(card);
+        try {
+            teleport(card);
+        } catch (e) {
+            return stopped(e);
+        }
     }
     for (let i = 1; i <= times; i++) {
         const t0 = Date.now();
@@ -415,8 +529,21 @@ export default function (args = {}) {
         log(`fight ${i}: ${JSON.stringify(fight)}`);
         if (fight?.reason !== "boss gone") throw new Error(`fight ${i} not won: ${fight?.reason}`);
         const hp = health(screenshot());
-        const potions = potionsLeft();
+        const potions = potionsAfter(fight?.potions ?? 0);
         log(`after fight ${i}: health ${hp == null ? "?" : Math.round(hp * 100) + "%"}, ${potions ?? "?"} potions`);
+        if (practice) { // no chest: out and in again
+            report.push({ fight: i, s: Math.round((Date.now() - t0) / 1000), ...fight, hp, potions });
+            sleep(2000);
+            if (!tapWhen("zhenshou_exit.png", EXIT_ROI, 10_000)) throw new Error("no exit icon");
+            log("退出");
+            confirmLeave();
+            landed("退出");
+            if (i < times) {
+                if (args.home !== false) home();
+                teleport(card);
+            }
+            continue;
+        }
         if (!chest()) throw new Error(`fight ${i}: no 获取奖励 within ${CHEST_MS / 1000} s`);
         const got = reward();
         log(`chest ${i}: ${got}`);
@@ -424,7 +551,10 @@ export default function (args = {}) {
         if (got === "out of 心力") {
             click(PANEL_CLOSE[0], PANEL_CLOSE[1]); // the chest stays; out of the arena
             sleep(1500);
-            if (tapWhen("zhenshou_exit.png", EXIT_ROI, 5000)) landed("退出");
+            if (tapWhen("zhenshou_exit.png", EXIT_ROI, 5000)) {
+                confirmLeave();
+                landed("退出");
+            }
             break;
         }
         if (got !== "taken") break;
@@ -468,7 +598,11 @@ export default function (args = {}) {
             throw new Error("not back in the world 60 s after 退出");
         if (more) {
             if (args.home !== false) home();
-            teleport(card);
+            try {
+                teleport(card);
+            } catch (e) {
+                return stopped(e);
+            }
         }
     }
     return report;
