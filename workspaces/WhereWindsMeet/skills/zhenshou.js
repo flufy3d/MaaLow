@@ -30,15 +30,19 @@ const TAB_GOLD = { lower: [180, 130, 60], upper: [255, 215, 160] };
 /** @type {Box} */ const REWARD_ROI = [790, 470, 280, 190]; // 镇守奖励: 领取三份, (剩余避战符, 扫荡次数,) 消耗心力
 /** @type {Box} */ const EXIT_ROI = [660, 0, 70, 50];
 const LESS_X = 815; // 镇守奖励: the ◀ left of 领取三份 (fewer shares)
+const MORE_X = 1040; // and the ▶ right of it
 /** @type {Point} */ const PANEL_CLOSE = [1035, 38];
 /** @type {Box} */ const PANEL_TITLE_ROI = [790, 10, 160, 45];
-// camera drag px per screen px off the middle, dragged slowly (AIM_MS per px): a fast drag turns far more than a
-// slow one (run 9: 104 px in 300 ms moved the mark 430 px, 22 px moved it 20)
-const PX_DRAG = 0.25;
-const AIM_SETTLE = 600; // the camera keeps turning a little after a drag
-const AIM_MS = 12;
-const STEP_MS = 700;
-const NEAR_MS = 200; // steps once the mark is gone (close)
+/** @type {Box} */ const AGAIN_ROI = [818, 665, 100, 30]; // 再次挑战: white when it can be taken, gray (V ~57) when not
+const LIT = { lower: [0, 0, 150], upper: [180, 60, 255], method: 40 };
+const AIM_F = 600; // screen px from the middle to the joystick angle: atan(dx / AIM_F) (~90° across the screen)
+const STICK_R = 83; // joystick radius (move.js)
+const EDGE_PX = 250; // the chest this far off the middle: turn to it before walking
+const FAST_M = 10; // the mark's 米: full speed beyond this, half below
+const SLOW_M = 4; // and short pushes below this (the mark hides at ~3)
+const METERS_MS = 800; // the 米 label read this often (OCR ~240 ms)
+const NUDGE_MS = 150;
+const TURN_STEP = 50; // px dragged per turn toward it (slow drags turn less than fast ones)
 const SETTLE_MS = 400;
 const PILLAR = { lower: [8, 40, 200], upper: [35, 255, 255], method: 40 }; // HSV: the chest's gold light
 /** @type {Box} */ const PILLAR_ROI = [200, 150, 680, 450];
@@ -238,75 +242,105 @@ function pillar(image) {
 /** Where the chest is on screen: the mark's x (far), else the gold pillar's (close by the mark hides). */
 function chestX(image) {
     const mark = match("zhenshou_chest_mark.png", { image, roi: MARK_ROI, threshold: 0.85 });
-    if (mark.hit && mark.box) return { x: mark.box[0] + mark.box[2] / 2, near: false };
+    if (mark.hit && mark.box) return { x: mark.box[0] + mark.box[2] / 2, near: false, box: mark.box };
     const x = pillar(image);
-    return x == null ? null : { x, near: true };
+    return x == null ? null : { x, near: true, box: null };
 }
 
 /**
- * Won: go to the chest the way the teacher said (message 71, after the second run circled for long): turn the camera
- * on it first, then walk straight at it, slowing down when close; tap 获取奖励 the moment it is offered and wait for
- * the reward panel. Far, the chest mark (26米) shows where it is; close, the mark hides and the chest's gold pillar
- * does. Out of sight (gone by), the camera turns to look for it.
+ * Won: walk to the chest and tap 获取奖励 the moment it is offered, then wait for the reward panel. Far, the chest
+ * mark (26米) shows where it is; close, the mark hides and the chest's gold pillar does. The joystick is pushed toward
+ * where the chest is on screen and re-aimed every look while walking (half way once close: slower), so the camera
+ * is never turned to it (teacher, 2026-10-10: turning to aim overshot every time, a dozen tries before going).
+ * Only with the chest out of sight does the camera turn to look for it.
  */
 function chest() {
     const end = Date.now() + CHEST_MS;
     let looks = 0;
-    let nearAt = 0; // the pillar last seen
-    while (Date.now() < end) {
-        let image = screenshot();
-        let offer = offered(image);
-        if (offer.hit) {
-            sleep(SETTLE_MS); // stand still first (teacher: it kept walking past), then tap if still offered
-            offer = offered(screenshot());
-            if (!offer.hit) continue;
-            log("获取奖励");
-            tapBox(offer.box);
-            if (waitFor(() => panel(), { timeout: 4000, interval: 400 })) return true;
-            log("获取奖励: no panel, again");
-            continue;
-        }
-        const at = chestX(image);
-        if (!at && Date.now() - nearAt < 2000) {
-            step(150); // the pillar went out of sight close by: a little on, the offer may come
-            nearAt = 0;
-            continue;
-        }
-        if (!at) {
+    let held = false;
+    let nearSeen = 0; // the pillar (close) last seen
+    let meters = Infinity; // the mark's distance label, read now and then
+    let metersAt = 0;
+    const go = (/** @type {number} */ x, /** @type {number} */ speed) => {
+        const a = Math.atan2(x - 540, AIM_F);
+        const r = STICK_R * speed;
+        const p = /** @type {Point} */ ([Math.round(STICK[0] + r * Math.sin(a)), Math.round(STICK[1] - r * Math.cos(a))]);
+        if (!held) touch.down(STICK, 0);
+        touch.move(p, 0);
+        held = true;
+    };
+    const stop = () => {
+        if (held) touch.up(0);
+        held = false;
+    };
+    try {
+        while (Date.now() < end) {
+            const image = screenshot();
+            let offer = offered(image);
+            if (offer.hit) {
+                stop();
+                sleep(SETTLE_MS); // standing still, then tap if still offered
+                offer = offered(screenshot());
+                if (!offer.hit) continue;
+                log("获取奖励");
+                tapBox(offer.box);
+                if (waitFor(() => panel(), { timeout: 4000, interval: 400 })) return true;
+                log("获取奖励: no panel, again");
+                continue;
+            }
+            const at = chestX(image);
+            if (at && Math.abs(at.x - 540) > EDGE_PX) {
+                // far off to a side, or behind: the mark sits at the screen's edge with an arrow (68米 the wrong way,
+                // 2026-10-10); turn to it first, slowly, a bit at a time
+                stop();
+                looks = 0;
+                const drag = Math.sign(at.x - 540) * TURN_STEP;
+                turn(drag, TURN_STEP * 10);
+                sleep(400);
+                continue;
+            }
+            if (at && at.box && Date.now() - metersAt > METERS_MS) {
+                const [mx, my, mw, mh] = at.box;
+                const t = ocrIn(image, [Math.max(0, mx - 30), my + mh, mw + 60, 26]).match(/(\d+)\s*米/);
+                if (t) meters = Number(t[1]);
+                metersAt = Date.now();
+            }
+            if (at && !at.near && meters > SLOW_M) { // far: walk, faster the farther
+                looks = 0;
+                go(at.x, meters > FAST_M ? 1 : 0.5);
+                sleep(60);
+                continue;
+            }
+            if (at) {
+                // close (the mark a few 米 off, or hidden and the pillar shows): a short push, then stand and look
+                // for the offer (teacher, 2026-10-10: it ran past without slowing down, then wandered off)
+                looks = 0;
+                if (at.near) nearSeen = Date.now();
+                go(at.x, 0.4);
+                sleep(NUDGE_MS);
+                stop();
+                sleep(250);
+                continue;
+            }
+            stop();
+            if (Date.now() - nearSeen < 2000) { // lost it close by: gone past, back a little
+                log("chest lost close by: stepping back");
+                touch.down(STICK, 0);
+                touch.move([STICK[0], STICK[1] + STICK_R * 0.4], 0);
+                sleep(NUDGE_MS);
+                touch.up(0);
+                nearSeen = 0;
+                sleep(250);
+                continue;
+            }
             if (looks >= 6) throw new Error("chest: not in sight all round");
             log("chest out of sight: turning to look");
             turn(100); // ~60°
             looks++;
             sleep(400);
-            continue;
         }
-        looks = 0;
-        if (at.near) nearAt = Date.now();
-        const dx = at.x - 540;
-        log(`chest ${at.near ? "pillar" : "mark"} at x ${Math.round(at.x)}`);
-        if (Math.abs(dx) > (at.near ? 60 : 50)) {
-            const drag = Math.round(dx * PX_DRAG);
-            turn(drag, Math.max(250, Math.abs(drag) * AIM_MS)); // aim first, slowly
-            sleep(AIM_SETTLE);
-            continue;
-        }
-        if (at.near) {
-            step(NEAR_MS); // close: short steps
-            continue;
-        }
-        // straight at it while it stays ahead; let go once it is off to a side, gone (close) or offered
-        touch.down(STICK, 0);
-        touch.move(FORWARD, 0);
-        try {
-            waitFor(() => {
-                image = screenshot();
-                if (offered(image).hit) return true;
-                const now = chestX(image);
-                return !now || now.near || Math.abs(now.x - 540) > 80;
-            }, { timeout: 15_000, interval: 60 });
-        } finally {
-            touch.up(0);
-        }
+    } finally {
+        stop();
     }
     return false;
 }
@@ -326,6 +360,15 @@ function reward() {
     let read = waitFor(() => panel(), { timeout: 5000, interval: 500 });
     if (!read) return "no reward panel";
     log(`reward panel: ${read.join(" / ")}`);
+    // the panel keeps the share last taken (双份 after a 心力-short one, 2026-10-10): ▶ back up to 三份
+    for (let i = 0; i < 2 && !read.some((l) => l.includes("三份")); i++) {
+        const line = ocr({ image: screenshot(), roi: REWARD_ROI }).results.find((m) => (m.text ?? "").includes("领取"));
+        if (!line?.box) break;
+        click(MORE_X, Math.round(line.box[1] + line.box[3] / 2));
+        sleep(800);
+        read = panel() ?? read;
+        log(`up to 三份: ${read.join(" / ")}`);
+    }
     if (!read.some((l) => l.includes("三份"))) return `reward panel not on 领取三份 (${read.join(" / ")}): left open`;
     // 心力 short of 三份 (60): 双份 (40) or 单份 (20) with what is left, the teacher's "刷完" (2026-10-10, 56 left:
     // 双份); the ◀ left of the 领取 line steps down; none affordable: left for a person, and no more fights
@@ -368,7 +411,7 @@ export default function (args = {}) {
     }
     for (let i = 1; i <= times; i++) {
         const t0 = Date.now();
-        const fight = args.chest && i === 1 ? { reason: "boss gone" } : runSkill("combat", { boss: true, hp: args.hp ?? 0.5, ms: 900_000 });
+        const fight = args.chest && i === 1 ? { reason: "boss gone" } : runSkill("combat", { boss: true, hp: args.hp ?? 0.7, ms: 900_000 });
         log(`fight ${i}: ${JSON.stringify(fight)}`);
         if (fight?.reason !== "boss gone") throw new Error(`fight ${i} not won: ${fight?.reason}`);
         const hp = health(screenshot());
@@ -391,16 +434,31 @@ export default function (args = {}) {
         // the arena (run 4)
         // the result page can take a few seconds, the arena (its exit icon) showing meanwhile (run 7)
         const resultPage = () => match("result_continue.png", { image: screenshot(), roi: [900, 640, 180, 80], threshold: 0.8 }).hit;
-        const page = waitFor(resultPage, { timeout: 25_000, interval: 300 }) ? "result" // with 扫荡: >8 s (run 9)
+        const page = waitFor(resultPage, { timeout: 60_000, interval: 300 }) ? "result" // with 扫荡: >8 s (run 9), >25 s with 3
             : waitFor(() => match("zhenshou_exit.png", { image: screenshot(), roi: EXIT_ROI, threshold: 0.8 }).hit, { timeout: 7000, interval: 300 }) ? "arena" : null;
         if (!page) throw new Error("neither the result page nor the arena after 领取");
-        if (more && args.again !== false && (fit || args.home === false) && page === "result") {
-            if (!tapWhen("result_again.png", [800, 640, 280, 80], 5000)) throw new Error("no 再次挑战");
-            log("再次挑战");
+        // with 扫荡 there is a result page for each: 再次挑战 is gray on all but the last, 继续 turns the page
+        // (2026-10-10: a tap on the gray one did nothing)
+        const want = more && args.again !== false && (fit || args.home === false);
+        let again = false;
+        for (let n = 0; n < 8 && waitFor(resultPage, { timeout: n ? 8000 : 1000, interval: 300 }); n++) {
+            const image = screenshot();
+            const btn = match("result_again.png", { image, roi: [800, 640, 280, 80], threshold: 0.8 });
+            const lit = btn.hit && color({ ...LIT, image, roi: AGAIN_ROI, count: 600 }).hit;
+            if (want && lit && btn.box) {
+                tapBox(btn.box);
+                log("再次挑战");
+                again = true;
+                break;
+            }
+            if (!tapWhen("result_continue.png", [900, 640, 180, 80], 3000)) throw new Error("no 继续");
+            log(lit ? "继续" : "继续 (next result page)");
+            sleep(2000);
+        }
+        if (again) {
             landed("再次挑战");
             continue;
         }
-        if (page === "result" && !tapWhen("result_continue.png", [900, 640, 180, 80], 5000)) throw new Error("no 继续");
         sleep(1500);
         runSkill("clear_popups", {});
         if (!tapWhen("zhenshou_exit.png", EXIT_ROI, 5000)) throw new Error("no exit icon");

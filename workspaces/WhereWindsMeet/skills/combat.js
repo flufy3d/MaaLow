@@ -76,7 +76,7 @@ const HP_GREY = { lower: [0, 0, 140], upper: [180, 45, 255], method: 40 }; // HS
 const ROUND_MS = 20_000; // 陌刀 part of a round, from switching back
 const CHARGE_MS = 3000;
 const CHARGES = 3;
-const STRIKE_MS = 4000; // 爆发 playing until 伤害 is ready
+const STRIKE_MS = 2500; // after 爆发, waiting for 伤害 (or 突进) to show
 const PARRY_AFTER = 2000; // 奇术 recovery cut by 卸势 after this
 const POTION_MS = 3000; // between potion taps
 const LOCK_MS = 2000; // between lock taps when enemies are around but nothing is locked
@@ -93,7 +93,8 @@ const DEG_PX = 0.6; // camera turn per px dragged (move.js)
 
 /** @type {Point} */ const DODGE = [924, 674];
 /** @type {Point} */ const STICK = [175, 569]; // joystick middle (move.js)
-/** @type {Point} */ const FORWARD = [175, 486];
+const STICK_R = 83; // joystick radius
+const CREEP = 0.5; // joystick push while 蓄力 is held
 // 金光: a connected run of warm bright px (HSV, so snow and white clouds, bluish, are not) at least 230 px wide, 3.5
 // times as wide as high and filled ≥ 15%. The first frame is a flare (~350 x 100 with its glow), then a thin line.
 // In the two 镇关吼 recordings it caught 5 of the 6, all but one in their first frame (missed: a white one over white
@@ -110,6 +111,7 @@ const DODGE_AGAIN_MS = 300; // between dodges in a row
 const FLASH_DODGES = 5; // after a 金光: 0–1.2 s, the ground attack's blows up to ~+44 frames
 const BURST = { lower: [10, 90, 110], upper: [24, 255, 255], method: 40 }; // HSV: the boss's orange burst
 const ALERT_MS = 4000; // 警戒 with no 金光 seen
+const OWN_FX_MS = 1500; // after our 爆发 (and the like) its gold ribbons last ~1 s: no burst read meanwhile
 const LEAP_MS = 2000; // a 金光 this soon after the burst is the leap's (~1 s; the ground attack's ~3 s)
 const LEAP_DELAY = 280; // the leap: from seeing its 金光 to the dodge press (it lights ~3 frames after; lands +16–19)
 const EARLY_MS = 550; // 警戒: dodge this long after the burst anyway: the leap's claw slam lands 21–23 frames after
@@ -130,6 +132,7 @@ const BOSS_RED = { lower: [170, 0, 0], upper: [255, 130, 130] };
 /** @type {Box} */ const BOSS_LAST_ROI = [349, 27, 16, 6]; // used up: the left end pale lilac until the last move
 const BOSS_LAST = { lower: [150, 140, 200], upper: [225, 225, 255] }; // white (loading) is not it
 const WHIFF_MS = 3000;
+const BOSS_WHIFF_MS = 1000;
 const BOSS_GONE_MS = 5000; // boss fight: the bar gone this long (and the icons back) is the end
 /** @type {Box} */ const DOWN_ROI = [930, 650, 140, 60]; // 重伤: 疗伤 at the bottom right
 
@@ -176,7 +179,9 @@ export default function (args = {}) {
     let foeHp = null; // enemy health (px of bar) last read
     let lastHit = start; // when it last went down
     let bossSeen = 0; // when the boss bar last showed
-    let walking = false;
+    let walking = false; // walking in at full push
+    let charging = false; // 蓄力 held (creeping forward)
+    let stick = 0; // joystick push now, 0–1
     let turns = 0;
     let rounds = 0;
     let potions = 0;
@@ -191,6 +196,7 @@ export default function (args = {}) {
     let skyDone = false; // that look up has been guarded
     let downAt = 0; // 重伤 last looked for
     let lastOrange = 0; // orange px the last look saw
+    let ownFxUntil = 0; // our own skill's gold effect on screen until then
     let alerts = 0;
     let calm = false; // the top right icons show (out of a fight), as of calmAt
     let calmAt = 0;
@@ -219,15 +225,36 @@ export default function (args = {}) {
     }
 
     /** Hold the joystick forward (locked on, that is toward the enemy), or let go. */
+    /** Push the joystick forward this much (0–1); 0 lets go. */
+    function stride(v) {
+        if (v === stick) return;
+        if (v === 0) touch.up(0);
+        else {
+            if (stick === 0) touch.down(STICK, 0);
+            touch.move([STICK[0], Math.round(STICK[1] - STICK_R * v)], 0);
+        }
+        stick = v;
+    }
+
+    /**
+     * Walk in (locked on, that is toward the enemy), or not. While 蓄力 is held the joystick is pushed half way
+     * anyway (teacher, 2026-10-10: the first 蓄力 usually hits air; creeping forward while charging does no harm, and
+     * locked on, forward turns into circling the boss once close).
+     */
     function walk(on) {
-        if (on === walking) return;
-        if (on) {
+        if (on && !walking) {
             log("out of reach: walking in");
-            touch.down(STICK, 0);
-            touch.move(FORWARD, 0);
             walks++;
-        } else touch.up(0);
+        }
         walking = on;
+        stride(on ? 1 : charging ? CREEP : 0);
+    }
+
+    /** Let go of a held 蓄力 and of the joystick. */
+    function letGo() {
+        touch.up(1);
+        charging = false;
+        walk(false);
     }
 
     /** Note how long since the last look for 金光; a long one is logged with where it came from and went to. */
@@ -255,8 +282,7 @@ export default function (args = {}) {
      * left the blows at +34 and +44 to land (run 6), so after a 金光 FLASH_DODGES of them.
      */
     function dodge(times = 2) {
-        touch.up(1); // a held 蓄力
-        walk(false);
+        letGo(); // a held 蓄力
         touch.down(STICK, 0);
         touch.move(BACKWARD, 0);
         for (let i = 0; i < times; i++) {
@@ -268,6 +294,9 @@ export default function (args = {}) {
         touch.up(0);
         lastDodge = Date.now();
         lastCheck = lastDodge; // the dodging is not a gap
+        lastHit = 0; // dodged back, out of reach: walk in again at once
+        img = screenshot();
+        heal();
         lastAt = "a dodge";
         dodges++;
     }
@@ -307,6 +336,7 @@ export default function (args = {}) {
         const n = hit.hit ? hit.results[0]?.count ?? 0 : 0;
         const prev = lastOrange;
         lastOrange = n;
+        if (Date.now() < ownFxUntil) return false; // our own gold (横刀 爆发's ribbons) reads as a burst (teacher)
         if (n < 1250 || n < 2 * Math.max(prev, 375)) return false;
         const [, y, w, h] = /** @type {Box} */ (hit.results[0].box);
         return y <= 240 && h >= 200 && w >= 200;
@@ -332,8 +362,7 @@ export default function (args = {}) {
         if (skyDone) return false;
         skyDone = true;
         log("looking up (从天而降 coming): on guard");
-        touch.up(1);
-        walk(false);
+        letGo();
         alerts++;
         let n = 0;
         let downSince = 0;
@@ -341,6 +370,7 @@ export default function (args = {}) {
             img = screenshot();
             const t = Date.now();
             gap(t);
+            heal();
             if (seeNarrow()) {
                 log(`金光 from the sky ${t - skySince} ms after looking up: dodge a moment later`);
                 sleep(SKY_DELAY);
@@ -376,8 +406,7 @@ export default function (args = {}) {
         if (!dodgeOn || !args.boss || !burst()) return false;
         const t0 = Date.now();
         log("金光 tell (orange burst): on guard");
-        touch.up(1);
-        walk(false);
+        letGo();
         alerts++;
         let end = t0 + ALERT_MS;
         let flashed = false;
@@ -407,6 +436,7 @@ export default function (args = {}) {
                 continue;
             }
             execute();
+            heal();
         }
         lastOrange = 0;
         lastCheck = Date.now();
@@ -449,6 +479,8 @@ export default function (args = {}) {
         if (!k) return false;
         log(k);
         touch.up(1); // a 蓄力 held meanwhile is let go
+        charging = false;
+        walk(walking);
         tap(EXECUTE);
         lastExecute = now;
         executions++;
@@ -498,7 +530,8 @@ export default function (args = {}) {
         if (len || locked) lastBar = now;
         else if (fought && !calm && now - lastBar > BAR_MS && now - lastTurn > TURN_MS) behind();
         // a boss is ahead on landing, maybe not on the minimap yet: lock on whatever is in view
-        if ((foes || (args.boss && !bossSeen)) && !locked && now - lastLock > LOCK_MS) {
+        // a boss fight: keep it locked, whatever the minimap shows (walking in goes where the camera looks)
+        if ((foes || args.boss) && !locked && now - lastLock > LOCK_MS) {
             tap(LOCK);
             lastLock = now;
         }
@@ -513,10 +546,22 @@ export default function (args = {}) {
             }
             if (down) walk(false);
         }
-        walk((locked || (args.boss && !bossSeen)) && now - lastHit > WHIFF_MS); // the boss bar shows once near
+        // a boss fight walks in sooner (teacher, 2026-10-10: 蓄力 hit air a lot, the backward dodges leave it far)
+        walk((locked || (args.boss && !bossSeen)) && now - lastHit > (args.boss ? BOSS_WHIFF_MS : WHIFF_MS));
+        heal();
+    }
+
+    /**
+     * Below hpMin, the potion. A boss fight takes it on one low reading (a covered bar reads as none, not 0%) and
+     * looks during the dodging too: a blow takes 40–75% at once, two readings and only between blows had it drink at
+     * 29% (teacher, 2026-10-10: 喝血不及时).
+     */
+    function heal() {
         const h = hp();
-        if (h != null) lows = h < hpMin ? lows + 1 : 0;
-        if (lows >= 2 && now - lastPotion > POTION_MS) {
+        if (h == null) return; // covered: no reading, no potion (a stale low one had it drink at "0%")
+        lows = h < hpMin ? lows + 1 : 0;
+        const now = Date.now();
+        if (lows >= (args.boss ? 1 : 2) && now - lastPotion > POTION_MS) {
             log(`health ${Math.round(h * 100)}%: potion`);
             tap(POTION);
             lastPotion = now;
@@ -527,6 +572,7 @@ export default function (args = {}) {
     /** Press p until done() (on a fresh screenshot) says it came out. */
     function press(p, done, name, tries = 4, wait = 300) {
         for (let i = 0; i < tries; i++) {
+            if (p === BUFF || p === DASH) ownFxUntil = Date.now() + OWN_FX_MS; // 增益 / 爆发 / 突进 / 伤害: gold
             tap(p);
             watch(wait);
             look();
@@ -574,18 +620,29 @@ export default function (args = {}) {
         qishu();
         if (seen("buff")) press(BUFF, () => !seen("buff"), "增益");
 
+        // 横刀: 爆发 first, while 突进 is ready, since 爆发 turns the 突进 button into 伤害 (swirl, then the arrow);
+        // 突进 pressed first went on cooldown (its number shows) and 伤害 never came: 5 s waiting for it every round
+        // (2026-10-10 captures). 爆发 counts as out when its own button goes (cooldown); then 伤害 if it comes, else
+        // 突进 if it is still there.
         if (switchTo("hengdao")) {
-            if (seen("dash")) press(DASH, () => !seen("dash"), "突进");
-            if (seen("burst")) press(BUFF, () => seen("damage") || seen("strike"), "爆发");
-            if (waitFor(() => { look(); return seen("strike"); }, { timeout: STRIKE_MS, interval: 10 })) press(DASH, () => !seen("strike"), "伤害");
-            else log("伤害: never ready");
+            if (seen("burst")) press(BUFF, () => !seen("burst"), "爆发");
+            const t0 = Date.now();
+            const next = waitFor(() => {
+                look();
+                if (seen("strike")) return "strike";
+                return !seen("damage") && Date.now() - t0 > 800 && seen("dash") ? "dash" : null; // swirl: 伤害 coming
+            }, { timeout: STRIKE_MS, interval: 10 });
+            if (next === "strike") press(DASH, () => !seen("strike"), "伤害");
+            else if (next === "dash") press(DASH, () => !seen("dash"), "突进");
         }
 
         switchTo("modao");
         const t0 = Date.now();
         for (let i = 0; i < CHARGES && !usedUp; i++) {
             touch.down(CHARGE, 1);
-            if (!watch(CHARGE_MS)) touch.up(1); // a dodge has let go already
+            charging = true;
+            walk(walking); // creep forward while charging
+            if (!watch(CHARGE_MS)) letGo(); // (a dodge has let go already)
             watch(100);
             look();
         }
@@ -615,8 +672,7 @@ export default function (args = {}) {
         if (!(e instanceof Over)) throw e;
         why = e.message;
     } finally {
-        touch.up(1);
-        walk(false);
+        letGo();
     }
     log(`fight over (${why}): ${rounds} rounds, ${potions} potions, ${executions} 处决, ${dodges} dodges (${alerts} on guard), ${walks} walks in, ${turns} turns to an enemy behind, 金光 looked for at most ${maxGap} ms apart`);
     return { reason: why, rounds, potions, executions, dodges, alerts, walks, turns, maxGap };
