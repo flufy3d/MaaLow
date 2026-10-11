@@ -53,6 +53,8 @@ internal class SkillRun(
     private val h = Js.create(this, skills.prelude, PRELUDE_NAME)
     private val controller = if (context != 0L) Maa.contextController(context) else 0L
     private val images = LinkedHashMap<Int, Long>() // id -> MaaImageBuffer we own, oldest first
+    private val shots = HashMap<Int, LongArray>() // id -> [capture stream seq, capture time ns] of images
+    private val history = Nn.History() // preprocessed regions of the screenshots, for infer()'s earlier frames
     private val borrowed = HashMap<Int, Long>() // the image a custom recognition was given
     private var nextImage = 1
     private var latest = 0
@@ -63,6 +65,7 @@ internal class SkillRun(
     @Volatile private var inNode = false
     private var closed = false
     private val held = HashSet<Int>() // contacts this run pressed and has not lifted: lifted when it ends
+    private var uncleared = 0 // recognitions / nodes since the tasker's cache was last cleared
 
     /** "workspace/skill" of the outermost call, for /status. */
     @Volatile var label = workspace
@@ -106,6 +109,7 @@ internal class SkillRun(
         }
         images.values.forEach { Maa.imageDestroy(it) }
         images.clear()
+        shots.clear()
     }
 
     // ---- calls
@@ -279,6 +283,14 @@ internal class SkillRun(
             }
             "reco" -> timed(a) { Maa.contextRecognizeDirect(context(), a.str("type"), (a["param"] ?: JsonObject(emptyMap())).toString(), image(a)) }
             "locate" -> skills.locator.locate(workspace, a, image(a))
+            "infer" -> {
+                val img = image(a)
+                val id = images.entries.firstOrNull { it.value == img }?.key ?: 0
+                val cur = shot(id, img)
+                val kept = images.entries.filter { it.key != id }.map { (k, v) -> shot(k, v) }
+                skills.nn.infer(workspace, a, cur, kept, history, app.engine.width, app.engine.height)
+            }
+            "model_info" -> skills.nn.model(workspace, a.str("model"), intArrayOf(1, 0, 0)).info()
             "click" -> done(Maa.controllerClick(device(), i("x"), i("y")), "click")
             "long_press" -> {
                 val c = device()
@@ -350,6 +362,7 @@ internal class SkillRun(
                     Engine.summarize(Maa.contextRunTask(context(), node, override.toString()))
                 } finally {
                     inNode = false
+                    trimCache()
                 }
             }
             "run_skill" -> runSkill(a.str("name"), a["args"] ?: JsonNull)
@@ -422,18 +435,29 @@ internal class SkillRun(
         while (images.size > KEEP_IMAGES) {
             val (old, ptr) = images.entries.first()
             images.remove(old)
+            shots.remove(old)
             Maa.imageDestroy(ptr)
         }
-        return JsonObject(frameStats() + mapOf("id" to JsonPrimitive(id)))
+        // the frame the screenshot got, not the stream's latest by now (infer()'s frame offsets count on it)
+        val (seq, age) = Bridge.locked()
+        shots[id] = longArrayOf(seq, System.nanoTime() - (age * 1e6).toLong())
+        return JsonObject(frameStats(seq, age) + mapOf("id" to JsonPrimitive(id)))
     }
 
-    private fun frameStats(): JsonObject {
-        val s = Bridge.stats()
+    /** An image with its frame number and capture time; one the run did not take (a custom recognition's): Maa's latest screenshot. */
+    private fun shot(id: Int, img: Long): Nn.Shot {
+        val m = shots[id] ?: Bridge.locked().let { (seq, age) -> longArrayOf(seq, System.nanoTime() - (age * 1e6).toLong()) }
+        return Nn.Shot(id, img, m[0], m[1])
+    }
+
+    private fun frameStats(): JsonObject = Bridge.stats().let { frameStats(it.seq, it.ageMs) }
+
+    private fun frameStats(seq: Long, ageMs: Double): JsonObject {
         return buildJsonObject {
             put("width", app.engine.width)
             put("height", app.engine.height)
-            put("seq", s.seq)
-            put("age_ms", Math.round(s.ageMs * 10) / 10.0)
+            put("seq", seq)
+            put("age_ms", Math.round(ageMs * 10) / 10.0)
             put("time", System.currentTimeMillis())
         }
     }
@@ -455,6 +479,7 @@ internal class SkillRun(
         val t0 = System.nanoTime()
         val r = Json.parseToJsonElement(reco()).jsonObject
         val ms = (System.nanoTime() - t0) / 1e6
+        trimCache()
         val detail = r["detail"] as? JsonObject
         val best = detail?.get("best") as? JsonObject
         return buildJsonObject {
@@ -472,6 +497,16 @@ internal class SkillRun(
         }
     }
 
+    /**
+     * Maa keeps the detail of every recognition (all its results) for the whole task: a skill polling for half an hour
+     * grew the native heap ~2.5 MB/s until it ran out (2026-10-10, combat.js). Read details are not needed again.
+     */
+    private fun trimCache() {
+        if (++uncleared < CLEAR_EVERY) return
+        uncleared = 0
+        Maa.contextClearCache(context())
+    }
+
     // ---- memory: memory/memory.json, the same key-value file as maalow.memory.MemoryStore
 
     private fun memoryFile() = app.workspaces.file(workspace, "memory/memory.json")
@@ -487,6 +522,7 @@ internal class SkillRun(
         const val MAX_LOGS = 200
         const val MAX_RESULTS = 50
         const val MAX_EVENT_VALUE = 2000
+        const val CLEAR_EVERY = 50
         val RESULT_KEYS = setOf("box", "score", "text", "label", "cls_index", "count")
         /** "(skills/a.js:12:5)" or "at skills/a.js:12" in a QuickJS stack. */
         val LOCATION = Regex("""(skills/[^\s():]+\.js):(\d+)(?::(\d+))?""")

@@ -134,6 +134,10 @@ struct Bridge
     std::atomic<uint64_t> seq { 0 };
     std::atomic<uint64_t> dropped { 0 };
     std::atomic<int64_t> convert_ns { 0 };
+    // the frame GetLockedPixels last handed out (a screenshot's frame: the stream may have moved on by the time
+    // the caller asks), its seq and capture time
+    std::atomic<uint64_t> locked_seq { 0 };
+    std::atomic<int64_t> locked_ns { 0 };
     AImageReader* reader = nullptr;
     std::mutex first_mu;
     std::condition_variable first_cv;
@@ -326,6 +330,8 @@ EXPORT FrameInfo GetLockedPixels()
     info.length = g.stride * g.height;
     info.data = slot->bgr;
     info.frame_ref = slot;
+    g.locked_seq.store(slot->seq);
+    g.locked_ns.store(slot->timestamp_ns);
     return info;
 }
 
@@ -422,6 +428,13 @@ extern "C" JNIEXPORT void JNICALL Java_io_github_flufy3d_maalow_engine_Bridge_na
         slot->refs.fetch_sub(1);
     }
     env->SetLongArrayRegion(out, 0, 5, v);
+}
+
+// out: [seq, capture timestamp ns] of the frame last handed to MaaFramework (its latest screenshot)
+extern "C" JNIEXPORT void JNICALL Java_io_github_flufy3d_maalow_engine_Bridge_nativeLocked(JNIEnv* env, jobject, jlongArray out)
+{
+    jlong v[2] = { jlong(g.locked_seq.load()), g.locked_ns.load() };
+    env->SetLongArrayRegion(out, 0, 2, v);
 }
 
 // Copy the latest frame into an ARGB_8888 bitmap of the same size; returns the frame seq, or -1.

@@ -15,14 +15,20 @@ add_link_options(-Wl,--exclude-libs,ALL)
 add_library(maalow_bridge SHARED bridge.cpp)
 target_link_libraries(maalow_bridge android mediandk jnigraphics log)
 
-# JNI wrapper over the MaaFramework C API, and skills' minimap locate() (locate_core.cpp, no Maa inside).
+# JNI wrapper over the MaaFramework C API, skills' minimap locate() (locate_core.cpp, no Maa inside) and skills'
+# infer() (nn_jni.cpp: the libonnxruntime.so MaaFramework ships, through its C API only, looked up at run time; the
+# header comes from scripts/fetch_onnxruntime.sh).
 add_library(MaaFramework SHARED IMPORTED)
 set_target_properties(MaaFramework PROPERTIES IMPORTED_LOCATION ${MAAFW_DIR}/jniLibs/arm64-v8a/libMaaFramework.so)
 add_library(MaaUtils SHARED IMPORTED)
 set_target_properties(MaaUtils PROPERTIES IMPORTED_LOCATION ${MAAFW_DIR}/jniLibs/arm64-v8a/libMaaUtils.so)
-add_library(maalow_jni SHARED maa_jni.cpp locate_jni.cpp locate_core.cpp)
-target_include_directories(maalow_jni PRIVATE ${MAAFW_DIR}/include)
-target_link_libraries(maalow_jni MaaFramework -Wl,--no-as-needed MaaUtils -Wl,--as-needed log)
+set(ORT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/onnxruntime)
+if(NOT EXISTS ${ORT_DIR}/onnxruntime_c_api.h)
+    message(FATAL_ERROR "onnxruntime header missing: run android/scripts/fetch_onnxruntime.sh")
+endif()
+add_library(maalow_jni SHARED maa_jni.cpp locate_jni.cpp locate_core.cpp nn_jni.cpp)
+target_include_directories(maalow_jni PRIVATE ${MAAFW_DIR}/include ${ORT_DIR})
+target_link_libraries(maalow_jni MaaFramework -Wl,--no-as-needed MaaUtils -Wl,--as-needed log dl)
 
 # QuickJS (quickjs-ng, fetched by scripts/fetch_quickjs.sh) for workspace skills. Plain C, so it brings no libc++;
 # its API stays hidden (no BUILDING_QJS_SHARED) and only the JNI entry points are exported. No Maa dependency:

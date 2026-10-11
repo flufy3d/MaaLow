@@ -21,10 +21,20 @@ object Bridge {
     /** [seq, capture timestamp ns, now ns, last convert ns, dropped frames] */
     external fun nativeStats(out: LongArray)
 
+    /** [seq, capture timestamp ns] of the frame last handed to MaaFramework (the latest screenshot's). */
+    external fun nativeLocked(out: LongArray)
+
     /** Copies the latest frame into an ARGB_8888 bitmap of the frame size; returns its seq or -1. */
     external fun nativeSnapshot(bitmap: Bitmap, waitMs: Int): Long
 
     data class Stats(val seq: Long, val ageMs: Double, val convertMs: Double, val dropped: Long)
+
+    /** The latest screenshot's frame: seq, and its age now (ms). */
+    fun locked(): Pair<Long, Double> {
+        val v = LongArray(2)
+        nativeLocked(v)
+        return v[0] to (System.nanoTime() - v[1]) / 1e6
+    }
 
     fun stats(): Stats {
         val v = LongArray(5)

@@ -213,6 +213,18 @@ std::string task_detail(MaaTasker* t, MaaTaskId id)
     return out + "]}";
 }
 
+MaaStatus task_status(MaaTasker* t, MaaTaskId id)
+{
+    MaaStringBuffer* name = MaaStringBufferCreate();
+    MaaSize size = 0;
+    MaaStatus status = MaaStatus_Invalid;
+    if (!MaaTaskerGetTaskDetail(t, id, name, nullptr, &size, &status)) {
+        status = MaaStatus_Invalid;
+    }
+    MaaStringBufferDestroy(name);
+    return status;
+}
+
 // ---- custom action / recognition trampolines (both registered under a skill's name)
 
 MaaBool MAA_CALL custom_action(
@@ -620,6 +632,13 @@ FN(jstring, contextRunTask)(JNIEnv* env, jobject, jlong h, jstring entry, jstrin
     return jstr(env, task_detail(MaaContextGetTasker(ctx), id));
 }
 
+// Drop the tasker's recognition / node / task details (Maa keeps them all until cleared). Between a skill's own
+// calls only: details already read are not needed again; the running task's end status is still recorded.
+FN(void, contextClearCache)(JNIEnv*, jobject, jlong h)
+{
+    MaaTaskerClearCache(MaaContextGetTasker(ptr<MaaContext>(h)));
+}
+
 FN(jboolean, controllerInputText)(JNIEnv* env, jobject, jlong h, jstring text)
 {
     auto* c = ptr<MaaController>(h);
@@ -671,5 +690,22 @@ FN(jstring, taskerRun)(JNIEnv* env, jobject, jlong h, jstring entry, jstring ove
     for (int i = 0; i < 250 && MaaTaskerStopping(t); i++) usleep(20'000);
     MaaTaskId id = MaaTaskerPostTask(t, str(env, entry).c_str(), ov.empty() ? "{}" : ov.c_str());
     MaaTaskerWait(t, id);
-    return jstr(env, task_detail(t, id));
+    // A skill clearing the cache mid-task (contextClearCache) also drops the task id -> runner mapping Wait looks up,
+    // so Wait may return early: the end status the task writes into its detail is what counts. Bounded at ~5 s of
+    // an idle tasker with no status (a task that never ran).
+    for (int idle = 0;;) {
+        MaaStatus st = task_status(t, id);
+        if (st == MaaStatus_Succeeded || st == MaaStatus_Failed || id == MaaInvalidId) {
+            break;
+        }
+        if (!MaaTaskerRunning(t) && ++idle > 500) {
+            break;
+        }
+        usleep(10'000);
+    }
+    std::string out = task_detail(t, id);
+    // Maa keeps every recognition, node and task detail (with each recognition's full result list) until the cache is
+    // cleared: nothing reads them after the run, so drop them (2026-10-10: ~2.5 MB/s under combat.js, OOM)
+    MaaTaskerClearCache(t);
+    return jstr(env, out);
 }

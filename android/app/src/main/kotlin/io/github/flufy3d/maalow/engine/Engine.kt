@@ -310,10 +310,13 @@ class Engine(private val context: Context) {
         val stamp = stampOf(ws)
         loaded?.let { if (it.name == name && it.stamp == stamp) return it }
         val res = Maa.resourceCreate()
-        val ocr = File(ws, "model/ocr") // optional PaddleOCR model (det.onnx, rec.onnx, keys.txt)
-        val ok = Maa.resourceLoad(res, 1, File(ws, "pipeline").absolutePath) &&
-            Maa.resourceLoad(res, 2, File(ws, "templates").absolutePath) &&
-            (!ocr.isDirectory || Maa.resourceLoad(res, 3, ocr.absolutePath))
+        // A workspace with model/ loads as a Maa bundle (pipeline/ + model/: OCR in model/ocr, NeuralNetworkClassify /
+        // Detect models in model/classify, model/detect, whose `model` is a path under them); without one, just its
+        // pipeline. Maa looks for a bundle's images in image/, so templates/ always go separately. (Skills' infer()
+        // reads any model/ file itself, see skill/Nn.kt.)
+        val ok = (if (File(ws, "model").isDirectory) Maa.resourceLoad(res, 0, ws.absolutePath)
+        else Maa.resourceLoad(res, 1, File(ws, "pipeline").absolutePath)) &&
+            Maa.resourceLoad(res, 2, File(ws, "templates").absolutePath)
         if (!ok) {
             Maa.resourceDestroy(res)
             error("failed to load resources of $name")

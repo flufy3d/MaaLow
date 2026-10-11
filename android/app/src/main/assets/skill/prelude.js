@@ -46,6 +46,9 @@
         color: (o) => reco("ColorMatch", pick(o, ["lower", "upper", "count", "connected", "method", "order_by"]), o),
         ocr: (o = {}) => reco("OCR", pick(o, ["expected", "threshold", "only_rec", "order_by"]), o),
         detect: (o) => reco("NeuralNetworkDetect", pick(o, ["model", "expected", "labels", "threshold", "order_by"]), o),
+        classify: (o) => reco("NeuralNetworkClassify", pick(o, ["model", "expected", "labels", "order_by"]), o),
+        infer: (model, o = {}) => call("infer", { ...o, model, image: o.image ? o.image.id : undefined }),
+        modelInfo: (model) => call("model_info", { model }),
         locate: (ref, o = {}) =>
             call("locate", {
                 ref,

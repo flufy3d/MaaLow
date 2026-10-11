@@ -20,7 +20,7 @@ interface Image {
     id: number;
     width: number;
     height: number;
-    /** Frame number of the capture stream. */
+    /** Frame number of the capture stream (of the frame this screenshot got). */
     seq: number;
     /** How old the frame was when taken, ms. */
     age_ms: number;
@@ -98,11 +98,103 @@ interface OcrOptions extends RecoOptions {
 }
 
 interface DetectOptions extends RecoOptions {
-    /** ONNX model name (e.g. a YOLO export). Model loading is not wired up yet (replay-guidance phase). */
+    /** ONNX model, a path under the workspace's model/detect/ (a YOLOv8 / YOLO11 export; labels from its metadata). */
     model: string;
     expected?: number | number[];
     labels?: string[];
     threshold?: number | number[];
+}
+
+interface ClassifyOptions extends RecoOptions {
+    /** ONNX model, a path under the workspace's model/classify/ (Maa resizes the roi to the model's input). */
+    model: string;
+    expected?: number | number[];
+    labels?: string[];
+}
+
+/**
+ * infer(): any ONNX model under the workspace's model/, on a region of a screenshot (or several frames of it).
+ * Input = roi, resized to size, as color, (v / 255 - mean) / std per channel (uint8 models: the bytes), laid out as
+ * the model's input. Frames are stacked as channels in the order given (frame 0's channels first).
+ */
+interface InferOptions {
+    /** Image to look at (frame offset 0); default: the latest screenshot (one is taken if there is none). */
+    image?: Image;
+    /** Region to cut; default: the whole image. */
+    roi?: Box;
+    /** [width, height] (or one number, square) to resize the region to; default: the model's input size. */
+    size?: number | [number, number];
+    /** Default "rgb". gray: OpenCV's BGR2GRAY of the resized region. */
+    color?: "gray" | "rgb" | "bgr";
+    /** Default "area" (OpenCV's INTER_AREA; linear when enlarging). */
+    resize?: "area" | "linear" | "nearest";
+    /** On the 0..1 scale: one value, one per color channel, or one per stacked channel. Default 0 / 1. */
+    mean?: number | number[];
+    std?: number | number[];
+    /** Default: from the model's input shape (nchw unless its last dimension is the channel count). */
+    layout?: "nchw" | "nhwc";
+    /**
+     * Offsets of the frames to stack, from the image (0), oldest first, e.g. [-4, -2, 0]: in capture stream frames
+     * (Image.seq), or in units of frame_ms of capture time. Earlier frames come from this run's own screenshots
+     * (the last 32 per preprocessing; the 8 kept images are preprocessed when first needed), the nearest one within
+     * tolerance; if one is missing the result is { ready: false } (take screenshots often enough). Default [0].
+     */
+    frames?: number[];
+    /** Offsets count in this many ms of capture time instead of stream frames, e.g. 1000 / 30 for a model trained on
+     * 30 fps recordings (the stream only has a frame when the screen changed). The frame used is the one on screen
+     * at that time (the last captured before it, when the run also has the stream frame right after it), else the
+     * nearest within tolerance. */
+    frame_ms?: number;
+    /** How far (in offset units) the frame used may be from the one asked for. Default 1. */
+    tolerance?: number;
+    /** Post-processing of the first output. A vector output always gets index / score (/ label) of its largest. */
+    post?: "none" | "softmax" | "sigmoid" | "yolo";
+    /** Class names (else the model's "names" metadata, as YOLO exports have). */
+    labels?: string[];
+    /** yolo: minimum class score (default 0.25), NMS IoU (default 0.45), most detections (default 100). */
+    threshold?: number;
+    iou?: number;
+    max_det?: number;
+    /** All outputs (`outputs`) and the first in full, however long. */
+    raw?: boolean;
+    /** The preprocessed frames (HWC bytes each), to check against an offline pipeline. */
+    input?: boolean;
+    /** onnxruntime intra-op threads (default 1), busy-wait between ops (default false), provider (default "cpu").
+     * A model is opened once per set of these and kept (reopened when its file changes). */
+    threads?: number;
+    spin?: boolean;
+    provider?: "cpu" | "nnapi";
+}
+
+interface Inference {
+    /** false: an earlier frame was missing (no output then). */
+    ready: boolean;
+    /** Shape and values of the first output (values up to 4096, all with raw). */
+    shape?: number[];
+    output?: number[];
+    outputs?: { name: string; shape: number[]; data: number[] }[];
+    /** softmax / sigmoid of the output. */
+    probs?: number[];
+    /** Largest of probs (else of the output) and its label. */
+    index?: number;
+    score?: number;
+    label?: string;
+    /** yolo: detections in screen coordinates, best first; hit / box / score / label of the best. */
+    hit?: boolean;
+    box?: Box | null;
+    detections?: { box: Box; score: number; cls_index: number; label?: string }[];
+    /** The frames used, per offset: stream frame number and capture time relative to the image (ms); null: missing. */
+    frames: ({ seq: number; ms: number } | null)[];
+    input?: number[][];
+    /** prep: preprocessing (with history), run: onnxruntime, total. */
+    ms: { prep: number; run?: number; total: number };
+}
+
+interface ModelInfo {
+    inputs: { name: string; type: string; shape: number[] }[];
+    outputs: { name: string; type: string; shape: number[] }[];
+    /** From the model's "names" metadata. */
+    labels?: Record<string, string>;
 }
 
 interface LocateOptions {
@@ -204,6 +296,17 @@ declare function color(opts: ColorOptions): Hit;
 declare function ocr(opts?: OcrOptions): Hit;
 /** Neural network detection (NeuralNetworkDetect), e.g. a YOLO model. */
 declare function detect(opts: DetectOptions): Hit;
+/** Neural network classification (NeuralNetworkClassify), Maa's: one image, its fixed preprocessing. */
+declare function classify(opts: ClassifyOptions): Hit;
+/**
+ * Run an ONNX model (a path under the workspace's model/, e.g. "ttc/ttc.onnx") on a screenshot region, with your own
+ * preprocessing and several frames stacked as channels:
+ *   infer("ttc/ttc.onnx", { roi: [240, 30, 600, 600], size: 96, color: "gray", frames: [-4, -2, 0],
+ *                           frame_ms: 1000 / 30, mean: 0.45, std: 0.25, post: "softmax" })
+ */
+declare function infer(model: string, opts?: InferOptions): Inference;
+/** Inputs and outputs (names, types, shapes) of a model under model/. */
+declare function modelInfo(model: string): ModelInfo;
 /**
  * Where a screen region (e.g. the minimap, for where the character is) is, matched inside a reference image drawn
  * at its scale: templates/<ref>.json (zoom levels, each an image with its position scale and origin; the crop, what

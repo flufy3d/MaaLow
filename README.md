@@ -414,6 +414,7 @@ export default function (args, ctx) {
 * 改完 `maalow sync` 即生效，不用重装 App；报错带文件名和行号
 * 检查：`npx -p typescript tsc -p workspaces/<ws>/skills`
 * 区域定位 `locate()`：屏幕上的一块区域在一张参考图里的位置，见下一节
+* 模型推理 `infer()`：工作区 `model/` 下任意 ONNX 模型，自定预处理、多帧叠加，见“模型推理 infer()”
 
 ### 区域定位 locate()
 
@@ -438,6 +439,24 @@ if (r && r.score >= 0.4 && r.score - r.second >= 0.1) pos = [r.x, r.y]; // 可�
   3. 用锚点加逐帧配准给每帧定位，拼图，导出参考图，再用留出的帧离线评测：每张图、每种预处理的误差、分数、第二高峰差距
   4. C++ 可以在 PC 上编成 DLL（`g++ -O2 -shared -static -std=c++20 -o data/build/locate.dll android/app/src/main/cpp/locate_core.cpp`），评测时用 `--native` 跑 App 的实现，和 OpenCV 版对拍
 * `scripts/` 里的通用工具：`grab_frames.py`（抓 App 实时帧）、`map_locate.py`（上面的离线定位）
+
+### 模型推理 infer()
+
+工作区 `model/` 下的任意 ONNX 模型（`maalow sync --push` 推上去，下次调用就用新文件），用 MaaFramework 自带的 onnxruntime（1.19.2，`android/app/src/main/cpp/nn_jni.cpp` 只用它的 C API，不加包体）。会话按模型文件和线程等选项缓存，文件变了才重开。
+
+```js
+// 独夫“还有几帧打中”：固定区域缩到 96×96，第 n−4、n−2、n 帧的灰度图叠成 3 通道
+const r = infer("ttc/ttc.onnx", { image: screenshot(), roi: [240, 30, 600, 600], size: 96, color: "gray",
+                                  frames: [-4, -2, 0], frame_ms: 1000 / 30, mean: 0.45, std: 0.25, post: "softmax" });
+if (r.ready && r.index === 1) parry();   // r.probs、r.score、r.output（原始输出）、r.frames（实际用的帧）、r.ms
+```
+
+* 预处理：`roi` 裁剪 → `size` 缩放（`resize`：area = OpenCV INTER_AREA，放大时用 linear；linear / nearest）→ `color`（gray = OpenCV BGR2GRAY，先缩放后转灰；rgb / bgr）→ `(v / 255 − mean) / std`（一个值、每个颜色通道一个、或每个叠加后的通道一个；uint8 输入的模型直接给字节）→ `layout`（nchw / nhwc，默认按模型输入形状）。`size` 默认取模型输入尺寸
+* 多帧：`frames` 是相对当前图的帧偏移，按给的顺序叠成通道。默认以截图流帧号（`Image.seq`，画面变了才出新帧）计；`frame_ms` 改成按采集时间、每单位这么多毫秒（30 fps 录像训练的模型给 `1000 / 30`），取那一刻屏幕上的那帧（之前最后采到的一帧，要求本次运行也有它的下一帧，才能确定中间没有别的帧），确定不了就取 `tolerance`（默认 1 个单位）内最近的一帧。之前的帧取自本次运行自己的截图：每张截图的预处理结果只算一次，按预处理参数各存最近 32 帧（小图，存在 JVM 里，运行结束就释放）；保留的最近 8 张截图第一次用到时补算。缺帧返回 `{ready: false}`，截图要够勤
+* 输出：第一个输出的 `shape` / `output`（最多 4096 个值，`raw: true` 给全部输出）；向量输出带 `index` / `score` / `label`（最大的那个），`post: "softmax" | "sigmoid"` 另给 `probs`；`post: "yolo"` 解码 YOLOv8 / YOLO11 检测头（`[1, 4 + 类数, n]` 或转置），`threshold` / `iou` / `max_det` 过滤和 NMS，`detections` 的框换算回屏幕坐标，`hit` / `box` 是最好的那个（可以直接 `click(r)`）。`labels` 不给时用模型的 `names` 元数据
+* `modelInfo(model)`：输入输出的名字、类型、形状。`threads`（onnxruntime 线程数，默认 1）、`provider`（cpu / nnapi）、`input: true`（返回预处理后的字节，和离线流程对拍）
+* MaaFramework 自己的 `NeuralNetworkClassify` / `NeuralNetworkDetect`（Pipeline 节点，或技能里的 `classify()` / `detect()`）照常可用：工作区有 `model/` 时整个工作区按 bundle 加载，模型放 `model/classify/`、`model/detect/`，`model` 写其下的路径。它们只吃当前一张图、预处理固定
+* 计时：`skills/infer_bench.js`（燕云工作区，只截图不点击）
 
 ## 目标
 

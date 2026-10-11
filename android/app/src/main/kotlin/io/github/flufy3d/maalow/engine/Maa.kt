@@ -69,6 +69,18 @@ object Maa {
     /** args: [crop center x, y, wedge heading or NaN, prior u, v, radius (ref px, < 0: all), params...]; [u, v, score, second, used] or null. */
     external fun locateRun(image: Long, ref: Long, args: FloatArray): FloatArray?
 
+    // ONNX models for skills' infer() (nn_jni.cpp, skill/Nn.kt), on MaaFramework's onnxruntime
+    /** A session; opts: [intra-op threads, spin 0/1, nnapi 0/1]. Throws with onnxruntime's message. */
+    external fun nnCreate(path: String, opts: IntArray): Long
+    external fun nnDestroy(h: Long)
+    /** {"inputs": [{name, type, shape}], "outputs": [...], "names": metadata "names" or ""}; type 1 float, 2 uint8. */
+    external fun nnInfo(h: Long): String
+    /** [roi x, y, w, h, out w, out h, color 0 gray / 1 rgb / 2 bgr, interp 0 area / 1 linear / 2 nearest] -> HWC bytes, or null. */
+    external fun nnPrep(image: Long, params: IntArray): ByteArray?
+    /** frames stacked as channels; params [w, h, channels per frame, layout 0 nchw / 1 nhwc, mean, std per channel]
+     *  -> [n outputs, per output: rank, dims..., then all data]. Throws. */
+    external fun nnRun(h: Long, frames: Array<ByteArray>, params: FloatArray): FloatArray
+
     // Inside a custom action / recognition (on the tasker's thread):
     external fun contextController(h: Long): Long
     /** A pipeline node's definition (JSON), or null if there is no such node. */
@@ -79,6 +91,8 @@ object Maa {
     external fun contextRecognizeDirect(h: Long, type: String, param: String, image: Long): String
     /** A nested pipeline task; same result as [taskerRun]. */
     external fun contextRunTask(h: Long, entry: String, overrideJson: String): String
+    /** Drop the tasker's recognition / node / task details, which Maa keeps until cleared (taskerRun clears after a run). */
+    external fun contextClearCache(h: Long)
 
     @JvmStatic
     fun onCustomAction(context: Long, taskId: Long, node: String, name: String, param: String, recoId: Long, box: IntArray): Boolean =
