@@ -1839,39 +1839,53 @@ export default function (args = {}) {
     }
 
     /**
-     * 独夫: dead, the arena then starts over by itself: end here. The grey screen (boss bar and health bar gone,
-     * looked at every DEAD_MS), or, missed (round 6: both deaths went by while it was in a drink's loop, which looked
-     * for nothing but 金光; the grey lasted 3.7 and 6 s), the restart itself: the boss bar back to full
-     * (≥ BOSS_FULL px) and our health full after the bar had been down to ≤ BOSS_DOWN. Phase one cleared (the
-     * quest line's 阶段二, or the bar full again after its last 10%): "cleared". Called from every loop.
+     * Dead: end the fight here. 独夫: the grey screen (boss bar and health bar gone, looked at every DEAD_MS), or,
+     * missed (round 6: both deaths went by while it was in a drink's loop, which looked for nothing but 金光; the grey
+     * lasted 3.7 and 6 s), the restart itself: the boss bar back to full (≥ BOSS_FULL px) and our health full after
+     * the bar had been down to ≤ BOSS_DOWN. Phase one cleared (the quest line's 阶段二, or the bar full again after
+     * its last 10%): "cleared". 镇关吼 (not dufu): the same grey screen is its 重伤, with the instance's panel
+     * (再次挑战 / 继续) on it, and nothing starts over by itself (2026-10-14: a death was read as "boss gone" and the
+     * chest search ran over the panel, a tap restarting the arena) — the bar gone and the grey (or the panel) ends
+     * it. Called from every loop.
      * @param {number | null | undefined} [b] the boss bar's red px if just read
      */
     function deadCheck(b) {
-        if (!dufu) return;
         const now = Date.now();
         if (now - deadAt < DEAD_MS) return;
         deadAt = now;
-        if (args.boss) {
-            phase2N = phase2() ? phase2N + 1 : 0;
-            if (phase2N >= 2) cleared("阶段二 in the quest line");
-        }
-        if (b === undefined) b = boss();
-        if (b != null) {
-            bossLow = Math.min(bossLow, b);
-            bossLowReads = b <= CLEAR_LOW_PX ? bossLowReads + 1 : 0;
-            if (bossLowReads >= CLEAR_LOW_READS) bossLast = true;
-            bossFullReads = b >= BOSS_FULL ? bossFullReads + 1 : 0;
-            const full = bossFullReads >= BOSS_FULL_READS;
-            if (full && bossLast) cleared("the boss bar full again after its last 10%");
-            if (full && bossLow <= BOSS_DOWN && (hp() ?? 0) >= 0.95) {
-                log("the arena started over (dead, not seen)");
-                throw new Over("dead");
+        if (dufu) {
+            if (args.boss) {
+                phase2N = phase2() ? phase2N + 1 : 0;
+                if (phase2N >= 2) cleared("阶段二 in the quest line");
             }
-            deadSeen = 0;
-            return;
+            if (b === undefined) b = boss();
+            if (b != null) {
+                bossLow = Math.min(bossLow, b);
+                bossLowReads = b <= CLEAR_LOW_PX ? bossLowReads + 1 : 0;
+                if (bossLowReads >= CLEAR_LOW_READS) bossLast = true;
+                bossFullReads = b >= BOSS_FULL ? bossFullReads + 1 : 0;
+                const full = bossFullReads >= BOSS_FULL_READS;
+                if (full && bossLast) cleared("the boss bar full again after its last 10%");
+                if (full && bossLow <= BOSS_DOWN && (hp() ?? 0) >= 0.95) {
+                    log("the arena started over (dead, not seen)");
+                    throw new Over("dead");
+                }
+                deadSeen = 0;
+                return;
+            }
+        } else {
+            if (!args.boss) return; // the strongholds' 重伤 (疗伤) is looked at in look()
+            if (b === undefined) b = boss();
+            if (b != null) { // the bar shows: alive
+                deadSeen = 0;
+                return;
+            }
         }
-        const grey = countAtLeast(GREY, GREY_ROI, Math.round(0.85 * GREY_ROI[2] * GREY_ROI[3]), img);
-        deadSeen = grey && hp() == null ? deadSeen + 1 : 0;
+        // 重伤: the grey screen (both bars gone), or the instance's panel (再次挑战 / 继续)
+        const dead = hp() == null && (countAtLeast(GREY, GREY_ROI, Math.round(0.85 * GREY_ROI[2] * GREY_ROI[3]), img)
+            || match("result_again.png", { image: img, roi: [800, 640, 280, 80], threshold: 0.8 }).hit
+            || match("result_continue.png", { image: img, roi: [900, 640, 180, 80], threshold: 0.8 }).hit);
+        deadSeen = dead ? deadSeen + 1 : 0;
         if (deadSeen >= 2) throw new Over("dead");
     }
 

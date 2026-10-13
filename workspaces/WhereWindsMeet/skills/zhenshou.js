@@ -342,6 +342,8 @@ function chest() {
     let nearSeen = 0; // the pillar (close) last seen
     let meters = -1; // the mark's distance label, read now and then; -1 unknown (walked as if near)
     let metersAt = 0;
+    let sawChest = false; // the mark or the pillar seen at least once: 获取奖励 is not tapped before that (2026-10-14:
+    // the fight was lost, the instance's 再次挑战 panel was up, and a tap on it restarted the arena instead)
     const go = (/** @type {number} */ x, /** @type {number} */ speed) => {
         const a = Math.atan2(x - 540, AIM_F);
         const r = STICK_R * speed;
@@ -358,7 +360,7 @@ function chest() {
         while (Date.now() < end) {
             const image = screenshot();
             let offer = offered(image);
-            if (offer.hit) {
+            if (offer.hit && sawChest) {
                 stop();
                 sleep(SETTLE_MS); // standing still, then tap if still offered
                 offer = offered(screenshot());
@@ -370,6 +372,7 @@ function chest() {
                 continue;
             }
             const at = chestX(image);
+            if (at) sawChest = true;
             if (at && Math.abs(at.x - 540) > EDGE_PX) {
                 // far off to a side, or behind: the mark sits at the screen's edge with an arrow (68米 the wrong way,
                 // 2026-10-10); turn to it first, slowly, a bit at a time
