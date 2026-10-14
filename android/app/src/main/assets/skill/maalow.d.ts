@@ -159,6 +159,13 @@ interface InferOptions {
     raw?: boolean;
     /** The preprocessed frames (HWC bytes each), to check against an offline pipeline. */
     input?: boolean;
+    /**
+     * The model's inputs after the image, one tensor each in that order (up to 4), e.g. a feature history and a
+     * state / timing vector for a head model. float32 only; dims must equal the model input's (a batch dimension of
+     * 1 or dynamic takes dim[0] 1), and `name`, when given, must be that model input's name. A model with no input
+     * beyond the image takes no `extra`.
+     */
+    extra?: { name?: string; dim: number[]; data: number[] }[];
     /** onnxruntime intra-op threads (default 1), busy-wait between ops (default false), provider (default "cpu").
      * A model is opened once per set of these and kept (reopened when its file changes). */
     threads?: number;

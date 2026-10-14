@@ -299,6 +299,121 @@ void prep(const uint8_t* img, int stride, int rx, int ry, int rw, int rh, int ow
     }
 }
 
+// The image input (inputs[0]) as an OrtValue, as nnRun builds it: frames (HWC uint8, cpf channels, w x h) stacked as
+// channels in order, p as in nnRun. xf / xu hold the copied data and must outlive the value. Null (with a Java
+// exception) on failure.
+OrtValue* image_input(JNIEnv* env, Model* m, jobjectArray frames, const std::vector<float>& p, std::vector<float>& xf, std::vector<uint8_t>& xu)
+{
+    if (p.size() < 4) {
+        throw_java(env, "infer: bad parameters");
+        return nullptr;
+    }
+    const int nf = env->GetArrayLength(frames);
+    const int w = int(p[0]), hh = int(p[1]), cpf = int(p[2]), nhwc = int(p[3]);
+    const int C = nf * cpf;
+    const size_t plane = size_t(w) * hh;
+    if (m->inputs.empty() || p.size() < size_t(4 + 2 * C)) {
+        throw_java(env, "infer: bad parameters");
+        return nullptr;
+    }
+    const Tensor& in = m->inputs[0];
+    const bool u8 = in.type == ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8;
+    if (!u8 && in.type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+        throw_java(env, "infer: the model's input must be float32 or uint8");
+        return nullptr;
+    }
+    xf.resize(u8 ? 0 : plane * C);
+    xu.resize(u8 ? plane * C : 0);
+    for (int f = 0; f < nf; ++f) {
+        auto arr = static_cast<jbyteArray>(env->GetObjectArrayElement(frames, f));
+        if (size_t(env->GetArrayLength(arr)) < plane * cpf) {
+            throw_java(env, "infer: frame size does not match");
+            return nullptr;
+        }
+        auto* src = reinterpret_cast<uint8_t*>(env->GetPrimitiveArrayCritical(arr, nullptr));
+        for (int c = 0; c < cpf; ++c) {
+            const int gc = f * cpf + c;
+            const float scale = 1.f / (255.f * p[4 + 2 * gc + 1]), bias = -p[4 + 2 * gc] / p[4 + 2 * gc + 1];
+            for (size_t i = 0; i < plane; ++i) {
+                const uint8_t v = src[i * cpf + c];
+                const size_t at = nhwc ? i * C + gc : size_t(gc) * plane + i;
+                if (u8) xu[at] = v;
+                else xf[at] = v * scale + bias;
+            }
+        }
+        env->ReleasePrimitiveArrayCritical(arr, src, JNI_ABORT);
+        env->DeleteLocalRef(arr);
+    }
+    std::vector<int64_t> shape = in.dims;
+    if (shape.size() == 4) {
+        shape = nhwc ? std::vector<int64_t> { 1, hh, w, C } : std::vector<int64_t> { 1, C, hh, w };
+    }
+    else if (shape.size() == 3) {
+        shape = nhwc ? std::vector<int64_t> { hh, w, C } : std::vector<int64_t> { C, hh, w };
+    }
+    else {
+        throw_java(env, "infer: the model's input must be 3- or 4-dimensional");
+        return nullptr;
+    }
+    OrtValue* x = nullptr;
+    OrtStatus* st = u8 ? g_api->CreateTensorWithDataAsOrtValue(g_mem, xu.data(), xu.size(), shape.data(), shape.size(),
+                                                               ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8, &x)
+                       : g_api->CreateTensorWithDataAsOrtValue(g_mem, xf.data(), xf.size() * 4, shape.data(), shape.size(),
+                                                               ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &x);
+    if (failed(env, st, "infer")) return nullptr;
+    return x;
+}
+
+// nnRun's return encoding: [n outputs, per output: rank, dims..., then every output's data], all as float. Null (with
+// a Java exception) on failure; the values are not released.
+jfloatArray encode_outputs(JNIEnv* env, const std::vector<OrtValue*>& outs)
+{
+    std::vector<float> res { float(outs.size()) };
+    std::vector<float> data;
+    OrtStatus* st = nullptr;
+    for (size_t i = 0; !st && i < outs.size(); ++i) {
+        OrtTensorTypeAndShapeInfo* info = nullptr;
+        st = g_api->GetTensorTypeAndShape(outs[i], &info);
+        if (st) break;
+        ONNXTensorElementDataType et;
+        size_t rank = 0, count = 0;
+        g_api->GetTensorElementType(info, &et);
+        g_api->GetDimensionsCount(info, &rank);
+        std::vector<int64_t> dims(rank);
+        g_api->GetDimensions(info, dims.data(), rank);
+        g_api->GetTensorShapeElementCount(info, &count);
+        g_api->ReleaseTensorTypeAndShapeInfo(info);
+        res.push_back(float(rank));
+        for (int64_t d : dims) res.push_back(float(d));
+        void* raw = nullptr;
+        st = g_api->GetTensorMutableData(outs[i], &raw);
+        if (st) break;
+        const size_t at = data.size();
+        data.resize(at + count);
+        switch (et) {
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+            std::memcpy(data.data() + at, raw, count * 4);
+            break;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
+            for (size_t k = 0; k < count; ++k) data[at + k] = static_cast<uint8_t*>(raw)[k];
+            break;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+            for (size_t k = 0; k < count; ++k) data[at + k] = float(static_cast<int32_t*>(raw)[k]);
+            break;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+            for (size_t k = 0; k < count; ++k) data[at + k] = float(static_cast<int64_t*>(raw)[k]);
+            break;
+        default:
+            std::fill(data.begin() + at, data.end(), NAN);
+        }
+    }
+    if (failed(env, st, "infer")) return nullptr;
+    res.insert(res.end(), data.begin(), data.end());
+    jfloatArray arr = env->NewFloatArray(jsize(res.size()));
+    env->SetFloatArrayRegion(arr, 0, jsize(res.size()), res.data());
+    return arr;
+}
+
 } // namespace
 
 #define FN(ret, name) extern "C" JNIEXPORT ret JNICALL Java_io_github_flufy3d_maalow_engine_Maa_##name
@@ -501,4 +616,74 @@ FN(jfloatArray, nnRun)(JNIEnv* env, jobject, jlong h, jobjectArray frames, jfloa
     jfloatArray arr = env->NewFloatArray(jsize(res.size()));
     env->SetFloatArrayRegion(arr, 0, jsize(res.size()), res.data());
     return arr;
+}
+
+// Run like nnRun, with the model's inputs[1..] from extras, in order: [n, then per tensor: rank, dims..., count,
+// data...], all float (float32 tensors), n equal to the model's inputs beyond the image. Names are matched by Nn.kt,
+// so the mapping here is positional; Run uses m->in_names as is. Returns the same encoding as nnRun, or throws.
+FN(jfloatArray, nnRunExtra)(JNIEnv* env, jobject, jlong h, jobjectArray frames, jfloatArray params, jfloatArray extras)
+{
+    auto* m = reinterpret_cast<Model*>(h);
+    std::vector<float> p(env->GetArrayLength(params));
+    env->GetFloatArrayRegion(params, 0, jsize(p.size()), p.data());
+    std::vector<float> e(env->GetArrayLength(extras));
+    env->GetFloatArrayRegion(extras, 0, jsize(e.size()), e.data());
+    size_t at = 0;
+    const int n = e.empty() ? 0 : int(e[at++]);
+    if (n <= 0 || m->inputs.empty() || size_t(n) != m->inputs.size() - 1) {
+        throw_java(env, "infer: bad extra inputs");
+        return nullptr;
+    }
+    std::vector<std::vector<int64_t>> dims(n);
+    std::vector<std::vector<float>> data(n);
+    for (int i = 0; i < n; ++i) {
+        if (at >= e.size()) {
+            throw_java(env, "infer: bad extra inputs");
+            return nullptr;
+        }
+        const int rank = int(e[at++]);
+        if (rank < 0 || at + size_t(rank) + 1 > e.size()) {
+            throw_java(env, "infer: bad extra inputs");
+            return nullptr;
+        }
+        dims[i].resize(rank);
+        for (int r = 0; r < rank; ++r) dims[i][r] = int64_t(e[at++]);
+        const size_t count = size_t(e[at++]);
+        if (at + count > e.size()) {
+            throw_java(env, "infer: bad extra inputs");
+            return nullptr;
+        }
+        data[i].assign(e.begin() + at, e.begin() + at + count);
+        at += count;
+    }
+    std::vector<float> xf;
+    std::vector<uint8_t> xu;
+    OrtValue* x = image_input(env, m, frames, p, xf, xu);
+    if (!x) return nullptr;
+    std::vector<OrtValue*> vals { x };
+    OrtStatus* st = nullptr;
+    for (int i = 0; !st && i < n; ++i) {
+        OrtValue* v = nullptr;
+        st = g_api->CreateTensorWithDataAsOrtValue(g_mem, data[i].data(), data[i].size() * 4, dims[i].data(), dims[i].size(),
+                                                   ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &v);
+        if (!st) vals.push_back(v);
+    }
+    if (failed(env, st, "infer")) {
+        for (OrtValue* v : vals) g_api->ReleaseValue(v);
+        return nullptr;
+    }
+    std::vector<OrtValue*> outs(m->outputs.size(), nullptr);
+    st = g_api->Run(m->session, nullptr, m->in_names.data(), vals.data(), vals.size(), m->out_names.data(), outs.size(), outs.data());
+    for (OrtValue* v : vals) g_api->ReleaseValue(v);
+    if (failed(env, st, "infer")) {
+        for (OrtValue* v : outs) {
+            if (v) g_api->ReleaseValue(v);
+        }
+        return nullptr;
+    }
+    jfloatArray res = encode_outputs(env, outs);
+    for (OrtValue* v : outs) {
+        if (v) g_api->ReleaseValue(v);
+    }
+    return res;
 }

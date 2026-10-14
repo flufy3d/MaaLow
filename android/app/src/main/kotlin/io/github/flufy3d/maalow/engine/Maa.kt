@@ -80,6 +80,9 @@ object Maa {
     /** frames stacked as channels; params [w, h, channels per frame, layout 0 nchw / 1 nhwc, mean, std per channel]
      *  -> [n outputs, per output: rank, dims..., then all data]. Throws. */
     external fun nnRun(h: Long, frames: Array<ByteArray>, params: FloatArray): FloatArray
+    /** [nnRun] plus the model's other inputs: extras [n, then per tensor: rank, dims..., count, data...] (float32, one
+     *  per model input after the image, in order) -> the same encoding as [nnRun]. Throws. */
+    external fun nnRunExtra(h: Long, frames: Array<ByteArray>, params: FloatArray, extras: FloatArray): FloatArray
 
     // Inside a custom action / recognition (on the tasker's thread):
     external fun contextController(h: Long): Long

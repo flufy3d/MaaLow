@@ -37,7 +37,8 @@ import kotlin.math.roundToInt
  * normalized per channel ((v / 255 - mean) / std; uint8 models get the bytes), laid out nchw / nhwc. Several frames
  * (`frames`: offsets from the frame looked at, in capture stream frames or in units of `frame_ms`) are stacked as
  * channels in the order given; earlier frames come from the run's history: the preprocessed regions of its own
- * screenshots (each preprocessed once, kept small and bounded: [History]).
+ * screenshots (each preprocessed once, kept small and bounded: [History]). Models with more inputs after the image
+ * take them from `extra` (float32, one per input, in order).
  *
  * Output: the raw tensors, and per `post`: softmax / sigmoid of a vector (index / score / label of its largest),
  * or yolo: YOLOv8 / YOLO11 detection ([1, 4 + classes, n] or transposed) decoded, thresholded and NMS'd, boxes in
@@ -121,8 +122,8 @@ internal class Nn(private val app: App) {
     }
 
     @Synchronized
-    private fun run(m: Model, frames: Array<ByteArray>, params: FloatArray): List<Out> {
-        val r = Maa.nnRun(m.handle, frames, params)
+    private fun run(m: Model, frames: Array<ByteArray>, params: FloatArray, extras: FloatArray? = null): List<Out> {
+        val r = if (extras == null) Maa.nnRun(m.handle, frames, params) else Maa.nnRunExtra(m.handle, frames, params, extras)
         val n = r[0].toInt()
         var at = 1
         val shapes = List(n) {
@@ -149,6 +150,7 @@ internal class Nn(private val app: App) {
             },
         )
         val m = model(ws, a.str("model"), opts)
+        val extras = extraInputs(m, a["extra"])
         val input = m.inputs.firstOrNull() ?: error("infer: the model has no input")
         val offsets = (a["frames"] as? JsonArray)?.map { it.jsonPrimitive.doubleOrNull ?: error("infer: frames must be numbers") } ?: listOf(0.0)
         require(offsets.isNotEmpty()) { "infer: frames is empty" }
@@ -248,7 +250,7 @@ internal class Nn(private val app: App) {
             params[5 + 2 * i] = std[i].toFloat()
         }
         val t1 = System.nanoTime()
-        val outs = run(m, used.map { it!!.px }.toTypedArray(), params)
+        val outs = run(m, used.map { it!!.px }.toTypedArray(), params, extras)
         val runMs = (System.nanoTime() - t1) / 1e6
 
         val raw = a.optBool("raw") == true
@@ -352,6 +354,7 @@ internal class Nn(private val app: App) {
         const val HISTORY_BYTES = 8L shl 20
         const val SPECS = 4
         const val MAX_OUTPUT = 4096 // first output values returned without raw
+        const val MAX_EXTRA = 4 // tensors beyond the image a model may take (InferOptions.extra)
         val COLORS = mapOf("gray" to 0, "rgb" to 1, "bgr" to 2)
         val INTERPS = mapOf("area" to 0, "linear" to 1, "nearest" to 2)
         val TYPES = mapOf(1 to "float32", 2 to "uint8", 3 to "int8", 6 to "int32", 7 to "int64", 10 to "float16")
@@ -366,6 +369,51 @@ internal class Nn(private val app: App) {
             }
             require(v.size == 1 || v.size == cpf || v.size == c) { "infer: $what takes 1, $cpf or $c values" }
             return DoubleArray(c) { v[if (v.size == c) it else it % v.size] }
+        }
+
+        /**
+         * `extra`: the model's inputs after the image, one tensor each in that order (up to [MAX_EXTRA]), as the flat
+         * float encoding of Maa.nnRunExtra: [n, then per tensor: rank, dims..., count, data...]; null when absent.
+         * Each input must be float32 with the given dims, and the given `name` (if any) must be its name; the model's
+         * batch dimension (1 or dynamic) takes 1.
+         */
+        private fun extraInputs(m: Model, e: JsonElement?): FloatArray? {
+            if (e == null || e is JsonNull) return null
+            val arr = e as? JsonArray ?: throw IllegalArgumentException("infer: extra must be an array of tensors")
+            require(arr.isNotEmpty()) { "infer: extra is empty" }
+            require(arr.size <= MAX_EXTRA) { "infer: extra takes at most $MAX_EXTRA tensors, not ${arr.size}" }
+            require(arr.size == m.inputs.size - 1) {
+                "infer: extra has ${arr.size} tensor(s), the model takes ${m.inputs.size - 1} besides the image"
+            }
+            val dims = arr.mapIndexed { i, el ->
+                val o = el as? JsonObject ?: throw IllegalArgumentException("infer: extra[$i] must be {name?, dim, data}")
+                val input = m.inputs[i + 1]
+                o.optStr("name")?.let { require(it == input.name) { "infer: extra[$i] is named '$it', not '${input.name}'" } }
+                require(input.type == 1) { "infer: input ${input.name} must be float32, not ${TYPES[input.type] ?: "type ${input.type}"}" }
+                val d = ((o["dim"] as? JsonArray) ?: throw IllegalArgumentException("infer: extra[$i].dim is missing"))
+                    .map { it.jsonPrimitive.intOrNull ?: throw IllegalArgumentException("infer: extra[$i].dim must be integers") }
+                require(d.size == input.shape.size && d.withIndex().all { (k, v) ->
+                    v >= 1 && (v.toLong() == input.shape[k] || (k == 0 && v == 1 && input.shape[k] <= 1))
+                }) { "infer: input ${input.name} takes ${input.shape}, extra[$i] is $d" }
+                d
+            }
+            val data = arr.mapIndexed { i, el ->
+                val d = ((el as JsonObject)["data"] as? JsonArray) ?: throw IllegalArgumentException("infer: extra[$i].data is missing")
+                val v = d.map { it.jsonPrimitive.doubleOrNull?.toFloat() ?: throw IllegalArgumentException("infer: extra[$i].data must be numbers") }
+                val count = dims[i].fold(1L) { a, x -> a * x }
+                require(v.size.toLong() == count) { "infer: extra[$i] has ${v.size} values, its dim ${dims[i]} takes $count" }
+                v
+            }
+            val flat = FloatArray(1 + dims.indices.sumOf { 1 + dims[it].size + 1 + data[it].size })
+            var at = 0
+            flat[at++] = arr.size.toFloat()
+            for (i in dims.indices) {
+                flat[at++] = dims[i].size.toFloat()
+                dims[i].forEach { flat[at++] = it.toFloat() }
+                flat[at++] = data[i].size.toFloat()
+                data[i].forEach { flat[at++] = it }
+            }
+            return flat
         }
 
         private fun softmax(v: FloatArray): FloatArray {
