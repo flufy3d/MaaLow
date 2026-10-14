@@ -858,18 +858,24 @@ export default function (args = {}) {
         litPx = litRead();
     }
 
-    // --- the round is over (重伤): the 再次训练 panel, or both bars gone and the screen grey (@see combat.js)
-    let deadAt = 0, deadSeen = 0;
+    // --- the round is over (重伤): the 再次训练 panel, or a long all-grey screen (@see combat.js)
+    let deadAt = 0, deadSeen = 0, greySeen = 0;
     /** @param {number} now */
     function deadCheck(now) {
         if (now - deadAt < DEAD_MS) return false;
         deadAt = now;
-        // the button is unmistakable (≥800 white px: 1955 on the screen, ~260 in a fight frame); the grey screen needs both bars
-        const again = bossNow <= 50 && countAtLeast(RETRY_WHITE, RETRY_ROI, 800, img);
-        const grey = bossNow <= 50 && hpNow == null && countAtLeast(GREY, GREY_ROI, Math.round(0.85 * GREY_ROI[2] * GREY_ROI[3]), img);
-        deadSeen = again || grey ? deadSeen + 1 : 0;
+        // the button is unmistakable (≥800 white px: 1955 on the screen, ~260 in a fight frame)
+        const again = countAtLeast(RETRY_WHITE, RETRY_ROI, 800, img);
+        deadSeen = again ? deadSeen + 1 : 0;
         if (deadSeen >= 2) {
-            mark("dead", `the round is over (${again ? "reset button" : "grey screen"})`);
+            mark("dead", "the round is over (reset button)");
+            return true;
+        }
+        // a curtain blackout lasts ~1 s: only a grey screen of 3 s counts (painting the death screen before its button)
+        const grey = countAtLeast(GREY, GREY_ROI, Math.round(0.85 * GREY_ROI[2] * GREY_ROI[3]), img);
+        greySeen = grey ? greySeen + 1 : 0;
+        if (greySeen >= 6) {
+            mark("dead", "the round is over (grey screen)");
             return true;
         }
         return false;
