@@ -88,12 +88,25 @@ const COVER_FRAMES = 15; // bimodal modes this close: one press covers both
 const REVISE_MOVE_MS = 100; // a contact this much later/earlier: revise (and log)
 const BRANCH_MIN_P = 0.2, BRANCH_SEP_BINS = 5, BRANCH_KEEP_P = 0.25; // bimodal split + later-mode survival
 const TELL_TH = 0.5, TELL_DEDUP_MS = 300;
+const TRIG_TH = 0.4; // the timing-head trigger (S1 = fut bins 1-5): a contact this likely within 4-19 frames acts
+const DODGE_MIN_P = 0.5; // def1 "dodge" below this is treated as parry (the dodge class over-fires in fights)
+const TELL_DODGE_P = 0.75; // a tell-dodge needs this much, two looks in a row, and one per episode
+const TELL_EPISODE_MS = 2000;
 const SLOW_EVERY = 250; // aux reads (boss / mean) and the potion decision: 4 Hz
 const FLARE_EVERY = 400;
 const CURTAIN_EVERY = 400;
 const POTION_HP = 0.3, POTION_URGENT = 0.15, POTION_HOLD_MS = 2000, POTION_YIELD_MS = 150, POTION_SAFE_FRAMES = 15;
 const SLOW_SLACK_MS = 3; // a slow check may start while this much of the budget is left
 const BRANCH_LATE_MS = 400; // an unreleased branch this stale: drop
+
+// 重伤 (dead): the grey screen with both bars gone, or the 再次训练 panel (combat.js)
+/** @type {Box} */ const GREY_ROI = [100, 100, 880, 500];
+const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
+/** @type {Box} */ const RETRY_ROI = [945, 668, 95, 24];
+const RETRY_WHITE = { lower: [0, 0, 170], upper: [180, 60, 255], method: 40 };
+const DEAD_MS = 500;
+// round start: walk in (short bursts, never blocking) until the boss bar shows (armed only)
+const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
@@ -104,6 +117,7 @@ const BRANCH_LATE_MS = 400; // an unreleased branch this stale: drop
  *   dodgePoint?: Point, potionPoint?: Point, dodgeDir?: string, targetGlowLead?: number, latencyFrames?: number,
  *   issueLeadMs?: number, commitMs?: number, parryCd?: number, dodgeCd?: number, staggerMs?: number,
  *   dodgeLead?: Record<string, number>, nextMs?: number, predMs?: number, missGraceMs?: number, tellTh?: number,
+ *   trigTh?: number, dodgeMinP?: number, tellDodgeP?: number, tellEpisodeMs?: number,
  *   slowEvery?: number, flareEvery?: number, curtain?: boolean, curtainEvery?: number, flareDodge?: boolean,
  *   potionHp?: number, potionHoldMs?: number, potionSafeFrames?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
@@ -130,6 +144,10 @@ export default function (args = {}) {
     const predMs = args.predMs ?? PRED_MS;
     const missGraceMs = args.missGraceMs ?? MISS_GRACE_MS;
     const tellTh = args.tellTh ?? TELL_TH;
+    const trigTh = args.trigTh ?? TRIG_TH;
+    const dodgeMinP = args.dodgeMinP ?? DODGE_MIN_P;
+    const tellDodgeP = args.tellDodgeP ?? TELL_DODGE_P;
+    const tellEpisodeMs = args.tellEpisodeMs ?? TELL_EPISODE_MS;
     const slowEvery = args.slowEvery ?? SLOW_EVERY;
     const flareEvery = args.flareEvery ?? FLARE_EVERY;
     const curtainOn = args.curtain ?? true;
@@ -139,7 +157,7 @@ export default function (args = {}) {
     const potionHoldMs = args.potionHoldMs ?? POTION_HOLD_MS;
     const potionSafeFrames = args.potionSafeFrames ?? POTION_SAFE_FRAMES;
     /** @type {Record<string, number>} */
-    const dodgeLead = { grab: 5, slam: 4, other: 5, sweep: 0, ...(args.dodgeLead ?? {}) };
+    const dodgeLead = { grab: 5, slam: 4, other: 5, sweep: 5, ...(args.dodgeLead ?? {}) };
     const leadMs = (/** @type {string} */ kind) => (dodgeLead[kind] ?? 0) * FRAME_MS;
 
     const start = Date.now();
@@ -357,6 +375,7 @@ export default function (args = {}) {
     let dodgeSeq = 0, inDodge = false, stickSide = 0;
     let inCurtain = false, curtainLastAt = 0, curtainFirstAt = 0, curtainDodged = false, curtainDodgeAt = 0, lastFlareDodgeAt = 0, lastPotionHoldMark = 0;
     let lastAvoidDropAt = 0; // an "avoid" (curtain) item just handled: no new one for a moment
+    let lastTellArg = -1, lastTellDodgeArg = -1, lastTellDodgeAt = 0; // tell continuity + one dodge per episode
     /** @type {Pred | null} */
     let pred = null;
     /** @type {PlanItem[]} */
@@ -478,7 +497,7 @@ export default function (args = {}) {
         for (let i = 1; i < 5; i++) if (p[i] > p[bi]) bi = i;
         if (bi === 0) return null;
         if (bi === 3) return /** @type {"avoid"} */ ("avoid");
-        if (bi === 2) return /** @type {"dodge"} */ ("dodge");
+        if (bi === 2) return (p[2] ?? 0) >= dodgeMinP ? /** @type {"dodge"} */ ("dodge") : /** @type {"parry"} */ ("parry");
         return /** @type {"parry"} */ ("parry");
     }
     /** @param {Partial<PlanItem>} o */
@@ -523,8 +542,14 @@ export default function (args = {}) {
         if (st.none >= 0.65 || st.sum <= 0.01) return null;
         const expMs = st.exp * FRAME_MS;
         if (expMs > PLAN_FRAMES_MAX * FRAME_MS) return { far: true, late: false, kind: /** @type {"parry"} */ ("parry"), cMs: 0, branchMs: 0, covers: false };
-        const kind = defAction(pred?.def[k] ?? []) ?? (comboRunning() ? /** @type {"parry"} */ ("parry") : null);
-        if (!kind) return null;
+        // the timing head is the trigger (S1-style); the defense head only picks the action (unknown / none -> parry)
+        let s1 = 0;
+        for (let i = 1; i <= 5; i++) s1 += futBin(k, i);
+        const def = defAction(pred?.def[k] ?? []);
+        const trig = k === 0 ? s1 >= trigTh : comboRunning() || s1 >= trigTh * 0.6;
+        if (!trig) return null;
+        // def1 "curtain" without the actual curtain state is a favourite misread here: parry instead
+        const kind = def === "avoid" && !inCurtain ? /** @type {"parry"} */ ("parry") : def ?? /** @type {"parry"} */ ("parry");
         if (expMs < LATE_FRAMES * FRAME_MS) return { far: false, late: true, kind, cMs: now + expMs, branchMs: 0, covers: false };
         const bimodal = st.p1 >= BRANCH_MIN_P && st.p2 >= BRANCH_MIN_P && Math.abs(st.i1 - st.i2) >= BRANCH_SEP_BINS;
         if (!bimodal) return { far: false, late: false, kind, cMs: now + expMs, branchMs: 0, covers: false };
@@ -599,6 +624,8 @@ export default function (args = {}) {
     function tellPlan(now) {
         if (!pred) return;
         const t = pred.tell;
+        const sustained = t.arg === lastTellArg;
+        lastTellArg = t.arg;
         if (t.p < tellTh || t.arg === 0 || t.arg === 6) return;
         if (t.arg === 5) {
             if (!inCurtain) {
@@ -612,6 +639,9 @@ export default function (args = {}) {
             return;
         }
         if (inCurtain) return;
+        // a one-frame blip is noise; one dodge per episode (the tell stays lit while the flare is on screen)
+        if (t.p < tellDodgeP || !sustained) return;
+        if (t.arg === lastTellDodgeArg && now - lastTellDodgeAt < tellEpisodeMs) return;
         const st = futStats(pred.fut[0]);
         if (st.none >= 0.65 || st.sum <= 0.01) return;
         const c1 = now + st.exp * FRAME_MS;
@@ -630,6 +660,8 @@ export default function (args = {}) {
         }
         if (now - lastDodgeAt < dodgeCd) return;
         if (plan.some((x) => x.src === "tell" && x.kind === "dodge" && Math.abs(x.atMs - at) < TELL_DEDUP_MS)) return;
+        lastTellDodgeArg = t.arg;
+        lastTellDodgeAt = now;
         addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: at, untilMs: Math.max(c1, at) + missGraceMs, why: `tell ${label} p${Math.round(t.p * 100)}` });
     }
     /** @param {string} dir @returns {Point} */
@@ -826,9 +858,60 @@ export default function (args = {}) {
         litPx = litRead();
     }
 
+    // --- the round is over (重伤): the 再次训练 panel, or both bars gone and the screen grey (@see combat.js)
+    let deadAt = 0, deadSeen = 0;
+    /** @param {number} now */
+    function deadCheck(now) {
+        if (now - deadAt < DEAD_MS) return false;
+        deadAt = now;
+        // the button is unmistakable (≥800 white px: 1955 on the screen, ~260 in a fight frame); the grey screen needs both bars
+        const again = bossNow <= 50 && countAtLeast(RETRY_WHITE, RETRY_ROI, 800, img);
+        const grey = bossNow <= 50 && hpNow == null && countAtLeast(GREY, GREY_ROI, Math.round(0.85 * GREY_ROI[2] * GREY_ROI[3]), img);
+        deadSeen = again || grey ? deadSeen + 1 : 0;
+        if (deadSeen >= 2) {
+            mark("dead", `the round is over (${again ? "reset button" : "grey screen"})`);
+            return true;
+        }
+        return false;
+    }
+
+    // --- round start (armed): walk in, in short bursts, until the boss bar shows
+    let bossSeen = false;
+    /** @param {number} now */
+    function approach(now) {
+        if (observe || bossSeen) return;
+        if (bossNow > 50) {
+            bossSeen = true;
+            strideF(0);
+            mark("approach", `boss bar after ${Math.round((now - start) / 1000)}s`);
+            return;
+        }
+        if (now - start > APPROACH_MS) return;
+        const on = (now - start) % APPROACH_CYCLE < APPROACH_ON;
+        strideF(on ? 1 : 0);
+    }
+
     // --- slow rules (run on the frame budget's leftover, in priority order)
+    let stickF = 0; // the forward push (walking in); setSide is the horizontal one
+    /** Push the joystick forward, 0/1 (@see setSide). @param {number} v */
+    function strideF(v) {
+        if (observe || v === stickF) return;
+        if (v === 0) {
+            tup(0);
+            stickF = 0;
+            return;
+        }
+        if (stickSide !== 0) return; // contact 0 is the curtain rule's
+        tdown(STICK, 0);
+        lastWalkAt = Date.now();
+        pressFrame(frameIdx);
+        presses.walk++;
+        stickF = v;
+        tmove([STICK[0], Math.round(STICK[1] - STICK_R * v)], 0);
+    }
     function walkOff() {
         if (stickSide !== 0) setSide(0);
+        if (stickF) strideF(0);
     }
     /** @param {number} v */
     function setSide(v) {
@@ -836,6 +919,7 @@ export default function (args = {}) {
         if (v === stickSide) return;
         if (v === 0) tup(0);
         else {
+            if (stickF) strideF(0);
             if (stickSide === 0) {
                 tdown(STICK, 0);
                 lastWalkAt = Date.now();
@@ -970,6 +1054,11 @@ export default function (args = {}) {
             releaseDue();
             timed("reads", feedback);
             const now = Date.now();
+            if (deadCheck(now)) {
+                reason = "dead";
+                break;
+            }
+            approach(now);
             const dtMs = lastEntryT ? Math.min(300, Math.max(10, now - lastEntryT)) : FRAME_MS;
             const aux = buildAux(dtMs);
             const b = timed("back", () => infer(backModel, { ...BACK, image: img }));
