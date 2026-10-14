@@ -1,0 +1,294 @@
+{
+ "model": "unified v3: backbone unified_back3.onnx = MobileNetV3-Small (v2 fine-tuned blocks features[10],[11], further fine-tuned end-to-end on the v3 dataset incl. the 2026-10-14 live rounds), 192-d per frame; head unified_head3.onnx = 2-layer causal GRU (hidden 128) over 30 steps of [feat 192 | aux 15] (v3 hygiene: def curtain class folded into unknown during training; labels below unchanged). IMPORTANT: head3 requires back3; switch both together.",
+ "io": {
+  "inputs": [
+   {
+    "name": "img",
+    "shape": [
+     1,
+     3,
+     96,
+     96
+    ],
+    "dtype": "float32",
+    "note": "DETERMINISTICALLY UNUSED by the head (verified identical out for different img); pass the current frame. For the BACKBONE this is the input (roi [120,30,840,530], size 96, rgb, 0-1)."
+   },
+   {
+    "name": "seq",
+    "shape": [
+     1,
+     30,
+     207
+    ],
+    "dtype": "float32",
+    "note": "30 steps oldest..current, each [192 backbone features | 15 aux]; see aux below"
+   }
+  ],
+  "output": {
+   "name": "out",
+   "shape": [
+    1,
+    77
+   ],
+   "dtype": "float32",
+   "note": "concat heads in canonical order; slices below; apply softmax per head if probs wanted"
+  }
+ },
+ "slices": [
+  {
+   "name": "combo",
+   "start": 0,
+   "len": 16,
+   "labels": [
+    "bg",
+    "irregular",
+    "T1",
+    "T2",
+    "T3",
+    "T4",
+    "T5",
+    "T6",
+    "T7",
+    "T8",
+    "T9",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "T14"
+   ]
+  },
+  {
+   "name": "stage",
+   "start": 16,
+   "len": 6,
+   "labels": [
+    "bg",
+    "pre",
+    "next2",
+    "next3",
+    "next4+",
+    "done"
+   ]
+  },
+  {
+   "name": "fut1",
+   "start": 22,
+   "len": 11,
+   "labels": [
+    "1-3",
+    "4-6",
+    "7-9",
+    "10-12",
+    "13-15",
+    "16-19",
+    "20-24",
+    "25-30",
+    "31-40",
+    "41-60",
+    "none"
+   ]
+  },
+  {
+   "name": "fut2",
+   "start": 33,
+   "len": 11,
+   "labels": [
+    "1-3",
+    "4-6",
+    "7-9",
+    "10-12",
+    "13-15",
+    "16-19",
+    "20-24",
+    "25-30",
+    "31-40",
+    "41-60",
+    "none"
+   ]
+  },
+  {
+   "name": "fut3",
+   "start": 44,
+   "len": 11,
+   "labels": [
+    "1-3",
+    "4-6",
+    "7-9",
+    "10-12",
+    "13-15",
+    "16-19",
+    "20-24",
+    "25-30",
+    "31-40",
+    "41-60",
+    "none"
+   ]
+  },
+  {
+   "name": "def1",
+   "start": 55,
+   "len": 5,
+   "labels": [
+    "none",
+    "parry",
+    "dodge",
+    "curtain",
+    "unknown"
+   ]
+  },
+  {
+   "name": "def2",
+   "start": 60,
+   "len": 5,
+   "labels": [
+    "none",
+    "parry",
+    "dodge",
+    "curtain",
+    "unknown"
+   ]
+  },
+  {
+   "name": "def3",
+   "start": 65,
+   "len": 5,
+   "labels": [
+    "none",
+    "parry",
+    "dodge",
+    "curtain",
+    "unknown"
+   ]
+  },
+  {
+   "name": "tell",
+   "start": 70,
+   "len": 7,
+   "labels": [
+    "none",
+    "flare_other",
+    "flare_grab",
+    "flare_slam",
+    "sweep",
+    "curtain",
+    "dark"
+   ]
+  }
+ ],
+ "aux": {
+  "order": [
+   "dt33",
+   "since_parry",
+   "since_dodge",
+   "since_potion",
+   "since_walk",
+   "press_last3",
+   "since_ok",
+   "hp",
+   "qi",
+   "boss_ratio",
+   "lit",
+   "mean",
+   "dark3",
+   "flare",
+   "boss_bar"
+  ],
+  "normalization": {
+   "dt33": "realized dt between consecutive kept frames / 33.33, clip 0.5..3; first step = 1.0",
+   "since_parry": "frames since last parry press / 3.0, cap 10 (0.1s units), 10 when none yet",
+   "since_dodge": "same, dodge press",
+   "since_potion": "same, potion press",
+   "since_walk": "same, walk press",
+   "press_last3": "1 if any of the last 3 frames (t-2..t) had a press from any of the 4 buttons, else 0",
+   "since_ok": "frames since last successful parry (ok contact) / 3.0, cap 10",
+   "hp": "clip(hp, 0, 1)",
+   "qi": "clip(qi / 385, 0, 1)",
+   "boss_ratio": "clip(boss_cur / 386, 0, 1) (boss current, fallback boss max)",
+   "lit": "clip(glow / 500, 0, 1)",
+   "mean": "clip(frame mean / 255, 0, 1)",
+   "dark3": "1 if min(mean[t-2..t]) < 20 else 0",
+   "flare": "1 if raw flare flag of the current frame",
+   "boss_bar": "1 if boss bar present (boss > 50)"
+  },
+  "note": "exactly as the dataset stores them; the runtime must reproduce these columns. Column 0 is written per window from the realized capture dt."
+ },
+ "window": {
+  "T": 30,
+  "note": "runtime keeps the last 30 captured frames 1:1 (irregular ~35ms); feed them oldest..current."
+ },
+ "device_calls": [
+  {
+   "name": "backbone",
+   "call": "infer(\"dufu/unified_back3.onnx\", {roi:[120,30,840,530],size:96,resize:\"area\",color:\"rgb\",mean:0,std:1,frames:[0],post:\"none\"})",
+   "out": "f: 192-d feature"
+  },
+  {
+   "name": "head",
+   "call": "infer(\"dufu/unified_head3.onnx\", {image:<current frame>,roi:[120,30,840,530],size:96,color:\"rgb\",mean:0,std:1,frames:[0],post:\"none\", extra:[{name:\"seq\",dim:[1,30,207],data:<flat 6210 floats>}]})",
+   "out": "out: 77-d (see slices); image is a dummy — the head ignores it"
+  }
+ ],
+ "provenance": {
+  "kind": "e2e",
+  "ckpt": "best.pt",
+  "epoch": 1,
+  "step": 2186,
+  "variant": "S1",
+  "hidden": 128,
+  "layers": 2,
+  "def_note": "trained with v3 hygiene: def curtain(3) -> unknown(4); output slices/labels unchanged",
+  "back3_md5": "6bfe02e1e33c7ead7e451b0999a5245d",
+  "head3_md5": "1fcd875277cd2e9d5292b792b8ba575c",
+  "val_trigger": {
+   "S1": {
+    "40": {
+     "cov": 0.7266897158450352,
+     "cov8": 0.4849113219694232,
+     "early": 0.3580936408348789
+    },
+    "55": {
+     "cov": 0.8618418179967217,
+     "cov8": 0.5661297034745183,
+     "early": 0.30060444407881065
+    },
+    "score_sel": 0.41582748143511294
+   },
+   "S2": {
+    "40": {
+     "cov": 0.5871658805585618,
+     "cov8": 0.4587894558412949,
+     "early": 0.35888147742930193
+    },
+    "55": {
+     "cov": 0.7494669776422522,
+     "cov8": 0.5860720047534511,
+     "early": 0.2965382511533022
+    },
+    "score_sel": 0.43780287917680005
+   },
+   "S3": {
+    "40": {
+     "cov": 0.7484285075785645,
+     "cov8": 0.4501628985213689,
+     "early": 0.3377610397446906
+    },
+    "55": {
+     "cov": 0.8831780725839584,
+     "cov8": 0.5055220719948428,
+     "early": 0.2861331283340943
+    },
+    "score_sel": 0.3624555078277956
+   }
+  },
+  "val_metrics": {
+   "fut_within1": 0.6372319088381166,
+   "fut_acc": 0.5218387112308538,
+   "fut_nll": 1.419279620051384,
+   "combo_acc": 0.709702681117607,
+   "stage_acc": 0.6543147542173258,
+   "def_acc": 0.6447896846763904,
+   "tell_f1": 0.4867428229510816
+  }
+ }
+}
