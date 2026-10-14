@@ -119,7 +119,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   dodgeLead?: Record<string, number>, nextMs?: number, predMs?: number, missGraceMs?: number, tellTh?: number,
  *   trigTh?: number, dodgeMinP?: number, tellDodgeP?: number, tellEpisodeMs?: number,
  *   slowEvery?: number, flareEvery?: number, curtain?: boolean, curtainEvery?: number, flareDodge?: boolean,
- *   potionHp?: number, potionHoldMs?: number, potionSafeFrames?: number}} [args]
+ *   potionHp?: number, potionHoldMs?: number, potionSafeFrames?: number, deadGrey?: boolean, s1Hi?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -156,6 +156,8 @@ export default function (args = {}) {
     const potionHp = args.potionHp ?? POTION_HP;
     const potionHoldMs = args.potionHoldMs ?? POTION_HOLD_MS;
     const potionSafeFrames = args.potionSafeFrames ?? POTION_SAFE_FRAMES;
+    const deadGrey = args.deadGrey ?? true; // test-only: false disables the grey-screen branch (button path alone)
+    const s1Hi = args.s1Hi ?? 5; // S1 = fut1 bins 1..s1Hi (v4 window variant: 6 = 4-24 frames; recalibrate trigTh)
     /** @type {Record<string, number>} */
     const dodgeLead = { grab: 5, slam: 4, other: 5, sweep: 5, ...(args.dodgeLead ?? {}) };
     const leadMs = (/** @type {string} */ kind) => (dodgeLead[kind] ?? 0) * FRAME_MS;
@@ -544,7 +546,7 @@ export default function (args = {}) {
         if (expMs > PLAN_FRAMES_MAX * FRAME_MS) return { far: true, late: false, kind: /** @type {"parry"} */ ("parry"), cMs: 0, branchMs: 0, covers: false };
         // the timing head is the trigger (S1-style); the defense head only picks the action (unknown / none -> parry)
         let s1 = 0;
-        for (let i = 1; i <= 5; i++) s1 += futBin(k, i);
+        for (let i = 1; i <= s1Hi; i++) s1 += futBin(k, i);
         const def = defAction(pred?.def[k] ?? []);
         const trig = k === 0 ? s1 >= trigTh : comboRunning() || s1 >= trigTh * 0.6;
         if (!trig) return null;
@@ -811,7 +813,7 @@ export default function (args = {}) {
         predMarkAt = now;
         const st = futStats(pred.fut[0]);
         let s1 = 0;
-        for (let i = 1; i <= 5; i++) s1 += futBin(0, i);
+        for (let i = 1; i <= s1Hi; i++) s1 += futBin(0, i);
         mark("pred", `S1 ${s1.toFixed(2)} bin ${st.mode}(${FUT_LABELS[st.mode] ?? "-"}) c1 +${st.sum > 0 ? Math.round(st.exp) : "-"}f ` +
             `def1 ${DEF_LABELS[argmax(pred.def[0])]} tell ${pred.tell.label} combo ${pred.combo.label} ${pred.combo.p.toFixed(2)} stage ${pred.stage.label}`);
     }
@@ -864,14 +866,23 @@ export default function (args = {}) {
     function deadCheck(now) {
         if (now - deadAt < DEAD_MS) return false;
         deadAt = now;
-        // the button is unmistakable (≥800 white px: 1955 on the screen, ~260 in a fight frame)
-        const again = countAtLeast(RETRY_WHITE, RETRY_ROI, 800, img);
+        // The button is unmistakable (1980 px on the death panel). But white effect bursts also cross this ROI in
+        // fights (270p proxy >= 40 px, verified 1250-1430 px full-res: replay/deadcheck_sweep.py), so two checks in
+        // a row must ALSO see the boss bar gone, unless the count is death-panel-sized (>= 1600) — the count is
+        // the boss-bar-independent fallback for stale boss reads. The guard removes all battle-period false triggers
+        // (66/67 recorded rounds, all 187 check alignments, before this guard) while the real deaths in 219-225 all
+        // still fire (via the grey screen below).
+        const btn = countAtLeast(RETRY_WHITE, RETRY_ROI, 800, img);
+        const again = btn && (bossNow <= 50 || countAtLeast(RETRY_WHITE, RETRY_ROI, 1600, img));
         deadSeen = again ? deadSeen + 1 : 0;
         if (deadSeen >= 2) {
-            mark("dead", "the round is over (reset button)");
+            mark("dead", `the round is over (reset button${bossNow > 50 ? ", strong" : ""})`);
             return true;
         }
-        // a curtain blackout lasts ~1 s: only a grey screen of 3 s counts (painting the death screen before its button)
+        if (!deadGrey) return false;
+        // a curtain blackout lasts ~1 s: only a grey screen of ~2.5 s counts (painting the death screen before its
+        // button). 8/8 terminal recordings fire here, 75-89 frames after the screen appears, with zero battle-period
+        // triggers in 74 rounds x 187 check alignments (replay/deadcheck_sweep.py).
         const grey = countAtLeast(GREY, GREY_ROI, Math.round(0.85 * GREY_ROI[2] * GREY_ROI[3]), img);
         greySeen = grey ? greySeen + 1 : 0;
         if (greySeen >= 6) {
