@@ -893,6 +893,9 @@ v3（exp6，`unified_{back,head}3.onnx`）的遗留两条都在 v4 处理，并�
   触发）——给按钮分支加回 `bossNow <= 50` 守卫 +「≥1600px 强计数」兜底；灰屏路径不变。74 轮 × 187 相位零误触；
   实机实测：灰屏 2.9–3.3s 判死、按钮 1.0s（`deadGrey:false` 测试场），死亡后不再乱按。另有测试 args
   `deadGrey`、S1 窗参数 `s1Hi`（默认 5=4–19 帧；6=4–24 帧，未采用）。
+* **索敌（lock-on）**：演练场开局自动锁定，阶段转换（约 80s 起）游戏掉锁、镜头不再跟 boss（233 后半段被从
+  摄像机侧面打）。dufu.js 照 combat.js 的规则补锁：图标（LOCK_ROI 金色）暗即每 ≥2s 补一次 `tap`，新增 args
+  `lockOn`（默认 true）。修复轮 234 三次掉锁都在 0.2–0.3s 内补回，实录挨打 13.0→9.3 下/分。
 * **v4 部署对**：`unified_back4.onnx` + `unified_head4.onnx` + `unified_head4.json`（runs/exp8），io 不变
   `[1,3,96,96]→192`、`[1,30,207]→77`。args 成对切换：
   `{"model":"dufu/unified_head4.onnx","backModel":"dufu/unified_back4.onnx","trigTh":0.4,"potions":3}`。

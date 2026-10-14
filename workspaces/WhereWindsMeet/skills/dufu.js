@@ -4,7 +4,9 @@
 // until a commit window freezes it, executed by cooldowns; bimodal fut results become branches whose later-mode
 // item stays uncommitted until the first mode resolves. Slow rules (curtain gap / flare colour / potion) only run
 // while the per-frame budget is left over: they never hold the key path. `observe` does inference and logging
-// only (no touches at all). The 15 aux columns reproduce unified_head2.json exactly.
+// only (no touches at all). The 15 aux columns reproduce unified_head2.json exactly. The boss is kept locked on
+// (tap the lock button whenever its gold icon is gone: the arena auto-locks, the game drops it at the phase
+// change and the camera stops tracking; combat.js rule).
 //   maalow do skill dufu --args '{"observe":true,"ms":45000}'
 // v1 pair: --args '{"model":"dufu/unified_head.onnx","backModel":"dufu/unified_back.onnx"}'
 import { stats } from "./lib/stats.js";
@@ -105,6 +107,13 @@ const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
 /** @type {Box} */ const RETRY_ROI = [945, 668, 95, 24];
 const RETRY_WHITE = { lower: [0, 0, 170], upper: [180, 60, 255], method: 40 };
 const DEAD_MS = 500;
+// lock-on (combat.js): the arena auto-locks at the fight start, the game drops the lock at the phase change
+// (~80-90 s in) and the camera then stops tracking — the boss flanks and hits from the camera's side. combat.js
+// re-taps the lock button whenever the gold icon is gone; dufu.js never did (round 233: lock lost at ~87 s).
+/** @type {Point} */ const LOCK = [1021, 667];
+/** @type {Box} */ const LOCK_ROI = [1004, 648, 34, 39];
+const GOLD = { lower: [200, 180, 100], upper: [255, 245, 200] };
+const LOCK_MS = 2000; // between re-lock taps (combat.js)
 // round start: walk in (short bursts, never blocking) until the boss bar shows (armed only)
 const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 
@@ -119,7 +128,8 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   dodgeLead?: Record<string, number>, nextMs?: number, predMs?: number, missGraceMs?: number, tellTh?: number,
  *   trigTh?: number, dodgeMinP?: number, tellDodgeP?: number, tellEpisodeMs?: number,
  *   slowEvery?: number, flareEvery?: number, curtain?: boolean, curtainEvery?: number, flareDodge?: boolean,
- *   potionHp?: number, potionHoldMs?: number, potionSafeFrames?: number, deadGrey?: boolean, s1Hi?: number}} [args]
+ *   potionHp?: number, potionHoldMs?: number, potionSafeFrames?: number, deadGrey?: boolean, s1Hi?: number,
+ *   lockOn?: boolean}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -158,6 +168,7 @@ export default function (args = {}) {
     const potionSafeFrames = args.potionSafeFrames ?? POTION_SAFE_FRAMES;
     const deadGrey = args.deadGrey ?? true; // test-only: false disables the grey-screen branch (button path alone)
     const s1Hi = args.s1Hi ?? 5; // S1 = fut1 bins 1..s1Hi (v4 window variant: 6 = 4-24 frames; recalibrate trigTh)
+    const lockOn = args.lockOn ?? true; // keep the boss locked on (camera tracking); false for A/B
     /** @type {Record<string, number>} */
     const dodgeLead = { grab: 5, slam: 4, other: 5, sweep: 5, ...(args.dodgeLead ?? {}) };
     const leadMs = (/** @type {string} */ kind) => (dodgeLead[kind] ?? 0) * FRAME_MS;
@@ -892,6 +903,24 @@ export default function (args = {}) {
         return false;
     }
 
+    // --- lock-on: tap the lock button back on while the gold icon is gone (combat.js rule; no touches in observe)
+    let lockWas = false, lockTaps = 0, lastLockTap = 0;
+    /** @param {number} now */
+    function lockCheck(now) {
+        if (observe || !lockOn) return;
+        const locked = color({ ...GOLD, image: img, roi: LOCK_ROI, count: 150 }).hit;
+        if (locked !== lockWas) {
+            lockWas = locked;
+            mark("lock", locked ? "icon lit" : "icon dark");
+        }
+        if (!locked && !upDue && now - lastLockTap >= LOCK_MS) {
+            lastLockTap = now;
+            lockTaps++;
+            tap(LOCK);
+            mark("lock", `re-lock tap ${lockTaps}`);
+        }
+    }
+
     // --- round start (armed): walk in, in short bursts, until the boss bar shows
     let bossSeen = false;
     /** @param {number} now */
@@ -1076,6 +1105,7 @@ export default function (args = {}) {
                 break;
             }
             approach(now);
+            lockCheck(now);
             const dtMs = lastEntryT ? Math.min(300, Math.max(10, now - lastEntryT)) : FRAME_MS;
             const aux = buildAux(dtMs);
             const b = timed("back", () => infer(backModel, { ...BACK, image: img }));
@@ -1131,7 +1161,7 @@ export default function (args = {}) {
     }
     const backS = stats(tMs.back), headS = stats(tMs.head), readS = stats(tMs.reads), loopS = stats(tMs.loop);
     const readyPct = headCalls ? Math.round((ready / headCalls) * 1000) / 10 : 0;
-    log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, ` +
+    log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, ` +
         `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
     return {
