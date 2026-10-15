@@ -92,8 +92,24 @@ const BRANCH_MIN_P = 0.2, BRANCH_SEP_BINS = 5, BRANCH_KEEP_P = 0.25; // bimodal 
 const TELL_TH = 0.5, TELL_DEDUP_MS = 300;
 const TRIG_TH = 0.4; // the timing-head trigger (S1 = fut bins 1-5): a contact this likely within 4-19 frames acts
 const DODGE_MIN_P = 0.5; // def1 "dodge" below this is treated as parry (the dodge class over-fires in fights)
-const TELL_DODGE_P = 0.75; // a tell-dodge needs this much, two looks in a row, and one per episode
+// v5 tell re-calibration (tell_scan.py on 219-234, v4 head outputs): at 0.75 only 36/110 flagged flare hits got a
+// tell dodge (28 at lead >= 4); at 0.50 it is 76/110 (51 at lead >= 4) for +2.7 dodges/min. sustained stays (it
+// drops one-frame blips for free), episode dedup stays 2 s (1 s adds presses, saves ~1 hit less).
+const TELL_DODGE_P = 0.5;
 const TELL_EPISODE_MS = 2000;
+
+// v5 scheduler switches (args, both default OFF; quantified offline in sim3.py --stagger-hold/--presched):
+// staggerHold: a press blocked by the post-hit stagger is kept and retried every frame; it fires once the stagger
+//   ends while >= holdMinLead frames of lead remain, else it is dropped ("held: too late"). Offline effect on the
+//   219-234 sim was small (plan slots are re-created each frame anyway): keep off unless a live A/B says otherwise.
+// presched: after a hit, when the combo head reports a frozen template (combo p >= 0.4, stage 2-4) pre-schedule the
+//   next preschedN segment contacts from the template gaps (templates.json medians). BLOCKED offline: the v4 combo
+//   head never reports the right template (2.6-4.6% arg match on template frames), so this fires ~never; arg kept
+//   for future heads.
+const HOLD_MIN_LEAD = 4; // frames: a held press with less lead than this is dropped (ps_table 4-12 = 0.85-0.94)
+const DROP_LAG = 5; // dataset convention: the contact happened this many frames before the hp drop shows
+/** @type {number[][]} template T1..T14 median gaps (contact-to-contact frames, templates.json) */
+const COMBO_GAPS = [[17], [24], [31], [38], [11], [15, 30], [12, 31], [16, 25], [18, 16], [24, 38.5], [12, 25], [37, 23.5], [25, 11.5, 31], [24, 16]];
 const SLOW_EVERY = 250; // aux reads (boss / mean) and the potion decision: 4 Hz
 const FLARE_EVERY = 400;
 const CURTAIN_EVERY = 400;
@@ -119,7 +135,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
-/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string}} PlanItem */
+/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean}} PlanItem */
 
 /**
  * @param {{observe?: boolean, ms?: number, potions?: number, model?: string, backModel?: string, parry?: Point,
@@ -129,11 +145,12 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   trigTh?: number, dodgeMinP?: number, tellDodgeP?: number, tellEpisodeMs?: number,
  *   slowEvery?: number, flareEvery?: number, curtain?: boolean, curtainEvery?: number, flareDodge?: boolean,
  *   potionHp?: number, potionHoldMs?: number, potionSafeFrames?: number, deadGrey?: boolean, s1Hi?: number,
- *   lockOn?: boolean}} [args]
+ *   lockOn?: boolean, staggerHold?: boolean, holdMinLead?: number, presched?: boolean, preschedN?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
- *   latencyFrames: the press lead; dodgeLead: tell dodge lead in frames per kind (grab/slam/other/sweep).
+ *   latencyFrames: the press lead; dodgeLead: tell dodge lead in frames per kind (grab/slam/other/sweep);
+ *   staggerHold / presched: the v5 scheduler switches (@see HOLD_MIN_LEAD / COMBO_GAPS; both default off).
  */
 export default function (args = {}) {
     const observe = args.observe ?? false;
@@ -169,6 +186,10 @@ export default function (args = {}) {
     const deadGrey = args.deadGrey ?? true; // test-only: false disables the grey-screen branch (button path alone)
     const s1Hi = args.s1Hi ?? 5; // S1 = fut1 bins 1..s1Hi (v4 window variant: 6 = 4-24 frames; recalibrate trigTh)
     const lockOn = args.lockOn ?? true; // keep the boss locked on (camera tracking); false for A/B
+    const staggerHold = args.staggerHold ?? false; // v5: keep a press blocked by the hit stagger, retry at its end
+    const holdMinLead = args.holdMinLead ?? HOLD_MIN_LEAD;
+    const presched = args.presched ?? false; // v5: pre-schedule combo segments from the frozen templates
+    const preschedN = args.preschedN ?? 1;
     /** @type {Record<string, number>} */
     const dodgeLead = { grab: 5, slam: 4, other: 5, sweep: 5, ...(args.dodgeLead ?? {}) };
     const leadMs = (/** @type {string} */ kind) => (dodgeLead[kind] ?? 0) * FRAME_MS;
@@ -395,6 +416,7 @@ export default function (args = {}) {
     let plan = [];
     let headCalls = 0, ready = 0, looks = 0, reason = "time";
     let hits = 0, oks = 0, misses = 0, late = 0, revisions = 0, branches = 0, branchDrops = 0;
+    let holds = 0, holdPresses = 0;
     const presses = { parry: 0, dodge: 0, potion: 0, walk: 0 };
     /** @type {Record<string, number>} */
     const blocked = {};
@@ -572,6 +594,7 @@ export default function (args = {}) {
     }
     /** @param {number} now @param {number} k */
     function syncK(now, k) {
+        if (plan.some((x) => x.k === k && x.src === "combo")) return; // a pre-scheduled template item owns the slot
         const t = targetOf(now, k);
         const main = plan.find((x) => x.k === k && x.src === "fut" && !x.branch);
         const br = plan.find((x) => x.k === k && x.src === "fut" && x.branch);
@@ -771,11 +794,24 @@ export default function (args = {}) {
             const why = pressBlocked(it, now);
             if (why) {
                 blocked[why] = (blocked[why] ?? 0) + 1;
+                if (staggerHold && why === "stagger" && !it.branch && it.cMs - now >= holdMinLead * FRAME_MS) {
+                    if (!it.held) {
+                        it.held = true;
+                        holds++;
+                        mark("hold", `${it.kind} k${it.k} stagger, ${Math.round((it.cMs - now) / FRAME_MS)}f lead left`);
+                    }
+                    continue; // keep the item: retry every frame until the stagger ends
+                }
                 mark("blocked", `${it.kind} k${it.k} ${why}`);
                 dropItem(it, `blocked ${why}`);
                 continue;
             }
+            if (it.held && it.cMs - now < holdMinLead * FRAME_MS) {
+                dropItem(it, "held: too late");
+                continue;
+            }
             press(it, now);
+            if (it.held) holdPresses++;
         }
     }
     /** @param {number} now */
@@ -840,6 +876,29 @@ export default function (args = {}) {
         clearPlan("hit");
         mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n} planned cancelled)`);
         mark("stagger", `${staggerMs} ms`);
+        if (presched) comboPlan(now);
+    }
+    /**
+     * v5 presched: pre-schedule the following combo segments from the frozen template gaps after a hit. Uses the
+     * head output of the frame before the drop (the runtime sees the hit before it runs the head on the frame);
+     * contact = drop - DROP_LAG frames. Items are committed at birth and own their k slot (@see syncK).
+     * @param {number} now
+     */
+    function comboPlan(now) {
+        if (!pred || pred.combo.arg < 2 || pred.combo.p < 0.4) return;
+        const g = COMBO_GAPS[pred.combo.arg - 2];
+        const st = pred.stage.arg;
+        if (!g || st < 2 || st > 4) return;
+        let kind = defAction(pred.def[0]);
+        if (!kind || (kind === "avoid" && !inCurtain)) kind = "parry";
+        const idx = Math.min(st - 2, g.length - 1);
+        let c = now - DROP_LAG * FRAME_MS;
+        const n = Math.min(preschedN, g.length - idx);
+        for (let i = 0; i < n; i++) {
+            c += g[idx + i] * FRAME_MS;
+            if (c - now > PLAN_FRAMES_MAX * FRAME_MS || c - now < LATE_FRAMES * FRAME_MS) break;
+            addItem({ kind, k: i, src: "combo", cMs: c, atMs: c - issueLead, untilMs: c + missGraceMs, committed: true, why: `template T${pred.combo.arg - 1} seg${st + i}` });
+        }
     }
     /** @param {number} now */
     function onOk(now) {
@@ -1162,11 +1221,11 @@ export default function (args = {}) {
     const backS = stats(tMs.back), headS = stats(tMs.head), readS = stats(tMs.reads), loopS = stats(tMs.loop);
     const readyPct = headCalls ? Math.round((ready / headCalls) * 1000) / 10 : 0;
     log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, ` +
-        `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
+        `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
     return {
         reason, observe, looks, ready, headCalls, readyPct,
-        presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips,
+        presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, holds, holdPresses,
         ms: { back: backS, head: headS, reads: readS, loop: loopS },
         start, events,
     };
