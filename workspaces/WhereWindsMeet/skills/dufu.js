@@ -127,6 +127,34 @@ const POTION_HP = 0.3, POTION_URGENT = 0.15, POTION_HOLD_MS = 2000, POTION_YIELD
 const SLOW_SLACK_MS = 3; // a slow check may start while this much of the budget is left
 const BRANCH_LATE_MS = 400; // an unreleased branch this stale: drop
 
+// v7 scheduler switches (args, default OFF; see model_head7_report.md):
+// tellAnchor: a flare tell (arg 1..3) no longer presses at fut1-E(c)-lead but at the episode's first tell frame +
+//   anchor[kind] (the head's first fire is the image onset +-3 frames, measured on 233-252: p50 0, p90 +3);
+//   the offline replay (tell_scan --mode anchor, 233-252, 401 image onsets) goes from 117 to 198 of 233 flare-hit
+//   contacts with a >=4-frame press, i.e. "press vs real contact" coverage 50% -> 85%.
+// curtainImg: run the combat.js curtain image rule (panels + orange edge, gapNow) every curtainEvery while NOT in
+//   curtain; non-null twice in a row -> enter curtain mode (the tell head only caught 1 of 252's 3 episodes).
+// curtainDark: the tell head's dark class fires at the curtain's black cover onset (252: p 0.86-0.95 at frames
+//   2537/4859/6990, the coach's 3 episodes); >= 2 consecutive frames of arg 6 p >= 0.7 -> enter curtain mode.
+// repress: a pressed fut item whose fresh contact estimate moves >= repressGap frames later is re-armed once (the
+//   横刀 long wind-ups: c reported ~37 f early -> the i-frame/parry window expired before the real contact), and a
+//   pressed item that is about to expire as a miss is re-armed when the fresh fut still shows a contact within
+//   repressLook frames.
+// closeIn: keep the boss in melee range: forward bursts whenever no press is imminent (never during curtain /
+//   dodge / stagger), plus the hold bundle (keepPlanOnHit + staggerHold + posthit 1 narrow) and the v6 gap-head
+//   pre-schedule, so each chain segment gets its own c-14 press (segment gaps >= 8 f > the 6.6 f parry CD).
+// qiAttack: 气竭 (qi == 0) window: light attacks + 处决 (combat.js execute template) after qiExecWait ms.
+/** @type {Record<string, number>} */ const ANCHOR_FRAMES = { flare_grab: 4, flare_slam: 10, flare_other: 4 };
+const REPRESS_GAP_FRAMES = 18;
+const REPRESS_DELAY_FRAMES = 12;
+const REPRESS_LOOK_FRAMES = 25;
+const CI_CYCLE_MS = 1600, CI_ON_MS = 500;
+const QI_LIGHT_MS = 420, QI_EXEC_WAIT_MS = 4000, QI_EXEC_EVERY = 3;
+/** @type {Point} */ const LIGHT = [945, 592];
+/** @type {Point} */ const EXECUTE = [852, 430];
+/** @type {Box} */ const EXEC_ROI = [815, 391, 75, 75];
+const EXEC_THRESHOLD = 0.7;
+
 // 重伤 (dead): the grey screen with both bars gone, or the 再次训练 panel (combat.js)
 /** @type {Box} */ const GREY_ROI = [100, 100, 880, 500];
 const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
@@ -145,7 +173,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
-/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean}} PlanItem */
+/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean}} PlanItem */
 
 /**
  * @param {{observe?: boolean, ms?: number, potions?: number, model?: string, backModel?: string, parry?: Point,
@@ -156,7 +184,9 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   slowEvery?: number, flareEvery?: number, curtain?: boolean, curtainEvery?: number, flareDodge?: boolean,
  *   potionHp?: number, potionHoldMs?: number, potionSafeFrames?: number, deadGrey?: boolean, s1Hi?: number,
  *   lockOn?: boolean, staggerHold?: boolean, holdMinLead?: number, presched?: boolean, preschedN?: number,
- *   comboV6?: boolean, keepPlanOnHit?: boolean, posthit?: number, posthitNarrow?: boolean}} [args]
+ *   comboV6?: boolean, keepPlanOnHit?: boolean, posthit?: number, posthitNarrow?: boolean,
+ *   tellAnchor?: boolean, curtainImg?: boolean, curtainDark?: boolean, repress?: boolean, repressGap?: number,
+ *   closeIn?: boolean, qiAttack?: boolean, qiExecWait?: number, execThreshold?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -207,6 +237,20 @@ export default function (args = {}) {
     const keepPlanOnHit = args.keepPlanOnHit ?? false; // v6: a hit keeps unpressed items that target the future
     const posthit = args.posthit ?? 0; // v6: K plan-free insurance parries after a hit (0=off)
     const posthitNarrow = args.posthitNarrow ?? true; // only when no plan item is pending / no plan press since hit
+    const tellAnchor = args.tellAnchor ?? false; // v7 A1: flare dodges at the episode onset + anchor[kind]
+    const curtainImg = args.curtainImg ?? false; // v7 A2: image-rule curtain fallback (probe when not in curtain)
+    const curtainDark = args.curtainDark ?? false; // v7 A2: tell dark (arg 6) at the cover onset enters curtain mode
+    const repress = args.repress ?? false; // v7 A3: re-arm a pressed item when the estimated contact moves later
+    const closeIn = args.closeIn ?? false; // v7 B: keep melee range + chain bundle (hold/insure/presched v6)
+    const qiAttack = args.qiAttack ?? false; // v7 C: light attacks + 处决 in the 气竭 (qi == 0) window
+    const qiExecWait = args.qiExecWait ?? QI_EXEC_WAIT_MS; // ms of light attacks before the 处决 tap
+    const execThreshold = args.execThreshold ?? EXEC_THRESHOLD;
+    const repressGapMs = (args.repressGap ?? REPRESS_GAP_FRAMES) * FRAME_MS;
+    // closeIn turns the v6 chain switches on unless the caller pinned them explicitly
+    const holdOn = closeIn ? (args.keepPlanOnHit ?? true) : keepPlanOnHit;
+    const staggerOn = closeIn ? (args.staggerHold ?? true) : staggerHold;
+    const posthitN = closeIn ? (args.posthit ?? 1) : posthit;
+    const preschedOn = closeIn ? (args.presched ?? true) : presched;
     /** @type {Record<string, number>} */
     const dodgeLead = { grab: 5, slam: 4, other: 5, sweep: 5, ...(args.dodgeLead ?? {}) };
     const leadMs = (/** @type {string} */ kind) => (dodgeLead[kind] ?? 0) * FRAME_MS;
@@ -425,15 +469,19 @@ export default function (args = {}) {
     let potionsUsed = 0;
     let dodgeSeq = 0, inDodge = false, stickSide = 0;
     let inCurtain = false, curtainLastAt = 0, curtainFirstAt = 0, curtainDodged = false, curtainDodgeAt = 0, lastFlareDodgeAt = 0, lastPotionHoldMark = 0;
+    let curtainDarkSeen = 0; // v7 A2: consecutive tell-dark frames at the cover onset
+    let weakSince = 0, qiZeroSeen = 0, qiEmpty = 0, lastLightAt = 0, lastExecTapAt = 0, lastExecMatchAt = 0; // v7 C
     let lastAvoidDropAt = 0; // an "avoid" (curtain) item just handled: no new one for a moment
     let lastTellArg = -1, lastTellDodgeArg = -1, lastTellDodgeAt = 0; // tell continuity + one dodge per episode
+    let flareLastFireAt = 0, flareFirstAt = 0, flareLastArg = -1; // v7 A1 anchor: the current flare episode's onset
     /** @type {Pred | null} */
     let pred = null;
     /** @type {PlanItem[]} */
     let plan = [];
     let headCalls = 0, ready = 0, looks = 0, reason = "time";
     let hits = 0, oks = 0, misses = 0, late = 0, revisions = 0, branches = 0, branchDrops = 0;
-    let holds = 0, holdPresses = 0, insurePresses = 0, pressedSinceHit = false;
+    let holds = 0, holdPresses = 0, insurePresses = 0, pressedSinceHit = false, rerepresses = 0;
+    let weakWindows = 0, weakLights = 0, weakExecs = 0;
     const presses = { parry: 0, dodge: 0, potion: 0, walk: 0 };
     /** @type {Record<string, number>} */
     const blocked = {};
@@ -614,6 +662,40 @@ export default function (args = {}) {
     /** @param {number} now @param {number} k */
     function syncK(now, k) {
         if (plan.some((x) => x.k === k && x.src === "combo")) return; // a pre-scheduled template item owns the slot
+        // v7 A3: a pressed item whose believed contact has passed without any ok/hit feedback, while the fresh fut
+        // still points at a real contact, is re-armed once. Bypasses the S1 trigger on purpose: after an early press
+        // the head is quiet until the arm's real contact approaches (r241 press@196 c=210: S1 0.04-0.18 until t225,
+        // real contact 243). The estimate may still be 30-45 f out here; re-pressing lands at c'-14.
+        const main0 = plan.find((x) => x.k === k && x.src === "fut" && !x.branch);
+        if (repress && main0 && main0.pressedAt && !main0.repressed && pred
+            && now - main0.pressedAt >= repressGapMs && now > main0.cMs + 3 * FRAME_MS
+            && lastHitAt < main0.pressedAt - FRAME_MS && lastOkAt < main0.pressedAt - FRAME_MS) {
+            const st2 = futStats(pred.fut[k]);
+            if (st2.none < 0.65 && st2.sum > 0.01 && st2.exp >= LATE_FRAMES && st2.exp <= 45) {
+                main0.repressed = true;
+                main0.pressedAt = 0;
+                main0.kind = defAction(pred.def[k]) ?? /** @type {"parry"} */ ("parry");
+                if (main0.kind === "avoid" && !inCurtain) main0.kind = "parry";
+                main0.cMs = now + st2.exp * FRAME_MS;
+                main0.atMs = main0.cMs - issueLead;
+                main0.untilMs = main0.cMs + missGraceMs;
+                rerepresses++;
+                mark("re-press", `k${k} ${main0.kind} late fill c+${Math.round(st2.exp)}f`);
+                return;
+            }
+            if (st2.sum > 0.05) {
+                // the head is unsure (none >= 0.65) but the contact is still coming (252 f4204: press 37 f early,
+                // sum 0.16-0.22 / none 0.80-0.89 while the real contact was 4241): a fixed short-delay second tap
+                main0.repressed = true;
+                main0.pressedAt = 0;
+                main0.atMs = now + REPRESS_DELAY_FRAMES * FRAME_MS;
+                main0.cMs = main0.atMs + issueLead;
+                main0.untilMs = main0.atMs + 40 * FRAME_MS;
+                rerepresses++;
+                mark("re-press", `k${k} ${main0.kind} second tap +${REPRESS_DELAY_FRAMES}f`);
+                return;
+            }
+        }
         const t = targetOf(now, k);
         const main = plan.find((x) => x.k === k && x.src === "fut" && !x.branch);
         const br = plan.find((x) => x.k === k && x.src === "fut" && x.branch);
@@ -649,6 +731,18 @@ export default function (args = {}) {
             main.cMs = t.cMs;
             main.atMs = t.cMs - issueLead;
             main.untilMs = t.cMs + missGraceMs;
+        } else if (repress && main.pressedAt && !main.repressed && t.cMs - main.cMs > REVISE_MOVE_MS
+                   && t.cMs - main.pressedAt >= repressGapMs && t.cMs - now >= LATE_FRAMES * FRAME_MS
+                   && now - main.pressedAt >= parryCd) {
+            // v7 A3: the contact moved later after the press (long wind-up): re-arm once and press again at its window
+            const moved = t.cMs - main.cMs;
+            main.repressed = true;
+            main.pressedAt = 0;
+            main.cMs = t.cMs;
+            main.atMs = t.cMs - issueLead;
+            main.untilMs = t.cMs + missGraceMs;
+            rerepresses++;
+            mark("re-press", `k${k} ${main.kind} contact moved +${Math.round(moved / FRAME_MS)}f`);
         }
         if (t.branchMs) {
             if (!br) addItem({ kind: t.kind, k, src: "fut", branch: true, cMs: t.branchMs, atMs: t.branchMs - issueLead, untilMs: t.branchMs + missGraceMs, t1Ms: t.cMs, why: "branch (bimodal)" });
@@ -681,6 +775,29 @@ export default function (args = {}) {
         const t = pred.tell;
         const sustained = t.arg === lastTellArg;
         lastTellArg = t.arg;
+        // v7 A1: track flare episodes for the onset anchor (first fire of a flare run of the same class)
+        if (t.arg >= 1 && t.arg <= 3) {
+            if (now - flareLastFireAt > 20 * FRAME_MS || t.arg !== flareLastArg) flareFirstAt = now;
+            flareLastFireAt = now;
+            flareLastArg = t.arg;
+        }
+        // v7 A2 fallback 2 (per-frame): the tell head's dark class fires at the curtain's black cover onset
+        // (233-252: 77/82 dark streaks p>=0.7 (>=2 f) sit at a real episode; 46/54 episodes covered). Sampling a
+        // 400 ms slow task would miss the short covers, so it lives here, in the per-frame tell path.
+        if (t.arg === 6 && t.p >= 0.7) {
+            if (++curtainDarkSeen >= 2 && curtainDark && !inCurtain
+                && (t.p >= 0.85 || (meanNow >= 0 && meanNow < 30))) {
+                inCurtain = true;
+                curtainFirstAt = 0;
+                curtainDodged = false;
+                curtainLastAt = now;
+                curtainDarkSeen = 0;
+                mark("curtain", "dark tell: cover");
+                cancelFuture("curtain");
+            }
+        } else {
+            curtainDarkSeen = 0;
+        }
         if (t.p < tellTh || t.arg === 0 || t.arg === 6) return;
         if (t.arg === 5) {
             if (!inCurtain) {
@@ -698,8 +815,9 @@ export default function (args = {}) {
         if (t.p < tellDodgeP || !sustained) return;
         if (t.arg === lastTellDodgeArg && now - lastTellDodgeAt < tellEpisodeMs) return;
         const st = futStats(pred.fut[0]);
-        if (st.none >= 0.65 || st.sum <= 0.01) return;
-        const c1 = now + st.exp * FRAME_MS;
+        const anchored = tellAnchor && t.arg >= 1 && t.arg <= 3;
+        if (!anchored && (st.none >= 0.65 || st.sum <= 0.01)) return;
+        const c1 = st.none >= 0.65 || st.sum <= 0.01 ? now + 350 : now + st.exp * FRAME_MS;
         if (c1 - now < LATE_FRAMES * FRAME_MS) {
             late++;
             mark("late", `tell ${t.label}`);
@@ -707,7 +825,12 @@ export default function (args = {}) {
         }
         const label = TELL_LABELS[t.arg];
         let at;
-        if (t.arg === 4) {
+        if (anchored) {
+            // v7 A1: press at the episode onset + anchor frames (the appearance lands ~5 f later); the head's first
+            // fire is the image onset +-3 f (tells head vs flares_ds onsets, 233-252: p50 0 / p90 +3)
+            at = flareFirstAt + (ANCHOR_FRAMES[label] ?? 4) * FRAME_MS;
+            if (at < now) at = now;
+        } else if (t.arg === 4) {
             if (st.mode < 0) return;
             at = now + FUT_CENTER[st.mode] * FRAME_MS - leadMs("sweep");
         } else {
@@ -717,7 +840,7 @@ export default function (args = {}) {
         if (plan.some((x) => x.src === "tell" && x.kind === "dodge" && Math.abs(x.atMs - at) < TELL_DEDUP_MS)) return;
         lastTellDodgeArg = t.arg;
         lastTellDodgeAt = now;
-        addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: at, untilMs: Math.max(c1, at) + missGraceMs, why: `tell ${label} p${Math.round(t.p * 100)}` });
+        addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: at, untilMs: Math.max(c1, at) + missGraceMs, why: `tell ${label}${anchored ? " anchor" : ""} p${Math.round(t.p * 100)}` });
     }
     /** @param {string} dir @returns {Point} */
     function dirPoint(dir) {
@@ -836,7 +959,7 @@ export default function (args = {}) {
             const why = pressBlocked(it, now);
             if (why) {
                 blocked[why] = (blocked[why] ?? 0) + 1;
-                if (staggerHold && why === "stagger" && !it.branch && it.cMs - now >= holdMinLead * FRAME_MS) {
+                if (staggerOn && why === "stagger" && !it.branch && it.cMs - now >= holdMinLead * FRAME_MS) {
                     if (!it.held) {
                         it.held = true;
                         holds++;
@@ -862,6 +985,25 @@ export default function (args = {}) {
             if (!it.branch && !it.pressedAt && it.kind !== "potion" && now > it.untilMs) {
                 dropItem(it, "expired unpressed");
             } else if (!it.branch && it.pressedAt && it.kind !== "potion" && now > it.untilMs) {
+                // v7 A3: about to become a miss — if the fresh fut still points at a contact the press was too early
+                // for (the true contact has not happened yet), re-arm once and press again in its window. The trigger
+                // gate is deliberately bypassed here: after an early press the S1 trigger usually drops while the
+                // arm is still winding up (r241 press@196 c=210, S1 0.04-0.18 until t225, real contact 243).
+                if (repress && !it.repressed && it.src === "fut" && it.k >= 0 && pred) {
+                    const st2 = futStats(pred.fut[it.k]);
+                    if (st2.none < 0.65 && st2.sum > 0.01 && st2.exp >= LATE_FRAMES && st2.exp <= REPRESS_LOOK_FRAMES) {
+                        it.repressed = true;
+                        it.pressedAt = 0;
+                        it.kind = defAction(pred.def[it.k]) ?? /** @type {"parry"} */ ("parry");
+                        if (it.kind === "avoid" && !inCurtain) it.kind = "parry";
+                        it.cMs = now + st2.exp * FRAME_MS;
+                        it.atMs = it.cMs - issueLead;
+                        it.untilMs = it.cMs + missGraceMs;
+                        rerepresses++;
+                        mark("re-press", `k${it.k} late fill c+${Math.round(st2.exp)}f`);
+                        continue;
+                    }
+                }
                 misses++;
                 mark("miss", `${it.kind} k${it.k} c+${Math.round(it.cMs - now)}ms`);
                 dropItem(it, "contact passed");
@@ -916,7 +1058,7 @@ export default function (args = {}) {
         pressedSinceHit = false;
         staggerUntil = Math.max(staggerUntil, now + staggerMs);
         const n = plan.length;
-        if (keepPlanOnHit) {
+        if (holdOn) {
             // v6: keep the unpressed items that still target a future contact; only stale/consumed ones go
             /** @type {PlanItem[]} */
             const keep = [];
@@ -931,15 +1073,15 @@ export default function (args = {}) {
             mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n} planned cancelled)`);
         }
         mark("stagger", `${staggerMs} ms`);
-        if (posthit > 0) {
+        if (posthitN > 0) {
             addItem({ kind: "parry", k: -1, src: "insure", cMs: now + staggerMs, atMs: now + staggerMs,
                       untilMs: now + staggerMs + 30 * FRAME_MS, why: `posthit ${posthitNarrow ? "narrow" : "wide"}` });
-            if (posthit > 1) {
+            if (posthitN > 1) {
                 addItem({ kind: "parry", k: -1, src: "insure", cMs: now + staggerMs + 10 * FRAME_MS,
                           atMs: now + staggerMs + 10 * FRAME_MS, untilMs: now + staggerMs + 40 * FRAME_MS, why: "posthit 2" });
             }
         }
-        if (presched) comboPlan(now);
+        if (preschedOn) comboPlan(now);
     }
     /**
      * v5 presched: pre-schedule the following combo segments from the frozen template gaps after a hit. Uses the
@@ -1008,6 +1150,11 @@ export default function (args = {}) {
         if (q >= 0) {
             if (qiNow >= 4 && qiNow - q >= QI_STEP && qiNow - q <= QI_JUMP) onOk(now);
             qiNow = q;
+            qiEmpty = 0;
+        } else {
+            // v7 C: an exhausted qi bar has no light-blue pixels at all: the read fails (-1), NOT 0 (the dataset's
+            // f6.py reads 0 on the same frames). Track the empty streak so the 气竭 detector can fire.
+            qiEmpty++;
         }
         litPx = litRead();
     }
@@ -1121,11 +1268,42 @@ export default function (args = {}) {
     function slowCurtain(now) {
         if (!curtainOn) return;
         if (!inCurtain) {
+            // v7 A2 fallback 1: the combat.js image rule itself (panels + orange edge) — the tell head caught only
+            // 1 of 252's 3 episodes (the other two it called "dark"); the full-res probe hits inside 52/54 episodes
+            // (curtain_probe.py) and nowhere else in the labelled rounds; one probe hit enters the curtain handler.
+            if (curtainImg && gapNow() !== null) {
+                inCurtain = true;
+                curtainFirstAt = 0;
+                curtainDodged = false;
+                curtainLastAt = now;
+                curtainDarkSeen = 0;
+                mark("curtain", "image: panels + edge");
+                cancelFuture("curtain");
+                return;
+            }
             if (stickSide !== 0) walkOff();
             return;
         }
         const g = gapNow();
         if (!g) {
+            // the black cover: nothing to read; stay in the curtain and dodge out of the sweep's way once
+            if (meanNow >= 0 && meanNow < 22) {
+                curtainLastAt = now;
+                if (!curtainFirstAt) curtainFirstAt = now;
+                walkOff();
+                if (!curtainDodged && now - curtainDodgeAt > CURTAIN_DODGE_GAP_MS && now - lastDodgeAt > dodgeCd) {
+                    curtainDodged = true;
+                    curtainDodgeAt = now;
+                    mark("curtain", "cover: dodge");
+                    if (observe) {
+                        blocked.observe = (blocked.observe ?? 0) + 1;
+                    } else {
+                        pressDodge("back");
+                        presses.dodge++;
+                    }
+                }
+                return;
+            }
             if (now - curtainLastAt > CURTAIN_GONE_MS) {
                 inCurtain = false;
                 walkOff();
@@ -1198,6 +1376,64 @@ export default function (args = {}) {
         }
         addItem({ kind: "potion", k: -1, src: "potion", atMs: now, cMs: now, untilMs: now + 1500, why: `hp ${Math.round(hpNow * 100)}%` });
     }
+    /**
+     * v7 C 气竭 (weak) window: qi == 0 for two consecutive frames. Light attacks (輕擊) whenever no press is
+     * imminent; the 处决 button (combat.js template) is tapped once qiExecWait ms into the window (the window is
+     * ~7 s in the 233-252 recordings and the button shows for its whole length: 处决 damage is ~94% of the weak
+     * window's damage, so waiting ~4 s then tapping keeps most of the light damage and still lands 处决).
+     * @param {number} now
+     */
+    function slowWeak(now) {
+        if (!qiAttack || observe) return;
+        // the bar is empty when the read says 0, or the read keeps failing while the boss bar is up and the last
+        // readable value was already tiny (the exhausted bar has no blue pixels -> readQi -1: all of 253-260's
+        // qi==0 windows, 96-190 s in, were missed by a qiNow === 0 test)
+        const empty = qiNow === 0 || (qiEmpty >= 2 && qiNow >= 0 && qiNow <= 25 && bossNow > 50);
+        if (empty) qiZeroSeen++;
+        else qiZeroSeen = 0;
+        if (!weakSince && qiZeroSeen >= 2) {
+            weakSince = now;
+            weakWindows++;
+            mark("qi", `weak: 真气 empty (read ${qiNow}, miss ${qiEmpty})`);
+        }
+        if (!weakSince) return;
+        if (qiEmpty === 0 && qiNow > 4) {
+            mark("qi", `weak over after ${Math.round((now - weakSince) / 1000)}s (${weakLights} light, ${weakExecs} exec)`);
+            weakSince = 0;
+            return;
+        }
+        if (now - lastExecMatchAt >= QI_EXEC_EVERY * FRAME_MS) {
+            lastExecMatchAt = now;
+            if (perFrame("exec", (im) => match("combat/execute.png", { image: im, roi: EXEC_ROI, threshold: execThreshold }).hit)) {
+                if (now - weakSince >= qiExecWait && now - lastExecTapAt > 1000) {
+                    lastExecTapAt = now;
+                    weakExecs++;
+                    tap(EXECUTE);
+                    pressFrame(frameIdx);
+                    mark("qi", `处决 tap (+${Math.round((now - weakSince) / 1000)}s)`);
+                    return;
+                }
+            }
+        }
+        const pending = plan.some((x) => !x.pressedAt && x.atMs - now < 500);
+        if (!pending && !inDodge && now >= staggerUntil && now >= potionHoldUntil && !inCurtain && !inDodge
+            && now - lastLightAt >= QI_LIGHT_MS && now - lastExecTapAt >= 400) {
+            lastLightAt = now;
+            weakLights++;
+            tap(LIGHT);
+        }
+    }
+    /** v7 B closeIn: forward bursts while nothing is about to be pressed, so the boss stays in melee range. @param {number} now */
+    function closeInWalk(now) {
+        if (!closeIn || observe) return;
+        if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || weakSince) {
+            strideF(0);
+            return;
+        }
+        const pending = plan.some((x) => !x.pressedAt && x.atMs - now < 700);
+        const on = (now - start) % CI_CYCLE_MS < CI_ON_MS;
+        strideF(on && !pending && !inDodge ? 1 : 0);
+    }
     /** @type {{name: string, every: number, at: number, active: () => boolean, run: (now: number) => void}[]} */
     const slowQueue = [
         { name: "boss", every: slowEvery, at: 0, active: () => true, run: () => { bossNow = bossRead(); } },
@@ -1207,9 +1443,11 @@ export default function (args = {}) {
             if (meanRing.length > 3) meanRing.shift();
             dark3 = Math.min(...meanRing) < 20 ? 1 : 0;
         } },
-        { name: "curtain", every: curtainEvery, at: 0, active: () => inCurtain || stickSide !== 0, run: slowCurtain },
+        { name: "curtain", every: curtainEvery, at: 0, active: () => inCurtain || stickSide !== 0 || curtainImg || curtainDark, run: slowCurtain },
         { name: "flare", every: flareEvery, at: 0, active: () => true, run: slowFlare },
         { name: "potion", every: slowEvery, at: 0, active: () => maxPotions > 0 && potionsUsed < maxPotions && hpNow != null && hpNow <= potionHp, run: slowPotion },
+        { name: "closein", every: 100, at: 0, active: () => closeIn, run: closeInWalk },
+        { name: "weak", every: 100, at: 0, active: () => qiAttack, run: slowWeak },
     ];
 
     /** The newest stream frame: img's if that is it, else a screenshot of it; a still screen waits NEXT_MS. */
@@ -1303,11 +1541,12 @@ export default function (args = {}) {
     const backS = stats(tMs.back), headS = stats(tMs.head), readS = stats(tMs.reads), loopS = stats(tMs.loop);
     const readyPct = headCalls ? Math.round((ready / headCalls) * 1000) / 10 : 0;
     log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, ` +
-        `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
+        `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, weak ${weakWindows} (${weakLights} light, ${weakExecs} exec), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
     return {
         reason, observe, looks, ready, headCalls, readyPct,
         presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, holds, holdPresses, insurePresses,
+        rerepresses, weakWindows, weakLights, weakExecs,
         ms: { back: backS, head: headS, reads: readS, loop: loopS },
         start, events,
     };
