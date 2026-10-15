@@ -26,6 +26,9 @@ const BACK = { roi: [120, 30, 840, 530], size: 96, resize: "area", color: "rgb",
 
 // slices/labels frozen in model/dufu/unified_head2.json (v1: same)
 const COMBO_LABELS = ["bg", "irregular", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T14"];
+// v6 combo slot (comboV6 arg): gap to the NEXT segment of the chain; 0 bg | 1 single | 2..7 bins | 8 end (combo_v6.py)
+const COMBO6_LABELS = ["bg", "single", "g8-13", "g14-19", "g20-23", "g24-27", "g28-33", "g34-40", "end", "x9", "x10", "x11", "x12", "x13", "x14", "x15"];
+const COMBO6_CENTER = [10.5, 16.5, 21.5, 25.5, 30.5, 37.0]; // bin centers (frames), classes 2..7
 const STAGE_LABELS = ["bg", "pre", "next2", "next3", "next4+", "done"];
 const FUT_LABELS = ["1-3", "4-6", "7-9", "10-12", "13-15", "16-19", "20-24", "25-30", "31-40", "41-60", "none"];
 const FUT_LO = [1, 4, 7, 10, 13, 16, 20, 25, 31, 41]; // bin lower bounds (frames)
@@ -106,6 +109,13 @@ const TELL_EPISODE_MS = 2000;
 //   next preschedN segment contacts from the template gaps (templates.json medians). BLOCKED offline: the v4 combo
 //   head never reports the right template (2.6-4.6% arg match on template frames), so this fires ~never; arg kept
 //   for future heads.
+// v6 scheduler switches (args, all default OFF, for the v6 pair with comboV6):
+// keepPlanOnHit: a hit no longer cancels the whole plan; unpressed items that still target a future contact stay
+//   (the fresh fut head often goes quiet during the 500 ms stagger and never rebuilds them — sim: +4/30 of the
+//   recorded gap24-39 "live-unpressed" second segments covered, E 9.59->9.53/min).
+// posthit K (with posthitNarrow): K plan-free insurance parry presses after a hit, first at the end of the stagger
+//   (+10 f for K=2). Narrow = only when no unpressed plan item is pending and no plan press happened since the hit
+//   (the wide v5 variant cost +15 presses/min for -0.16/min; narrow is +6.4 sim presses/min for ~-0.11/min total).
 const HOLD_MIN_LEAD = 4; // frames: a held press with less lead than this is dropped (ps_table 4-12 = 0.85-0.94)
 const DROP_LAG = 5; // dataset convention: the contact happened this many frames before the hp drop shows
 /** @type {number[][]} template T1..T14 median gaps (contact-to-contact frames, templates.json) */
@@ -135,7 +145,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
-/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean}} PlanItem */
+/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean}} PlanItem */
 
 /**
  * @param {{observe?: boolean, ms?: number, potions?: number, model?: string, backModel?: string, parry?: Point,
@@ -145,12 +155,15 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   trigTh?: number, dodgeMinP?: number, tellDodgeP?: number, tellEpisodeMs?: number,
  *   slowEvery?: number, flareEvery?: number, curtain?: boolean, curtainEvery?: number, flareDodge?: boolean,
  *   potionHp?: number, potionHoldMs?: number, potionSafeFrames?: number, deadGrey?: boolean, s1Hi?: number,
- *   lockOn?: boolean, staggerHold?: boolean, holdMinLead?: number, presched?: boolean, preschedN?: number}} [args]
+ *   lockOn?: boolean, staggerHold?: boolean, holdMinLead?: number, presched?: boolean, preschedN?: number,
+ *   comboV6?: boolean, keepPlanOnHit?: boolean, posthit?: number, posthitNarrow?: boolean}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
  *   latencyFrames: the press lead; dodgeLead: tell dodge lead in frames per kind (grab/slam/other/sweep);
- *   staggerHold / presched: the v5 scheduler switches (@see HOLD_MIN_LEAD / COMBO_GAPS; both default off).
+ *   staggerHold / presched: the v5 scheduler switches (@see HOLD_MIN_LEAD / COMBO_GAPS; both default off);
+ *   comboV6: the v6 pair's combo slot is the gap-to-next-segment bins (presched/preschedN switch semantics);
+ *   keepPlanOnHit / posthit / posthitNarrow: the v6 second-segment lifecycle switches (all default off).
  */
 export default function (args = {}) {
     const observe = args.observe ?? false;
@@ -188,8 +201,12 @@ export default function (args = {}) {
     const lockOn = args.lockOn ?? true; // keep the boss locked on (camera tracking); false for A/B
     const staggerHold = args.staggerHold ?? false; // v5: keep a press blocked by the hit stagger, retry at its end
     const holdMinLead = args.holdMinLead ?? HOLD_MIN_LEAD;
-    const presched = args.presched ?? false; // v5: pre-schedule combo segments from the frozen templates
+    const presched = args.presched ?? false; // v5/v6: pre-schedule the next contact from the combo head at a hit
     const preschedN = args.preschedN ?? 1;
+    const comboV6 = args.comboV6 ?? false; // v6 pair: combo slot = gap-to-next-segment bins (COMBO6_*)
+    const keepPlanOnHit = args.keepPlanOnHit ?? false; // v6: a hit keeps unpressed items that target the future
+    const posthit = args.posthit ?? 0; // v6: K plan-free insurance parries after a hit (0=off)
+    const posthitNarrow = args.posthitNarrow ?? true; // only when no plan item is pending / no plan press since hit
     /** @type {Record<string, number>} */
     const dodgeLead = { grab: 5, slam: 4, other: 5, sweep: 5, ...(args.dodgeLead ?? {}) };
     const leadMs = (/** @type {string} */ kind) => (dodgeLead[kind] ?? 0) * FRAME_MS;
@@ -416,7 +433,7 @@ export default function (args = {}) {
     let plan = [];
     let headCalls = 0, ready = 0, looks = 0, reason = "time";
     let hits = 0, oks = 0, misses = 0, late = 0, revisions = 0, branches = 0, branchDrops = 0;
-    let holds = 0, holdPresses = 0;
+    let holds = 0, holdPresses = 0, insurePresses = 0, pressedSinceHit = false;
     const presses = { parry: 0, dodge: 0, potion: 0, walk: 0 };
     /** @type {Record<string, number>} */
     const blocked = {};
@@ -503,7 +520,9 @@ export default function (args = {}) {
     }
 
     // --- the plan
-    const comboRunning = () => !!pred && pred.combo.arg >= 2 && pred.combo.p >= 0.4 && pred.stage.arg >= 1 && pred.stage.arg <= 4;
+    const comboRunning = () => !pred ? false : comboV6
+        ? pred.combo.arg >= 2 && pred.combo.arg <= 7 && pred.combo.p >= 0.4 // chain continues: a next segment expected
+        : pred.combo.arg >= 2 && pred.combo.p >= 0.4 && pred.stage.arg >= 1 && pred.stage.arg <= 4;
     const comboDropped = () => !!pred && pred.combo.arg <= 1;
     /** @param {number} k @param {number} i */
     const futBin = (k, i) => pred?.fut[k]?.[i] ?? 0;
@@ -740,6 +759,7 @@ export default function (args = {}) {
             pressFrame(frameIdx);
             presses.parry++;
             it.pressedAt = lastParryAt;
+            if (it.src !== "insure") pressedSinceHit = true;
             mark("press", `parry${observe ? " sim" : ""} k${it.k} ${it.src} c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f ${it.why}`);
         } else if (it.kind === "dodge") {
             pressDodge(it.dir);
@@ -791,6 +811,28 @@ export default function (args = {}) {
                 continue;
             }
             if (it.kind === "potion" && plan.some((o) => o !== it && o.kind !== "potion" && !o.pressedAt && o.atMs <= now + POTION_YIELD_MS)) continue;
+            if (it.src === "insure") {
+                // v6 post-hit insurance (dufu.js arg posthit): fires at the stagger's end; blocked -> retry (until
+                // expiry); narrow -> skipped when the plan already has a pending item or a plan press since the hit
+                if (pressBlocked(it, now)) continue;
+                if (pressedSinceHit) {
+                    dropItem(it, "posthit: plan pressed");
+                    continue;
+                }
+                if (posthitNarrow && plan.some((o) => o !== it && o.src !== "insure" && !o.pressedAt)) {
+                    dropItem(it, "posthit: plan live");
+                    continue;
+                }
+                if (!observe) tap(parryP);
+                lastParryAt = Date.now();
+                pressFrame(frameIdx);
+                presses.parry++;
+                insurePresses++;
+                it.pressedAt = lastParryAt;
+                mark("press", `parry${observe ? " sim" : ""} posthit c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f`);
+                dropItem(it, "posthit done");
+                continue;
+            }
             const why = pressBlocked(it, now);
             if (why) {
                 blocked[why] = (blocked[why] ?? 0) + 1;
@@ -862,7 +904,7 @@ export default function (args = {}) {
         let s1 = 0;
         for (let i = 1; i <= s1Hi; i++) s1 += futBin(0, i);
         mark("pred", `S1 ${s1.toFixed(2)} bin ${st.mode}(${FUT_LABELS[st.mode] ?? "-"}) c1 +${st.sum > 0 ? Math.round(st.exp) : "-"}f ` +
-            `def1 ${DEF_LABELS[argmax(pred.def[0])]} tell ${pred.tell.label} combo ${pred.combo.label} ${pred.combo.p.toFixed(2)} stage ${pred.stage.label}`);
+            `def1 ${DEF_LABELS[argmax(pred.def[0])]} tell ${pred.tell.label} combo ${(comboV6 ? COMBO6_LABELS : COMBO_LABELS)[pred.combo.arg]} ${pred.combo.p.toFixed(2)} stage ${pred.stage.label}`);
     }
     let predMarkAt = 0;
 
@@ -871,31 +913,71 @@ export default function (args = {}) {
     function onHit(now, before, after) {
         hits++;
         lastHitAt = now;
+        pressedSinceHit = false;
         staggerUntil = Math.max(staggerUntil, now + staggerMs);
         const n = plan.length;
-        clearPlan("hit");
-        mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n} planned cancelled)`);
+        if (keepPlanOnHit) {
+            // v6: keep the unpressed items that still target a future contact; only stale/consumed ones go
+            /** @type {PlanItem[]} */
+            const keep = [];
+            for (const it of plan) {
+                if (!it.pressedAt && it.cMs > now + 2 * FRAME_MS) keep.push(it);
+                else mark("plan", `- ${it.kind} k${it.k} hit ${it.pressedAt ? "pressed" : "stale"}`);
+            }
+            plan = keep;
+            mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n - keep.length}/${n} dropped, ${keep.length} kept)`);
+        } else {
+            clearPlan("hit");
+            mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n} planned cancelled)`);
+        }
         mark("stagger", `${staggerMs} ms`);
+        if (posthit > 0) {
+            addItem({ kind: "parry", k: -1, src: "insure", cMs: now + staggerMs, atMs: now + staggerMs,
+                      untilMs: now + staggerMs + 30 * FRAME_MS, why: `posthit ${posthitNarrow ? "narrow" : "wide"}` });
+            if (posthit > 1) {
+                addItem({ kind: "parry", k: -1, src: "insure", cMs: now + staggerMs + 10 * FRAME_MS,
+                          atMs: now + staggerMs + 10 * FRAME_MS, untilMs: now + staggerMs + 40 * FRAME_MS, why: "posthit 2" });
+            }
+        }
         if (presched) comboPlan(now);
     }
     /**
      * v5 presched: pre-schedule the following combo segments from the frozen template gaps after a hit. Uses the
      * head output of the frame before the drop (the runtime sees the hit before it runs the head on the frame);
      * contact = drop - DROP_LAG frames. Items are committed at birth and own their k slot (@see syncK).
+     * v6 (comboV6): the gap-to-next-bin head gives the next segment's gap directly (prob-weighted mean over the
+     * bins 2..7); one item per hit, no template table.
      * @param {number} now
      */
     function comboPlan(now) {
-        if (!pred || pred.combo.arg < 2 || pred.combo.p < 0.4) return;
-        const g = COMBO_GAPS[pred.combo.arg - 2];
-        const st = pred.stage.arg;
-        if (!g || st < 2 || st > 4) return;
+        if (!pred) return;
         let kind = defAction(pred.def[0]);
         if (!kind || (kind === "avoid" && !inCurtain)) kind = "parry";
-        const idx = Math.min(st - 2, g.length - 1);
+        if (comboV6) {
+            const p = pred.combo.probs;
+            let pb = 0, g = 0;
+            for (let i = 2; i <= 7; i++) {
+                pb += p[i] ?? 0;
+                g += (p[i] ?? 0) * COMBO6_CENTER[i - 2];
+            }
+            if (pb < 0.4) return;
+            g /= pb;
+            const c = now - DROP_LAG * FRAME_MS + g * FRAME_MS;
+            if (c - now > PLAN_FRAMES_MAX * FRAME_MS || c - now < LATE_FRAMES * FRAME_MS) return;
+            for (const o of [...plan]) if (o.src === "fut" && o.k === 0 && !o.pressedAt) dropItem(o, "combo owns slot");
+            addItem({ kind, k: 0, src: "combo", cMs: c, atMs: c - issueLead, untilMs: c + missGraceMs, committed: true,
+                      why: `v6 gap ${g.toFixed(1)}f p${pb.toFixed(2)}` });
+            return;
+        }
+        if (pred.combo.arg < 2 || pred.combo.p < 0.4) return;
+        const gr = COMBO_GAPS[pred.combo.arg - 2];
+        const st = pred.stage.arg;
+        if (!gr || st < 2 || st > 4) return;
+        const idx = Math.min(st - 2, gr.length - 1);
         let c = now - DROP_LAG * FRAME_MS;
-        const n = Math.min(preschedN, g.length - idx);
+        const n = Math.min(preschedN, gr.length - idx);
         for (let i = 0; i < n; i++) {
-            c += g[idx + i] * FRAME_MS;
+            c += gr[idx + i] * FRAME_MS;
             if (c - now > PLAN_FRAMES_MAX * FRAME_MS || c - now < LATE_FRAMES * FRAME_MS) break;
             addItem({ kind, k: i, src: "combo", cMs: c, atMs: c - issueLead, untilMs: c + missGraceMs, committed: true, why: `template T${pred.combo.arg - 1} seg${st + i}` });
         }
@@ -1221,11 +1303,11 @@ export default function (args = {}) {
     const backS = stats(tMs.back), headS = stats(tMs.head), readS = stats(tMs.reads), loopS = stats(tMs.loop);
     const readyPct = headCalls ? Math.round((ready / headCalls) * 1000) / 10 : 0;
     log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, ` +
-        `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
+        `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
     return {
         reason, observe, looks, ready, headCalls, readyPct,
-        presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, holds, holdPresses,
+        presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, holds, holdPresses, insurePresses,
         ms: { back: backS, head: headS, reads: readS, loop: loopS },
         start, events,
     };
