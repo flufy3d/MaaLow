@@ -207,7 +207,7 @@ const FLARE_HOLD_F = 30, FLARE_HOLD_GAP_F = 6;
 //   sighting (it goes ~3.2 s later: 129 lost it): 轻击 every qiLightMs until qiExecAfter, 处决 when seen from then
 //   (late mark past qiExecMax), its scene QP_EXEC_SCENE_MS, 轻击 until 真气 is back (qiPostMs at most). Unpressed
 //   fut items are dropped every frame of the window (tell / combo / insure items stay). Taps go on contact
-//   offContact with a self-managed lift (never tap()'s contact 1 / upDue). Hot 蓄力 / weapon switch: not yet.
+//   offContact with a self-managed lift (never tap()'s contact 1 / upDue). Skills / 蓄力 in the window: qiSkill (part 2).
 // untilCleared: combat.js deadCheck's phase-one-cleared rule (阶段二 in the quest line twice in a row, or the boss
 //   bar full again after CLR_LOW_READS reads in its last 10%) ends the run with reason "cleared".
 const OFF_QUIET_TH = 0.10, OFF_QUIET_BINS = 8, OFF_QUIET_FRAMES = 3, OFF_STRONG_TH = 0.05, OFF_STRONG_BINS = 9;
@@ -223,6 +223,67 @@ const QUEST_WHITE = { lower: [0, 0, 190], upper: [180, 70, 255], method: 40 };
 /** @type {Box} */ const PHASE2_TOP = [222, 140, 12, 4]; // 二: >= 8 px
 /** @type {Box} */ const PHASE2_BOTTOM = [220, 147, 16, 4]; // >= 10 px
 /** @type {Box} */ const PHASE1_MID = [220, 144, 16, 3]; // 一: <= 2 px
+// v8 offense part 2 (offense_plan.md §2 hysteresis, §3 T1-T3, §4 distance; args all default OFF).
+// Gate hysteresis (offQuietOff / offMinOpenMs): live 303-320 shadow gates were 452 ms median, 8.6/min, ~all closed by
+//   m30. Offline (gate_hyst.py, 263-324, 62 rounds 216 min, a state machine like offGateWhy/offAbortNow): th 0.10
+//   alone 13.6 opens/min, median 400 ms, 1 s / 2 s clean after the open 0.976 / 0.874, an open frame 1 s clean 0.983;
+//   off 0.20 + min 500 ms: 10.3/min, median 867 ms, 0.976 / 0.880, open frame 0.977, contacts in the open 0.06/min
+//   (unchanged). Once open, only m30 > offQuietOff after offMinOpenMs closes it on m30 (the other offGateWhy terms and
+//   the offenseGuard aborts as before). {"offQuietOff":0.10,"offMinOpenMs":0} = the part-1 shadow gate.
+// Actions (contact offContact, self-managed lift): each needs the gate open AND its own horizon clear: no unpressed
+//   plan item within offNoCancelMs[a] + offAbortMs and fut1 mass over the contacts that would come before the action
+//   can be cut by a 卸势 (bins with lo < (offNoCancelMs[a] + issue lead) / 33 ms) below offQuietOff (offStrongTh for the
+//   strong ones). offNoCancelMs = how long after an action starts a 卸势 cannot cut it, from the E0 dummy test
+//   (data/tmp/dufu_breakthrough/e0/e0.md, 2026-10-16): 陌刀 轻击 / 横刀 突进 / 蓄力 (held or just let go) cut at any
+//   time (the 卸势 stance 2-4 f after the button flash) -> 0; 横刀 爆发 swallows 卸势 for its whole ~2.4 s; 伤害 cut
+//   from 300 ms (100 ms swallowed: still 爆发's tail) and any action inside 爆发's 2.4 s takes the rest of it as its
+//   own; 唤千军 cut until 600 ms, then the summon ~2 s is not (2000, conservative; a cut one does not cool down);
+//   switch / 燃此魂 untested (guesses). A 蓄力 finger held down restarts the 蓄力 after the 卸势, so every defense
+//   touch (tap / pressDodge) lets a held offContact go first (offYield).
+//   T1 offPoke: 轻击 every offLightMs, <= offLightMax per open / offBurstMs; offWhiffN 轻击 with no boss drop -> a
+//     OFF_WALK_MS forward step. T2 offSkill: 唤千军 (陌刀, strong), the 横刀 set (combat.js hengdaoPart: switch ->
+//     突进 -> 爆发 (strong) -> 突进 -> 伤害 -> back to 陌刀), each step gated alone; a step waiting > offSkillPauseMs for
+//     the gate gives the set up; 爆发 cools BURST_CD_MS. T3 offCharge: 热血难凉 (HOT_MS after 爆发), strong, 陌刀:
+//     蓄力 held offHotHoldMs; offenseGuard lets go (hit / tell / curtain / dodge / potion / a plan item within
+//     offAbortMs + offNoCancelMs.charge); nothing for OFF_SLASH_MS after letting go.
+//   qiSkill (qiPlan window): skills first, ordered by what fits the time left before 处决 (qiExecAfter) or, after it, the
+//     ~2 s of 衰弱 left (qiPostLeftMs; 323: 真气 back 1.9 s after the 处决 scene, combat.js 141: 2.1-2.3 s): hot 蓄力,
+//     cold 蓄力 (to red qiColdHoldMs), switch to 陌刀 for a hot one, 伤害, 爆发 (after 处决 only: it swallows taps),
+//     突进 / 燃此魂, 唤千军; 轻击 only as the filler. The 处决 tap lets any hold go first.
+// Distance (offApproach / qiApproach): the boss gold-mask box height (dist.py box_of, ROI 240,30,600,600) < offStrikeH
+//   -> a forward push first (<= offApproachMs / qiApproachMaxMs), then act (gate: still far -> no action). WARNING:
+//   on 323's recording the box is not a distance read: 26-56 px with the boss adjacent, 300-500 px on scenery / effects,
+//   15-98 px through the whole 衰弱 window where the boss stood in melee range (data/tmp/dufu_breakthrough/qi323/).
+const OFF_QUIET_OFF = 0.20, OFF_MIN_OPEN_MS = 500;
+const OFF_LIGHT_MS = 420, OFF_LIGHT_MAX = 4, OFF_BURST_MS = 1500, OFF_WHIFF_N = 6, OFF_WALK_MS = 300;
+const OFF_SKILL_PAUSE_MS = 2500, OFF_HOT_HOLD_MS = 1800, OFF_SLASH_MS = 500, OFF_EVAL_MS = 1200, OFF_SET_RETRY_MS = 5000;
+/** @type {Record<string, number>} */
+const OFF_NO_CANCEL_MS = { light: 0, buff: 2000, switch: 400, dash: 0, burst: 2400, strike: 300, ranshi: 800, charge: 0 };
+const OFF_ICON_EVERY = 250, OFF_ICON_TH = 0.7;
+const BURST_CD_MS = 20_000, HOT_MS = 13_000, BURST_TAP_MS = 350, BURST_TAPS = 4; // combat.js
+const DASH_GONE_MS = 600, DASH_AFTER_BURST_MS = 2000, DASH_BACK_MS = 3000, STRIKE_WAIT_MS = 3500, SWITCH_WAIT_MS = 1000, GLOW_MS = 200;
+/** @type {Record<string, number>} */ // press + animation (combat.js BUFF_COST_MS / SWITCH_COST_MS / WEAK_SWITCH_MS)
+const OFF_COST_MS = { light: 300, buff: 700, switch: 400, dash: 800, strike: 700, ranshi: 600, burst: 2400 };
+const QP_SLASH_MS = 600, QP_COLD_HOLD_MS = 2300, QP_POST_LEFT_MS = 2000;
+const OFF_STRIKE_H = 150, OFF_APPROACH_MS = 400, QP_APPROACH_MAX_MS = 600, OFF_DIST_EVERY = 250, OFF_DIST_MIN_PX = 40;
+/** @type {Box} */ const DIST_ROI = [240, 30, 600, 600];
+const BOSS_GOLD = { lower: [15, 90, 90], upper: [35, 255, 255], method: 40 };
+/** @type {Point} */ const CHARGE = [1020, 478]; // 陌刀 蓄力 (横刀: 重击)
+/** @type {Point} */ const DASH = [833, 593]; // 陌刀 突进 = 燃此魂; 横刀 突进 -> 伤害
+/** @type {Point} */ const BUFF = [825, 668]; // 陌刀 唤千军; 横刀 爆发
+/** @type {Point} */ const SWITCH = [993, 320];
+/** @type {Record<string, [string, Box]>} combat.js T */
+const OFF_T = {
+    modao: ["combat/modao_charge.png", [988, 446, 64, 68]],
+    hengdao: ["combat/hengdao_heavy.png", [988, 446, 64, 68]],
+    swirl: ["combat/hengdao_swirl.png", [988, 446, 64, 68]],
+    dash: ["combat/hengdao_dash.png", [801, 561, 64, 64]],
+    damage: ["combat/hengdao_damage.png", [801, 561, 64, 64]],
+    strike: ["combat/hengdao_strike.png", [801, 561, 64, 64]],
+    mdash: ["combat/modao_dash.png", [801, 561, 64, 64]],
+    burst: ["combat/hengdao_burst.png", [793, 635, 64, 64]],
+    buff: ["combat/modao_buff.png", [793, 635, 64, 64]],
+};
 
 // 重伤 (dead): the grey screen with both bars gone, or the 再次训练 panel (combat.js)
 /** @type {Box} */ const GREY_ROI = [100, 100, 880, 500];
@@ -263,7 +324,11 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   offComboVeto?: boolean, offGuardMs?: number, offAbortMs?: number, offAfterHitMs?: number, offAfterDodgeMs?: number,
  *   offAfterTellMs?: number, offHpMin?: number, offStrongTh?: number, offStrongBins?: number, offContact?: number,
  *   qiPlan?: boolean, qiExecAfter?: number, qiExecMax?: number, qiLightMs?: number, qiPostMs?: number,
- *   untilCleared?: boolean}} [args]
+ *   untilCleared?: boolean, offQuietOff?: number, offMinOpenMs?: number, offPoke?: boolean, offLightMs?: number,
+ *   offLightMax?: number, offBurstMs?: number, offWhiffN?: number, offSkill?: boolean, offSkillPauseMs?: number,
+ *   offCharge?: boolean, offHotHoldMs?: number, offNoCancelMs?: Record<string, number>, qiSkill?: boolean,
+ *   qiColdHoldMs?: number, qiPostLeftMs?: number, offApproach?: boolean, offStrikeH?: number, offApproachMs?: number,
+ *   qiApproach?: boolean, qiApproachMaxMs?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -276,7 +341,10 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   sweepPeriod); curtainKeepParry; flare2; failEscape; flareHoldFut (@see FLARE_HOLD_F).
  *   v8 offense (all default off, @see OFF_QUIET_TH / QP_EXEC_AFTER_MS / CLR_LOW_PX): offShadow (+ the off* gate
  *   parameters; logs only, no touches); qiPlan (qiExecAfter / qiExecMax / qiLightMs / qiPostMs; replaces qiAttack);
- *   untilCleared.
+ *   untilCleared. Part 2 (@see OFF_QUIET_OFF): offQuietOff / offMinOpenMs (gate hysteresis); offPoke (offLightMs /
+ *   offLightMax / offBurstMs / offWhiffN), offSkill (offSkillPauseMs), offCharge (offHotHoldMs), offNoCancelMs (per
+ *   action: light buff switch dash burst strike ranshi charge); qiSkill (qiColdHoldMs / qiPostLeftMs); offApproach
+ *   (offStrikeH / offApproachMs), qiApproach (qiApproachMaxMs).
  */
 export default function (args = {}) {
     const observe = args.observe ?? false;
@@ -377,7 +445,33 @@ export default function (args = {}) {
     const qiLightMs = args.qiLightMs ?? QP_LIGHT_MS;
     const qiPostMs = args.qiPostMs ?? QP_POST_MS;
     const untilCleared = args.untilCleared ?? false; // end with reason "cleared" at phase one's end (combat.js)
-    const offOn = offShadow || qiPlan || untilCleared;
+    // v8 offense part 2 (@see OFF_QUIET_OFF): all default off
+    const offQuietOff = args.offQuietOff ?? OFF_QUIET_OFF; // an open gate closes on m30 only above this ...
+    const offMinOpenMs = args.offMinOpenMs ?? OFF_MIN_OPEN_MS; // ... and only once it has been open this long
+    const offPoke = args.offPoke ?? false; // T1 轻击 in the gate
+    const offLightMs = args.offLightMs ?? OFF_LIGHT_MS;
+    const offLightMax = args.offLightMax ?? OFF_LIGHT_MAX;
+    const offBurstMs = args.offBurstMs ?? OFF_BURST_MS;
+    const offWhiffN = args.offWhiffN ?? OFF_WHIFF_N;
+    const offSkill = args.offSkill ?? false; // T2 唤千军 + the 横刀 set
+    const offSkillPauseMs = args.offSkillPauseMs ?? OFF_SKILL_PAUSE_MS;
+    const offCharge = args.offCharge ?? false; // T3 hot 蓄力 under 热血难凉
+    const offHotHoldMs = args.offHotHoldMs ?? OFF_HOT_HOLD_MS;
+    /** @type {Record<string, number>} */
+    const offNoCancel = { ...OFF_NO_CANCEL_MS, ...(args.offNoCancelMs ?? {}) };
+    const qiSkill = args.qiSkill ?? false; // qiPlan window: skills first, 轻击 as the filler
+    const qiColdHoldMs = args.qiColdHoldMs ?? QP_COLD_HOLD_MS;
+    const qiPostLeftMs = args.qiPostLeftMs ?? QP_POST_LEFT_MS;
+    const offApproach = args.offApproach ?? false; // gate actions: far (box height < offStrikeH) -> walk in first
+    const offStrikeH = args.offStrikeH ?? OFF_STRIKE_H;
+    const offApproachMs = args.offApproachMs ?? OFF_APPROACH_MS;
+    const qiApproach = args.qiApproach ?? false; // qiPlan window: walk in first when far
+    const qiApproachMaxMs = args.qiApproachMaxMs ?? QP_APPROACH_MAX_MS;
+    const offActOn = offPoke || offSkill || offCharge;
+    const offGate = offShadow || offActOn; // the quietGate is judged
+    const offIconsOn = offSkill || offCharge || (qiPlan && qiSkill);
+    const offDistOn = offApproach || (qiPlan && qiApproach);
+    const offOn = offShadow || qiPlan || untilCleared || offActOn;
 
     const start = Date.now();
     const until = start + untilMs;
@@ -427,6 +521,7 @@ export default function (args = {}) {
     const tup = (c) => (releaseFor(c), touch.up(c));
     /** Tap p (contact 1) for ms; the lift is deferred (fastTap). @param {Point} p @param {number} [ms] */
     function tap(p, ms = 50) {
+        offYield("tap");
         tdown(p, 1);
         upDue = { c: 1, at: Date.now() + ms };
     }
@@ -1049,6 +1144,7 @@ export default function (args = {}) {
             lastDodgeAt = Date.now();
             return;
         }
+        offYield("dodge");
         inDodge = true;
         walkOff();
         try {
@@ -1719,6 +1815,7 @@ export default function (args = {}) {
     /** v7 B closeIn: forward bursts while nothing is about to be pressed, so the boss stays in melee range. @param {number} now */
     function closeInWalk(now) {
         if (!closeIn || observe) return;
+        if (offWalking) return; // v8 offense: its own forward step (approach / whiff) owns the stick meanwhile
         if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || weakSince) {
             strideF(0);
             return;
@@ -1741,6 +1838,10 @@ export default function (args = {}) {
         touch.down(p, offContact);
         offUpAt = Date.now() + ms;
         offTouched = true;
+    }
+    /** A defense touch is coming: a held 蓄力 lets go first (E0: a finger still down restarts the 蓄力). @param {string} why */
+    function offYield(why) {
+        if (offHold) offRelease(Date.now(), `defense ${why}`, true);
     }
     /** Lift the offense finger when due (or now). */
     function offUp(force = false) {
@@ -1781,6 +1882,10 @@ export default function (args = {}) {
         const near = plan.find((it) => !it.pressedAt && it.atMs - now <= offGuardMs);
         if (near) return `plan(${near.kind} ${near.src})`;
         if (offComboVeto && comboRunning()) return "combo";
+        if (offOpenAt) { // part 2 hysteresis: an open gate shuts on m30 only above offQuietOff, after offMinOpenMs
+            if (offM30 > offQuietOff && now - offOpenAt >= offMinOpenMs) return "m30";
+            return "";
+        }
         if (offM30 >= offQuietTh) return "m30";
         const need = offOkFast && now - lastOkAt < OFF_OK_FAST_MS ? 1 : offQuietFrames;
         if (offRun < need) return "quiet-run";
@@ -1823,7 +1928,11 @@ export default function (args = {}) {
             else offS.inOpenOk++;
             mark("off", `contact ${kind} in the open gate +${t - offOpenAt} ms`);
         };
-        if (lastHitAt > offHitSeen) one((offHitSeen = lastHitAt), "hit");
+        if (lastHitAt > offHitSeen) {
+            one((offHitSeen = lastHitAt), "hit");
+            offHitTs.push(lastHitAt);
+            if (offHitTs.length > 64) offHitTs.shift();
+        }
         if (lastOkAt > offOkSeen) one((offOkSeen = lastOkAt), "ok");
     }
     /** Per frame, before executePlan: lifts, contact bookkeeping, the qiPlan fut filter, the shadow aborts. @param {number} now */
@@ -1838,24 +1947,34 @@ export default function (args = {}) {
                 }
             }
         }
-        if (!offShadow) return;
         offContacts();
-        if (!offOpenAt) return;
+        if (offHold) { // part 2: a held 蓄力 lets go on the guard's rules
+            const hw = offHoldAbort(now);
+            if (hw) offRelease(now, hw, true);
+        }
+        if (!offGate || !offOpenAt) return;
         const why = offAbortNow(now);
-        if (why) offClose(now, why, true);
+        if (why) {
+            offClose(now, why, true);
+            if (offWalking && offWalkWhy !== "qi approach") offWalkStop(`abort ${why}`);
+            if (hd && !hd.tapAt) offStopWhy[`set wait:${why.replace(/\(.*$/, "")}`] = (offStopWhy[`set wait:${why.replace(/\(.*$/, "")}`] ?? 0) + 1;
+        }
     }
     /** Per frame, after expire: the gate (shadow) and the qiPlan window. @param {number} now */
     function offenseTick(now) {
         offUp();
-        if (qiPlan) qpTick(now);
-        if (!offShadow || !pred) return;
-        if (ready !== offRunReady) { // a new head output: the run counts head frames
+        if (pred && ready !== offRunReady) { // a new head output: the run counts head frames
             offRunReady = ready;
             offM30 = offMass(offQuietBins);
             offM40 = offMass(offStrongBins);
             offRun = offM30 < offQuietTh ? offRun + 1 : 0;
             if (pred.tell.arg !== 0 && pred.tell.p >= tellTh) offTellAt = now;
         }
+        if (offHold && now >= offHold.until) offRelease(now, "time", false);
+        offWalkTick(now);
+        offEvalTick(now);
+        if (qiPlan) qpTick(now);
+        if (!offGate || !pred) return;
         const dt = offTickAt ? Math.min(200, now - offTickAt) : 0;
         offTickAt = now;
         const why = offGateWhy(now);
@@ -1869,7 +1988,14 @@ export default function (args = {}) {
             offS.opens++;
             offStarts.push(now);
             mark("off", `open ${offState()} run ${offRun}${now - lastOkAt < OFF_OK_FAST_MS ? " (ok fast)" : ""}${offM40 < offStrongTh ? " strong" : ""}`);
-        } else if (why && offOpenAt) offClose(now, why, false);
+            offOpenLights = 0;
+            offOpenFirstLight = 0;
+            offOpenWalked = false;
+        } else if (why && offOpenAt) {
+            offClose(now, why, false);
+            if (offWalking && offWalkWhy !== "qi approach") offWalkStop(`gate ${why}`);
+        }
+        if (offActOn && !qp.shown) offActTick(now);
     }
     /** The shadow's return stats (rates per fight minute; the clean-after-open shares over opens >= 2 s old). */
     function offSummary() {
@@ -1894,18 +2020,418 @@ export default function (args = {}) {
         };
     }
 
+    // --- part 2: the actions (offPoke / offSkill / offCharge in the gate; qiSkill in the qiPlan window)
+    /** @param {Record<string, number>} o @param {string} k @param {number} [d] */
+    const inc = (o, k, d = 1) => { o[k] = (o[k] ?? 0) + d; };
+    /** @type {{a: string, src: string, t: number, b0: number, done: boolean}[]} */
+    const offRecs = [];
+    /** @type {{n: Record<string, number>, hit1s: Record<string, number>, dropPx: Record<string, number>, dropN: Record<string, number>}} */
+    const offActS = { n: {}, hit1s: {}, dropPx: {}, dropN: {} };
+    /** @type {Record<string, number>} */ const offStopWhy = {}; // 收手: why an action / a set / a step stopped early
+    /** @type {{started: number, done: number, bursts: number, abandoned: Record<string, number>}} */
+    const offSetS = { started: 0, done: 0, bursts: 0, abandoned: {} };
+    const offHoldS = { n: 0, full: 0, early: 0, heldMs: /** @type {number[]} */ ([]) };
+    const offWalkS = { n: 0, ms: 0, far: 0, whiffs: 0 };
+    /** @type {number[]} */ const offHitTs = [];
+    let offBusyUntil = 0, offLastLight = 0, offOpenLights = 0, offOpenFirstLight = 0, offOpenWalked = false;
+    let offWhiff = 0, burstAt = 0, offSetRetryAt = 0;
+    let offWalking = false, offWalkUntil = 0, offWalkAt = 0, offWalkWhy = "";
+    /** @type {{a: string, src: string, startAt: number, until: number} | null} */
+    let offHold = null;
+    /** @type {{step: string, stepAt: number, readyAt: number, tapAt: number, tries: number, gone: boolean, goneAt: number} | null} */
+    let hd = null;
+    /** @type {string | null} */ let offW = null; // the weapon (4 Hz read while offIconsOn)
+    let offBuffSeen = false, offH = -1; // 唤千军 lit (4 Hz); the boss box height (-1 = no read)
+
+    /** A combat.js template on this frame. @param {string} k */
+    const offSeen = (k) => perFrame(`t:${k}`, (im) => match(OFF_T[k][0], { image: im, roi: OFF_T[k][1], threshold: OFF_ICON_TH }).hit);
+    /** combat.js weapon(): 陌刀 / 横刀 by the 蓄力 / 重击 button, else by 突进's icon (衰弱 turns 横刀's 重击 into a swirl). */
+    function offWeaponNow() {
+        if (offSeen("modao")) return "modao";
+        if (offSeen("hengdao")) return "hengdao";
+        return offSeen("mdash") ? "modao" : offSeen("swirl") || offSeen("dash") || offSeen("strike") || offSeen("damage") ? "hengdao" : null;
+    }
+    /** slowQueue (4 Hz): the weapon and 唤千军's button. */
+    function offIconsRead() {
+        offW = offWeaponNow();
+        offBuffSeen = offW === "modao" && offSkill ? offSeen("buff") : false;
+    }
+    /** The boss gold-mask box height (dist.py box_of on the device: no morphology, nearby parts merged), -1 = none. */
+    function offBossH() {
+        const r = color({ ...BOSS_GOLD, image: img, roi: DIST_ROI, count: 20, connected: true });
+        if (!r.hit || !r.results.length) return -1;
+        const comps = r.results.map((m) => ({ b: m.box, n: m.count ?? 0 })).sort((p, q) => q.n - p.n);
+        if (comps[0].n < OFF_DIST_MIN_PX) return -1;
+        let [x0, y0, w0, h0] = comps[0].b;
+        let x1 = x0 + w0, y1 = y0 + h0;
+        for (const c of comps.slice(1)) {
+            const [X, Y, W, H] = c.b;
+            if (X < x1 + 15 && X + W > x0 - 15 && Y < y1 + 15 && Y + H > y0 - 15) {
+                x0 = Math.min(x0, X);
+                y0 = Math.min(y0, Y);
+                x1 = Math.max(x1, X + W);
+                y1 = Math.max(y1, Y + H);
+            }
+        }
+        return y1 - y0;
+    }
+    /** slowQueue (4 Hz) / per frame while walking in. */
+    const offDistRead = () => { offH = perFrame("bossH", () => offBossH()); };
+    /** fut1 mass of the contacts that would come before an action of noCancel ms can be cut. @param {number} ms */
+    function offHorizon(ms) {
+        const f = (ms + issueLead) / FRAME_MS;
+        let s = 0;
+        for (let i = 0; i < 10; i++) if (FUT_LO[i] < f) s += futBin(0, i);
+        return s;
+    }
+    /** The gate is open for action a now (strong: m40 too). @param {string} a @param {boolean} strong */
+    function offCan(a, strong) {
+        const now = Date.now();
+        if (!offOpenAt || offHold || offWalking || now < offBusyUntil || bossNow <= 50) return false;
+        if (strong && offM40 >= offStrongTh) return false;
+        // 爆发 swallows 卸势 for offNoCancel.burst: an action inside it is stuck until it is over (E0: 伤害 at +1.9 s)
+        const nc = Math.max(offNoCancel[a] ?? 0, burstAt > 0 ? burstAt + (offNoCancel.burst ?? 0) - now : 0);
+        if (offHorizon(nc) >= (strong ? offStrongTh : Math.max(offQuietTh, offQuietOff))) return false;
+        return !plan.some((it) => !it.pressedAt && it.atMs - now <= nc + offAbortMs);
+    }
+    /** Do action a (a tap of ms on p, or the hold's down) and log it. @param {string} a @param {string} src @param {Point} p @param {number} [ms] */
+    function offAct(a, src, p, ms = OFF_TAP_MS) {
+        offDown(p, ms);
+        inc(offActS.n, a);
+        offRecs.push({ a, src, t: Date.now(), b0: bossNow, done: false });
+        mark("off", `act ${a} ${src}${observe ? " sim" : ""} ${offState()} boss ${bossNow}${offDistOn ? ` h ${offH}` : ""}`);
+    }
+    /** @param {string} a @param {string} src @param {number} ms */
+    function offStartCharge(a, src, ms) {
+        offAct(a, src, CHARGE, ms);
+        const now = Date.now();
+        offHold = { a, src, startAt: now, until: now + ms };
+        offHoldS.n++;
+    }
+    /** The guard's rules for a held 蓄力 ("" = hold on). @param {number} now */
+    function offHoldAbort(now) {
+        if (!offHold) return "";
+        const qi = offHold.src === "qi";
+        if (lastHitAt > offHold.startAt) return "hit";
+        if (inCurtain) return "curtain";
+        if (inDodge) return "dodge";
+        if (now < potionHoldUntil) return "potion";
+        const t = pred?.tell;
+        if (!qi && t && t.arg !== 0 && t.p >= tellTh) return `tell(${t.label})`;
+        const lim = offAbortMs + (offNoCancel.charge ?? 0);
+        const near = plan.find((it) => !it.pressedAt && it.atMs - now <= lim && !(qi && it.src === "fut"));
+        return near ? `plan(${near.kind} ${near.src})` : "";
+    }
+    /** @param {number} now @param {string} why @param {boolean} early */
+    function offRelease(now, why, early) {
+        if (!offHold) return;
+        offUp(true);
+        const held = now - offHold.startAt;
+        offHoldS.heldMs.push(held);
+        if (early) {
+            offHoldS.early++;
+            inc(offStopWhy, `${offHold.a}:${why.replace(/\(.*$/, "")}`);
+        } else offHoldS.full++;
+        mark("off", `release ${offHold.a} ${offHold.src} (${why}) after ${held} ms`);
+        offHold = null;
+        offBusyUntil = Math.max(offBusyUntil, now + OFF_SLASH_MS); // the slash comes out meanwhile
+    }
+    /** A forward push of ms (contact 0; never in curtain / with the side stick on). @param {number} now @param {number} ms @param {string} why */
+    function offWalk(now, ms, why) {
+        if (inCurtain || stickSide !== 0 || inDodge) return false;
+        strideF(1);
+        offWalking = true;
+        offWalkAt = now;
+        offWalkUntil = now + ms;
+        offWalkWhy = why;
+        offWalkS.n++;
+        mark("off", `walk ${why} ${ms} ms${offDistOn ? ` h ${offH}` : ""}${observe ? " sim" : ""}`);
+        return true;
+    }
+    /** @param {string} why */
+    function offWalkStop(why) {
+        if (!offWalking) return;
+        const now = Date.now();
+        strideF(0);
+        offWalking = false;
+        offWalkS.ms += now - offWalkAt;
+        mark("off", `walk over (${why}) after ${now - offWalkAt} ms${offDistOn ? ` h ${offH}` : ""}`);
+        if (why !== "time" && why !== "near") inc(offStopWhy, `walk:${why.replace(/\(.*$/, "")}`);
+    }
+    /** @param {number} now */
+    function offWalkTick(now) {
+        if (!offWalking) return;
+        if (offDistOn) offDistRead();
+        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil) offWalkStop("defense");
+        else if (offDistOn && offH >= offStrikeH) offWalkStop("near");
+        else if (now >= offWalkUntil) offWalkStop("time");
+    }
+    /** Each action's 1.2 s result: the boss px it took, a hit within 1 s; 轻击 whiffs walk in. @param {number} now */
+    function offEvalTick(now) {
+        for (const r of offRecs) {
+            if (r.done || now - r.t < OFF_EVAL_MS) continue;
+            r.done = true;
+            const hit = offHitTs.some((t) => t > r.t && t <= r.t + 1000);
+            if (hit) inc(offActS.hit1s, r.a);
+            const drop = r.b0 > 50 && bossNow > 50 ? r.b0 - bossNow : null;
+            if (drop != null) {
+                inc(offActS.dropPx, r.a, drop);
+                inc(offActS.dropN, r.a);
+            }
+            mark("off", `result ${r.a} ${r.src}: boss ${r.b0} -> ${bossNow}${drop != null ? ` (${drop} px)` : ""}${hit ? ", hit within 1 s" : ""}`);
+            if (r.a === "light" && r.src === "gate" && drop != null) {
+                offWhiff = drop > 0 ? 0 : offWhiff + 1;
+                if (offWhiff >= offWhiffN) {
+                    offWhiff = 0;
+                    offWalkS.whiffs++;
+                    if (offOpenAt && !offHold && !offWalking) offWalk(now, OFF_WALK_MS, `${offWhiffN} 轻击 whiffed`);
+                }
+            }
+        }
+        while (offRecs.length && offRecs[0].done) offRecs.shift();
+    }
+    const burstReady = (/** @type {number} */ now) => !burstAt || now - burstAt >= BURST_CD_MS;
+    /** @param {number} now @param {string} why ("" = done) */
+    function hdEnd(now, why) {
+        if (!hd) return;
+        if (why) {
+            inc(offSetS.abandoned, why.replace(/\(.*$/, ""));
+            inc(offStopWhy, `set:${why.replace(/ at .*$/, "")}`);
+            offSetRetryAt = now + OFF_SET_RETRY_MS;
+        } else offSetS.done++;
+        mark("off", `横刀 set ${why ? `given up (${why})` : "done"} at ${hd.step}`);
+        hd = null;
+    }
+    /** @param {string} step @param {number} now */
+    function hdNext(step, now) {
+        if (!hd) return;
+        Object.assign(hd, { step, stepAt: now, readyAt: 0, tapAt: 0, tries: 0, gone: false, goneAt: 0 });
+    }
+    /** Ready but no gate: give the set up after offSkillPauseMs. @param {number} now */
+    function hdWait(now) {
+        if (!hd) return;
+        if (!hd.readyAt) hd.readyAt = now;
+        else if (now - hd.readyAt > offSkillPauseMs) hdEnd(now, `pause at ${hd.step}`);
+    }
+    /** @param {string} a @param {Point} p @param {number} now */
+    function hdTap(a, p, now) {
+        if (!hd) return;
+        offAct(a, "set", p);
+        hd.tapAt = now;
+        hd.tries++;
+        hd.readyAt = 0;
+    }
+    /** The 横刀 set (combat.js hengdaoPart), one step per frame, each tap gated alone. @param {number} now */
+    function hdTick(now) {
+        if (!hd) return;
+        const s = hd;
+        if (s.step === "switch" || s.step === "back") {
+            const want = s.step === "switch" ? "hengdao" : "modao";
+            const w = offWeaponNow();
+            if (w === want) {
+                offW = w;
+                if (s.step === "switch") hdNext("dash1", now);
+                else hdEnd(now, "");
+                return;
+            }
+            if (s.tapAt && now - s.tapAt < SWITCH_WAIT_MS) return;
+            if (s.tries >= 2) return hdEnd(now, `${s.step} failed`);
+            if (offCan("switch", false)) hdTap("switch", SWITCH, now);
+            else hdWait(now);
+            return;
+        }
+        if (s.step === "dash1" || s.step === "dash2") {
+            if (s.tapAt) {
+                if (!offSeen("dash")) s.gone = true;
+                if (now - s.tapAt >= DASH_GONE_MS) {
+                    if (!s.gone) mark("off", `${s.step}: 突进's icon never went`);
+                    hdNext(s.step === "dash1" ? "burst" : "strike", now);
+                }
+                return;
+            }
+            if (s.step === "dash1" && !offSeen("dash")) return hdNext("burst", now); // no charge: 爆发 at once
+            if (s.step === "dash2") {
+                if (offSeen("strike")) return hdNext("strike", now);
+                if (now - burstAt > DASH_AFTER_BURST_MS + DASH_BACK_MS) {
+                    mark("off", "突进: no second charge in sight");
+                    return hdNext("back", now);
+                }
+                if (now - burstAt < DASH_AFTER_BURST_MS || !offSeen("dash")) return; // 爆发 still plays / no icon yet
+            }
+            if (offCan("dash", false)) hdTap("dash", DASH, now);
+            else hdWait(now);
+            return;
+        }
+        if (s.step === "burst") {
+            if (s.tapAt) {
+                if (!offSeen("burst")) {
+                    if (!s.goneAt) s.goneAt = now;
+                    else if (now - s.goneAt >= GLOW_MS) { // its button gone (cooling): 爆发 is out
+                        burstAt = s.tapAt;
+                        offSetS.bursts++;
+                        mark("off", `爆发 out after ${s.tries} tap(s)`);
+                        return hdNext("dash2", now);
+                    }
+                    return;
+                }
+                s.goneAt = 0;
+                if (now - s.tapAt < BURST_TAP_MS) return;
+                if (s.tries >= BURST_TAPS) return hdEnd(now, "爆发 not out");
+            } else if (!offSeen("burst")) {
+                if (now - s.stepAt > offSkillPauseMs) hdEnd(now, "no 爆发 icon");
+                return;
+            }
+            if (offCan("burst", true)) hdTap("burst", BUFF, now);
+            else hdWait(now);
+            return;
+        }
+        if (s.step === "strike") {
+            if (s.tapAt) {
+                if (!offSeen("strike")) s.gone = true;
+                if (now - s.tapAt >= OFF_COST_MS.strike) {
+                    if (!s.gone && s.tries < 2) {
+                        s.tapAt = 0; // the arrow still there: once more
+                        return;
+                    }
+                    hdNext("back", now);
+                }
+                return;
+            }
+            if (!offSeen("strike")) {
+                if (now - s.stepAt > STRIKE_WAIT_MS) {
+                    mark("off", "伤害: never showed");
+                    hdNext("back", now);
+                }
+                return;
+            }
+            if (offCan("strike", false)) hdTap("strike", DASH, now);
+            else hdWait(now);
+        }
+    }
+    /** Per frame (gate actions, not in a qiPlan window): the set, a hold, a walk, else the best action that fits. @param {number} now */
+    function offActTick(now) {
+        if (hd) hdTick(now);
+        if (offHold || offWalking || hd || now < offBusyUntil || !offOpenAt) return;
+        const hot = burstAt > 0 && now - burstAt < HOT_MS;
+        const w = offW;
+        /** @type {{a: string, p: Point, strong: boolean, melee: boolean} | null} */
+        let pick = null;
+        /** @param {string} a @param {Point} p @param {boolean} strong @param {boolean} melee */
+        const want = (a, p, strong, melee) => {
+            if (!pick && offCan(a, strong)) pick = { a, p, strong, melee };
+        };
+        if (offCharge && w === "modao" && hot) want("charge", CHARGE, true, true);
+        if (offSkill && w === "modao" && offBuffSeen) want("buff", BUFF, true, false);
+        if (!pick && offSkill && w && burstReady(now) && now >= offSetRetryAt) {
+            const first = w === "hengdao" ? "dash1" : "switch";
+            if (offCan(first === "switch" ? "switch" : "dash", false)) {
+                hd = { step: first, stepAt: now, readyAt: 0, tapAt: 0, tries: 0, gone: false, goneAt: 0 };
+                offSetS.started++;
+                mark("off", `横刀 set start (${w}) ${offState()}`);
+                hdTick(now);
+                return;
+            }
+        }
+        if (offSkill && w === "hengdao") want("switch", SWITCH, false, false); // back to 陌刀 (a set given up)
+        const lightOk = offPoke && now - offLastLight >= offLightMs && offOpenLights < offLightMax
+            && (!offOpenFirstLight || now - offOpenFirstLight <= offBurstMs);
+        if (lightOk) want("light", LIGHT, false, true);
+        const p = /** @type {{a: string, p: Point, strong: boolean, melee: boolean} | null} */ (pick);
+        if (!p) return;
+        if (offApproach && p.melee) { // too far: one forward push per open, then act only when near
+            offDistRead();
+            if (offH >= 0 && offH < offStrikeH) {
+                if (!offOpenWalked) {
+                    offOpenWalked = true;
+                    offWalk(now, offApproachMs, "approach");
+                } else offWalkS.far++;
+                return;
+            }
+        }
+        if (p.a === "charge") return offStartCharge("charge", "gate", offHotHoldMs);
+        offAct(p.a, "gate", p.p);
+        if (p.a === "light") {
+            offLastLight = now;
+            offOpenLights++;
+            if (!offOpenFirstLight) offOpenFirstLight = now;
+        } else offBusyUntil = now + (p.a === "switch" ? SWITCH_WAIT_MS : OFF_COST_MS[p.a] ?? 0);
+    }
+    /** The return stats of the actions. */
+    function offActSummary() {
+        const sorted = [...offHoldS.heldMs].sort((a, b) => a - b);
+        return {
+            n: offActS.n, hit1s: offActS.hit1s, dropPx: offActS.dropPx, dropN: offActS.dropN, stops: offStopWhy,
+            sets: offSetS, holds: { n: offHoldS.n, full: offHoldS.full, early: offHoldS.early, heldMsMedian: sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0 },
+            walks: offWalkS,
+        };
+    }
+
     // --- qiPlan: the 气竭 window v2, clocked from the 处决 button's first sighting
-    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0 };
+    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, approached: false, walkAt: 0, h0: -1 };
     const qpS = { windows: 0, fakes: 0, execs: 0, lost: 0, lights: 0, postLights: 0, futDrops: 0 };
     /** @type {number[]} */ const qpShownToTap = [];
     /** @type {number[]} */ const qpBossDrop = [];
+    /** @type {{ms: number, h0: number, h1: number}[]} */ const qpApproach = [];
+    /** @type {Record<string, number>} */ const qpSkills = {};
+    /**
+     * qiSkill: the best skill that fits the time left (before 处决: until qiExecAfter, the slash out first; after: the
+     * ~qiPostLeftMs of 衰弱 after the 处决 scene), or null. @param {number} now @param {boolean} post
+     * @returns {{a: string, p: Point, hold: number} | null}
+     */
+    function qpPick(now, post) {
+        const left = post ? qp.tapAt + QP_EXEC_SCENE_MS + qiPostLeftMs - now : qiExecAfter - (now - qp.shown);
+        if (left <= 0) return null;
+        const w = offWeaponNow();
+        const hot = burstAt > 0 && now - burstAt < HOT_MS;
+        const slash = post ? 0 : QP_SLASH_MS;
+        if (w === "modao") {
+            if (hot && left >= offHotHoldMs + slash) return { a: "charge", p: CHARGE, hold: offHotHoldMs };
+            if (!hot && left >= qiColdHoldMs + slash) return { a: "coldCharge", p: CHARGE, hold: qiColdHoldMs };
+            if (offSeen("mdash") && left >= OFF_COST_MS.ranshi) return { a: "ranshi", p: DASH, hold: 0 }; // 燃此魂
+            if (offSeen("buff") && left >= OFF_COST_MS.buff) return { a: "buff", p: BUFF, hold: 0 }; // 唤千军
+        } else if (w === "hengdao") {
+            if (hot && left >= OFF_COST_MS.switch + offHotHoldMs + slash) return { a: "switch", p: SWITCH, hold: 0 };
+            if (offSeen("strike") && left >= OFF_COST_MS.strike) return { a: "strike", p: DASH, hold: 0 }; // 伤害
+            // 爆发 swallows 卸势 ~2.4 s (E0): only after 处决 and only with that much 衰弱 left (by default 2000 < 2400: never)
+            if (post && offSeen("burst") && left >= (offNoCancel.burst ?? 0)) return { a: "burst", p: BUFF, hold: 0 };
+            if (offSeen("dash") && left >= OFF_COST_MS.dash) return { a: "dash", p: DASH, hold: 0 };
+        }
+        return null;
+    }
     /** @param {number} now @param {boolean} post */
     function qpLight(now, post) {
-        if (now - qp.lastLight < qiLightMs) return;
+        if (offHold || offWalking || now < offBusyUntil) return;
         if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil) return;
         if (plan.some((x) => !x.pressedAt && x.atMs - now < QP_PENDING_MS)) return; // a tell dodge is about to go
+        if (qiApproach && !qp.approached) { // walk in first when the box says far (qiApproachMaxMs at most)
+            qp.approached = true;
+            offDistRead();
+            qp.h0 = offH;
+            if (offH >= 0 && offH < offStrikeH && offWalk(now, qiApproachMaxMs, "qi approach")) {
+                qp.walkAt = now;
+                return;
+            }
+        }
+        if (qp.walkAt) { // the walk-in just ended
+            qpApproach.push({ ms: now - qp.walkAt, h0: qp.h0, h1: offH });
+            mark("qi", `qiPlan approach ${now - qp.walkAt} ms, box ${qp.h0} -> ${offH} px`);
+            qp.walkAt = 0;
+        }
+        if (qiSkill) {
+            const c = qpPick(now, post);
+            if (c) {
+                inc(qpSkills, c.a);
+                mark("qi", `qiPlan ${c.a}${post ? " (after 处决)" : ""} +${now - qp.shown} ms`);
+                if (c.hold) return offStartCharge(c.a, "qi", c.hold);
+                offAct(c.a, "qi", c.p);
+                if (c.a === "burst") burstAt = now; // (not verified in the window: its taps may be swallowed)
+                offBusyUntil = now + (OFF_COST_MS[c.a] ?? 0);
+                return;
+            }
+        }
+        if (now - qp.lastLight < qiLightMs) return;
         qp.lastLight = now;
-        offDown(LIGHT, OFF_TAP_MS);
+        offAct("light", "qi", LIGHT);
         if (post) qp.post++;
         else qp.lights++;
         mark("qi", `qiPlan 轻击${observe ? " sim" : ""}${post ? " (after 处决)" : ""} +${now - qp.shown} ms`);
@@ -1920,8 +2446,11 @@ export default function (args = {}) {
         if (!qp.tapAt) qpS.lost++;
         mark("qi", `qiPlan window over (${why}) after ${now - qp.shown} ms: ${qp.lights} + ${qp.post} 轻击, 处决 ` +
             `${qp.tapAt ? `at ${qp.tapAt - qp.shown} ms` : "not tapped"}, boss ${qp.boss0} -> ${bossNow} px, ${qp.futDrops} fut items dropped`);
+        if (offHold && offHold.src === "qi") offRelease(now, "window over", true);
+        if (offWalking && offWalkWhy === "qi approach") offWalkStop("window over");
+        if (qp.walkAt) qpApproach.push({ ms: now - qp.walkAt, h0: qp.h0, h1: offH });
         weakSince = 0;
-        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0 });
+        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, approached: false, walkAt: 0, h0: -1 });
     }
     /** @param {number} now */
     function qpTick(now) {
@@ -1965,7 +2494,9 @@ export default function (args = {}) {
                 qp.tapAt = now;
                 qpS.execs++;
                 qpShownToTap.push(now - qp.shown);
-                offDown(EXECUTE, QP_EXEC_TAP_MS);
+                if (offHold) offRelease(now, "处决", true); // (qpPick lets go before; a slip lets go here)
+                if (offWalking) offWalkStop("处决");
+                offAct("execute", "qi", EXECUTE, QP_EXEC_TAP_MS);
                 pressFrame(frameIdx);
                 mark("qi", `qiPlan 处决 tap${observe ? " sim" : ""} ${now - qp.shown} ms after it showed${now - qp.shown > qiExecMax ? " (late)" : ""}`);
                 return;
@@ -2048,6 +2579,8 @@ export default function (args = {}) {
         { name: "potion", every: slowEvery, at: 0, active: () => maxPotions > 0 && potionsUsed < maxPotions && hpNow != null && hpNow <= potionHp, run: slowPotion },
         { name: "closein", every: 100, at: 0, active: () => closeIn, run: closeInWalk },
         { name: "weak", every: 100, at: 0, active: () => qiAttack && !qiPlan, run: slowWeak }, // v8 offense: qiPlan replaces it
+        { name: "officons", every: OFF_ICON_EVERY, at: 0, active: () => offIconsOn && !hd && !qp.shown, run: offIconsRead }, // v8 offense part 2
+        { name: "dist", every: OFF_DIST_EVERY, at: 0, active: () => offDistOn && !offWalking, run: offDistRead },
     ];
 
     /** The newest stream frame: img's if that is it, else a screenshot of it; a still screen waits NEXT_MS. */
@@ -2145,6 +2678,7 @@ export default function (args = {}) {
             releaseDue(true);
             tup(0);
             if (offTouched) touch.up(offContact); // v8 offense
+            if (offWalking) strideF(0);
         }
     }
     const backS = stats(tMs.back), headS = stats(tMs.head), readS = stats(tMs.reads), loopS = stats(tMs.loop);
@@ -2159,8 +2693,10 @@ export default function (args = {}) {
     // v8 offense: only when one of its switches is on (the default return is unchanged)
     if (qiPlan && qp.shown) qpEnd(Date.now(), "run over");
     const off = offOn ? {
-        ...(offShadow ? { gate: offSummary() } : {}),
-        ...(qiPlan ? { qi: { ...qpS, execShownToTapMs: qpShownToTap, bossDropPx: qpBossDrop } } : {}),
+        ...(offGate ? { gate: offSummary() } : {}),
+        ...(qiPlan ? { qi: { ...qpS, execShownToTapMs: qpShownToTap, bossDropPx: qpBossDrop, ...(qiSkill ? { skills: qpSkills } : {}),
+            ...(qiApproach ? { approach: qpApproach } : {}) } } : {}),
+        ...(offActOn || qiPlan ? { act: offActSummary() } : {}),
         ...(untilCleared ? { bossLeftPx: clrBossPx, bossLast: clrLast } : {}),
     } : undefined;
     if (off) log(`off: ${JSON.stringify(off)}`);
