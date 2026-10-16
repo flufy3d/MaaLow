@@ -317,7 +317,7 @@ const OFF_ICON_EVERY = 250, OFF_ICON_TH = 0.7;
 const BURST_CD_MS = 20_000, HOT_MS = 13_000, BURST_TAP_MS = 350, BURST_TAPS = 4; // combat.js
 const DASH_GONE_MS = 600, DASH_AFTER_BURST_MS = 2000, DASH_BACK_MS = 3000, STRIKE_WAIT_MS = 3500, SWITCH_WAIT_MS = 1000, GLOW_MS = 200;
 /** @type {Record<string, number>} */ // press + animation (combat.js BUFF_COST_MS / SWITCH_COST_MS / WEAK_SWITCH_MS)
-const OFF_COST_MS = { light: 300, buff: 700, switch: 400, dash: 800, strike: 700, ranshi: 600, burst: 2400 };
+const OFF_COST_MS = { light: 300, buff: 700, switch: 400, dash: 800, strike: 700, ranshi: 600, burst: 2400, follow: 900 };
 const QP_SLASH_MS = 600, QP_COLD_HOLD_MS = 2300, QP_POST_LEFT_MS = 2000;
 const OFF_STRIKE_H = 150, OFF_APPROACH_MS = 400, QP_APPROACH_MAX_MS = 600, OFF_DIST_EVERY = 250, OFF_DIST_MIN_PX = 40;
 // v8 offense part 3 (data/tmp/dufu_breakthrough/damage.md §3-§5; args all default OFF).
@@ -374,6 +374,29 @@ const OFF_CHARGE_FREE = 0;
 // oursTellTh: within oursTellMs of our own offense press a 金光 tell dodge needs tell p >= it (v8 false 金光 while we
 //   attack: 6.4/min offline); below it the episode waits (the fut 卸势 stays).
 const LAND_TH = 0, OURS_TELL_MS = 500;
+// v8 offense part 6 (teacher 2026-10-17, data/tmp/dufu_breakthrough/skills3.md; args default OFF).
+// offQishu: 奇术 (箫吟千浪, QISHU on both weapons; lit = qishu_ready + white strokes, combat.js qishuLit). README:
+//   a 卸势 cuts it only after ~2 s (qishuNoCancelMs; 1.5 s did worse, rounds 38-41), full ~7 s 66K on the dummy;
+//   its hits keep landing after the cut (dummy q_cut 2026-10-12: cut at 1.4-3.2 s -> 5 hits ~45K to ~6.7 s after
+//   the tap). Cast only where safe (README: just after an ok, or nothing coming): qishuWhere "qi" (the 气竭 window,
+//   after the 处决 scene or with qishuNoCancelMs left before it), "open" (boss bar up, no contact yet), "ok"
+//   (within QS_OK_MS of an ok); always no plan item within qishuNoCancelMs + offAbortMs and the fut1 mass before
+//   it can be cut below qishuTh, else "奇术 put off". Then nothing of ours for qishuNoCancelMs.
+// ranshiStrikeMs: 燃此魂 starts a run (the body glows white) and turns 突进's button into 伤害
+//   (modao_ranshi_strike) for up to ~3 s (410-418: to +90 f unless a dodge ends it); only the second tap swings
+//   (荡八荒 ~13.8K; README: the opening's second tap 0.5 s after); without it the run ends at the boss (410-418:
+//   19 far close-ins, 0 px each). The second tap goes this long after the first, while the icon shows (500).
+// farSkill false: offFar closes in by the forward push only (no 燃此魂 / 横刀 突进).
+// parryFollow: a 横刀 ok turns 重击 (CHARGE) into the blue 爆发 disc (hengdao_swirl) with 重击派生 above, ~3 s
+//   median (410-418: 119 of 125 横刀 oks); tap it (followTap "heavy"; "diamond" = the 重击派生 diamond, the old
+//   okHeavy, ~0 px) followDelayMs after the ok (live pf1/pf2: taps 60-140 ms after the ok are swallowed, ~0.4-1 s
+//   ones slash: boss 7-16 px and a 真气 step ~10 in 6 of 22, 1 hit within 1.5 s), horizon clear (followTh,
+//   followNoCancelMs), within PF_WINDOW_MS; also in the qiPlan window on 横刀. followStay: on 陌刀 outside 热血难凉
+//   the near gate switches back to 横刀 instead of a cold 蓄力.
+const QS_OK_MS = 1500, QS_OPEN_MS = 15_000, QS_RETRY_MS = 3000, QS_EVAL_MS = 7000;
+const RS_WINDOW_MS = 3000, RS_COST_MS = 900, PF_WINDOW_MS = 3000, PF_COST_MS = 900, PF_RETRY_MS = 350, PF_TRIES = 3, QS_LIT_PX = 30;
+/** @type {Point} */ const QISHU = [881, 525];
+/** @type {Point} */ const PF_DIAMOND = [860, 430];
 /** @type {Box} */ const DIST_ROI = [240, 30, 600, 600];
 /** @type {Box} */ const MDASH_LIT_ROI = [815, 575, 36, 36]; // 陌刀 突进's icon: white px, 107-111 lit, 0 grey (combat.js)
 const MDASH_LIT_PX = 40;
@@ -393,6 +416,8 @@ const OFF_T = {
     mdash: ["combat/modao_dash.png", [801, 561, 64, 64]],
     burst: ["combat/hengdao_burst.png", [793, 635, 64, 64]],
     buff: ["combat/modao_buff.png", [793, 635, 64, 64]],
+    mstrike: ["combat/modao_ranshi_strike.png", [801, 561, 64, 64]], // 燃此魂's second tap (dummy.js)
+    qishu: ["combat/qishu_ready.png", [848, 493, 64, 64]],
 };
 
 // 重伤 (dead): the grey screen with both bars gone, or the 再次训练 panel (combat.js)
@@ -447,7 +472,9 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   potionRetryMs?: number, potionMaxPresses?: number, potionCdMs?: number, potionWaitMaxMs?: number,
  *   landTh?: number, landFloor?: number, qiFinish?: number, oursTellTh?: number, oursTellMs?: number,
  *   staggerByDrop?: number[][], hitEscape?: string, hitEscapeMaxDrop?: number, parryRelockMs?: number,
- *   earlyRepress?: boolean, earlyRepressF?: number, earlyRepressTh?: number, curtainParryPlan?: boolean}} [args]
+ *   earlyRepress?: boolean, earlyRepressF?: number, earlyRepressTh?: number, curtainParryPlan?: boolean,
+ *   offQishu?: boolean, qishuWhere?: string[], qishuNoCancelMs?: number, qishuTh?: number, ranshiStrikeMs?: number,
+ *   farSkill?: boolean, parryFollow?: boolean, followTap?: string, followTh?: number, followNoCancelMs?: number, followDelayMs?: number, followStay?: boolean}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -645,11 +672,27 @@ export default function (args = {}) {
     const qiFinish = args.qiFinish ?? 0; // 真气 <= this px: near, 0 = off
     const oursTellTh = args.oursTellTh ?? 0; // 金光 dodge within oursTellMs of our press: tell p >= this, 0 = off
     const oursTellMs = args.oursTellMs ?? OURS_TELL_MS;
+    // v8 offense part 6 (@see QS_OK_MS): all default off
+    const offQishu = args.offQishu ?? false; // 奇术 where safe (qishuWhere)
+    const qishuWhere = args.qishuWhere ?? ["qi", "open", "ok"];
+    const qishuNoCancelMs = args.qishuNoCancelMs ?? 2000; // a 卸势 sooner than this after the tap is swallowed
+    const qishuTh = args.qishuTh ?? 0.1; // fut1 mass before it can be cut
+    const ranshiStrikeMs = args.ranshiStrikeMs ?? 0; // 燃此魂's second tap this long after the first (0 = off)
+    const farSkill = args.farSkill ?? true; // offFar may close in with 燃此魂 / 横刀 突进
+    const parryFollow = args.parryFollow ?? false; // 横刀 ok -> the 重击 follow-up
+    const followTap = args.followTap ?? "heavy"; // "heavy" (CHARGE, the blue 爆发 disc) | "diamond" (重击派生)
+    const followTh = args.followTh ?? 0.3; // fut1 mass before it can be cut
+    const followNoCancelMs = args.followNoCancelMs ?? 600;
+    const followStay = (args.followStay ?? false) && parryFollow && offOkGate; // stay on 横刀 (hot 蓄力 only on 陌刀)
+    const followDelayMs = args.followDelayMs ?? 400; // a tap right after the ok is swallowed (pf1: sok 60-140 ms)
+    offNoCancel.qishu ??= qishuNoCancelMs;
+    offNoCancel.follow ??= followNoCancelMs;
     const offActOn = offPoke || offSkill || offCharge;
     const offGate = offShadow || offActOn; // the quietGate is judged
-    const offIconsOn = offSkill || offCharge || (qiPlan && qiSkill) || offOkGate || oldWindow;
+    const offP6 = offQishu || ranshiStrikeMs > 0 || parryFollow;
+    const offIconsOn = offSkill || offCharge || (qiPlan && qiSkill) || offOkGate || oldWindow || offP6;
     const offDistOn = offApproach || (qiPlan && qiApproach);
-    const offOn = offShadow || qiPlan || untilCleared || offActOn || offOkGate || oldWindow;
+    const offOn = offShadow || qiPlan || untilCleared || offActOn || offOkGate || oldWindow || offP6;
 
     const start = Date.now();
     const until = start + untilMs;
@@ -2494,6 +2537,7 @@ export default function (args = {}) {
         if (offHold && now >= offHold.until) offRelease(now, "time", false);
         offWalkTick(now);
         offEvalTick(now);
+        if (offP6 && pred) p6Tick(now); // part 6 (before the qiPlan window's pick: 奇术 goes first)
         if (qiPlan) qpTick(now);
         if (offOkGate || oldWindow) bossRingTick(now); // part 3
         if (offOkGate && pred && !qp.shown) okTick(now);
@@ -2624,8 +2668,10 @@ export default function (args = {}) {
         inc(offActS.n, a);
         const t = Date.now();
         const sok = lastOkAt ? t - lastOkAt : -1, sdrop = lastDropAt ? t - lastDropAt : -1;
-        offRecs.push({ a, src, t, b0: bossNow, done: false, evalAt: a === "charge" || a === "coldCharge" ? Infinity : t + OFF_EVAL_MS, sok, sdrop });
+        const evalAt = a === "charge" || a === "coldCharge" ? Infinity : t + (a === "qishu" ? QS_EVAL_MS : OFF_EVAL_MS);
+        offRecs.push({ a, src, t, b0: bossNow, done: false, evalAt, sok, sdrop });
         mark("off", `act ${a} ${src}${observe ? " sim" : ""} ${offState()} boss ${bossNow} sok ${sok} sdrop ${sdrop}${offDistOn ? ` h ${offH}` : ""}`);
+        if (ranshiStrikeMs > 0 && (a === "ranshi" || a === "farRanshi")) rsPend = { at: t + ranshiStrikeMs, until: t + RS_WINDOW_MS, src, seen: 0 };
     }
     /** @param {string} a @param {string} src @param {number} ms */
     function offStartCharge(a, src, ms) {
@@ -2907,7 +2953,7 @@ export default function (args = {}) {
     /** @type {{t: number, b: number}[]} */ const bossRing = [];
     let lastDropAt = 0, okOpenAt = 0, okTickAt = 0, okWhiff = 0, okFarByWhiff = false, okWhiffAt = 0, okFarSince = 0;
     let okSwitchPend = 0, okSwitchAt = 0, okLastLight = 0;
-    const DMG_ACTS = new Set(["light", "charge", "coldCharge", "dash", "strike", "burst", "ranshi", "farRanshi", "farDash"]);
+    const DMG_ACTS = new Set(["light", "charge", "coldCharge", "dash", "strike", "burst", "ranshi", "farRanshi", "farDash", "ranshi2", "qishu", "follow"]);
     /** @typedef {{n: number, hit: number, px: number}} OkRes */
     const okS = {
         evalMs: 0, openMs: 0, farMs: 0, opens: 0, farByWhiff: 0, switchPend: 0, chargeDefers: 0, landSkips: 0,
@@ -3017,11 +3063,11 @@ export default function (args = {}) {
         const far = now - okFarSince;
         okFarSince = now; // re-armed
         const w = offW;
-        if (w === "modao" && mdashLit()) {
+        if (farSkill && w === "modao" && mdashLit()) {
             inc(okS.closeIns, "ranshi");
             offAct("farRanshi", "far", DASH);
             offBusyUntil = now + OFF_COST_MS.ranshi;
-        } else if (w === "hengdao" && offSeen("dash")) {
+        } else if (farSkill && w === "hengdao" && offSeen("dash")) {
             inc(okS.closeIns, "dash");
             offAct("farDash", "far", DASH);
             offBusyUntil = now + OFF_COST_MS.dash;
@@ -3069,6 +3115,12 @@ export default function (args = {}) {
             hdTick(now);
             return;
         }
+        if (followStay && w === "modao" && !hot && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && okCan("switch", now)) {
+            offAct("switch", "stay", SWITCH); // part 6: back to 横刀 for the follow-ups instead of a cold 蓄力
+            okSwitchAt = now;
+            offBusyUntil = now + SWITCH_WAIT_MS;
+            return;
+        }
         if (w === "modao") {
             const can = okCan("charge", now);
             if (hot && can) {
@@ -3077,7 +3129,7 @@ export default function (args = {}) {
                 const hold = Math.min(qiColdHoldMs, left);
                 if (hold >= offColdMinMs && can && okChargeFree(now, "coldCharge")) return okCharge("coldCharge", Math.round(hold));
             }
-        } else if (w === "hengdao" && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && (hot || left >= OFF_COST_MS.switch + offColdMinMs)
+        } else if (w === "hengdao" && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && (hot || (!followStay && left >= OFF_COST_MS.switch + offColdMinMs))
             && okCan("switch", now)) {
             offAct("switch", "ok", SWITCH); // only for the 蓄力 right after it
             okSwitchAt = now;
@@ -3137,6 +3189,149 @@ export default function (args = {}) {
         if (offFar && far && okFarSince && now - okFarSince >= offFarMs && farCloseIn(now)) return;
         if (okOpenAt && !far) okAct(now, false);
         else if (okSwitchPend && now < okSwitchPend && offM30 <= offVetoTh && !inCurtain && !inDodge) okAct(now, true);
+    }
+    // --- part 6: 奇术 (offQishu), 燃此魂's second tap (ranshiStrikeMs), the 横刀 ok follow-up (parryFollow)
+    /** @type {{at: number, until: number, src: string, seen: number} | null} */ let rsPend = null;
+    let qsLitAt = 0, qsLit = false, qsRetryAt = 0, qsTapAt = 0, qsOpenOk = true, qsBossAt = 0, qsPutOffAt = 0;
+    let pfOkAt = 0, pfTapAt = 0, pfTries = 0;
+    const p6S = {
+        /** @type {Record<string, number>} */ qishu: {}, qishuNotOut: 0, /** @type {Record<string, number>} */ qishuPutOff: {},
+        ranshi2: 0, ranshi2Lost: 0, follow: 0, followNotOut: 0, /** @type {Record<string, number>} */ followSkip: {}, followOks: 0,
+    };
+    /** combat.js qishuLit (4 Hz): the template and the white strokes in the middle. @param {number} now */
+    function qsLitRead(now) {
+        if (now - qsLitAt < OFF_ICON_EVERY) return qsLit;
+        qsLitAt = now;
+        qsLit = perFrame("qishuLit", (im) => {
+            const hit = match(OFF_T.qishu[0], { image: im, roi: OFF_T.qishu[1], threshold: OFF_ICON_TH });
+            if (!hit.hit || !hit.box) return false;
+            const [x, y, w, h] = hit.box;
+            const cx = Math.round(x + w / 2), cy = Math.round(y + h / 2);
+            return color({ ...ICON_WHITE, image: im, roi: [cx - 18, cy - 18, 36, 36], count: QS_LIT_PX }).hit;
+        });
+        return qsLit;
+    }
+    /** The defense's own states and our busy ones ("" = free). @param {number} now */
+    function p6Busy(now) {
+        if (inCurtain) return "curtain";
+        if (inDodge) return "dodge";
+        if (now < staggerUntil) return "stagger";
+        if (now < potionHoldUntil || potionDue()) return "potion";
+        if (offHold || offWalking || hd || now < offBusyUntil) return "busy";
+        return "";
+    }
+    /**
+     * Clear for an action that a 卸势 cannot cut for nc ms ("" = clear); futFree: the fut items do not count (气竭).
+     * @param {number} now @param {number} nc @param {number} th @param {boolean} futFree
+     */
+    function p6Clear(now, nc, th, futFree) {
+        const t = pred?.tell;
+        if (t && t.arg !== 0 && t.p >= tellTh) return "tell";
+        if (now - flareSeenAt < offAfterTellMs) return "after-tell";
+        if (!futFree && offHorizon(nc) >= th) return "horizon";
+        if (plan.some((it) => !it.pressedAt && it.atMs - now <= nc + offAbortMs && !(futFree && it.src === "fut"))) return "plan";
+        return "";
+    }
+    /** Where 奇术 may go now ("" = nowhere). @param {number} now */
+    function qsWhere(now) {
+        if (!qsBossAt && bossNow > 50) qsBossAt = now;
+        if (qp.shown) {
+            if (!qishuWhere.includes("qi")) return "";
+            if (qp.tapAt && now - qp.tapAt >= QP_EXEC_SCENE_MS) return "qi"; // after the 处决 scene
+            if (!qp.tapAt && qiExecAfter - (now - qp.shown) >= qishuNoCancelMs + 300) return "qi"; // before it, if it fits
+            return "";
+        }
+        if (qsOpenOk && qishuWhere.includes("open")) { // the opening: the bar up, no contact yet
+            if (lastHitAt || lastOkAt || (qsBossAt && now - qsBossAt > QS_OPEN_MS)) qsOpenOk = false;
+            else if (qsBossAt) return "open";
+        }
+        if (qishuWhere.includes("ok") && sinceOk(now) <= QS_OK_MS) return "ok";
+        return "";
+    }
+    /** @param {number} now */
+    function qsTick(now) {
+        if (qsTapAt) { // out once the icon goes (cooling); still lit 500 ms on: again after QS_RETRY_MS
+            const lit = qsLitRead(now);
+            if (lit && now - qsTapAt <= 500) return;
+            if (lit) {
+                p6S.qishuNotOut++;
+                qsRetryAt = now + QS_RETRY_MS;
+                mark("off", "奇术 not out (still lit)");
+            } else mark("off", `奇术 out (${now - qsTapAt} ms)`);
+            qsTapAt = 0;
+            return;
+        }
+        if (now < qsRetryAt || bossNow <= 50) return;
+        const where = qsWhere(now);
+        if (!where || !qsLitRead(now)) return;
+        const why = p6Busy(now) || p6Clear(now, qishuNoCancelMs, qishuTh, where === "qi");
+        if (why) {
+            inc(p6S.qishuPutOff, `${where}:${why}`);
+            if (now - qsPutOffAt > 1000) mark("off", `奇术 put off (${where}: ${why}) ${offState()}`);
+            qsPutOffAt = now;
+            return;
+        }
+        offAct("qishu", where, QISHU);
+        inc(p6S.qishu, where);
+        qsTapAt = now;
+        offBusyUntil = Math.max(offBusyUntil, now + qishuNoCancelMs);
+    }
+    /** 燃此魂's second tap (伤害, 荡八荒) ranshiStrikeMs after the first, while its icon shows. @param {number} now */
+    function rsTick(now) {
+        const r = rsPend;
+        if (!r) return;
+        const icon = offSeen("mstrike");
+        if (icon && !r.seen) r.seen = now;
+        if (now > r.until || (r.seen && !icon && now - r.seen > 200) || inDodge) {
+            p6S.ranshi2Lost++;
+            mark("off", `燃此魂 second tap lost (${inDodge ? "dodge" : r.seen ? "icon gone" : "no icon"}) +${now - r.at + ranshiStrikeMs} ms`);
+            rsPend = null;
+            return;
+        }
+        if (now < r.at || !icon || inCurtain || now < staggerUntil) return;
+        rsPend = null;
+        offAct("ranshi2", r.src, DASH);
+        p6S.ranshi2++;
+        offBusyUntil = Math.max(offBusyUntil, now + RS_COST_MS);
+    }
+    /** The 横刀 ok follow-up: the blue 爆发 disc on 重击 within PF_WINDOW_MS of the ok. @param {number} now */
+    function pfTick(now) {
+        if (qp.shown) return; // the window's own pick (qpPick)
+        if (lastOkAt > pfOkAt) { // a new ok
+            pfOkAt = lastOkAt;
+            pfTapAt = 0;
+            pfTries = 0;
+            if (offW === "hengdao") p6S.followOks++;
+        }
+        if (!pfOkAt || now - pfOkAt > PF_WINDOW_MS || now - pfOkAt < followDelayMs || pfTries >= PF_TRIES) return;
+        if (pfTapAt && now - pfTapAt < PF_RETRY_MS) return;
+        const swirl = offSeen("swirl");
+        if (pfTapAt) { // tapped: out once the disc goes
+            if (!swirl) {
+                mark("off", `follow out (${now - pfTapAt} ms, ${pfTries} tap(s))`);
+                pfTries = PF_TRIES;
+                offBusyUntil = Math.max(offBusyUntil, pfTapAt + PF_COST_MS); // the slash plays
+                return;
+            }
+            p6S.followNotOut++;
+        }
+        if (!swirl) return;
+        const why = p6Busy(now) || p6Clear(now, followNoCancelMs, followTh, false);
+        if (why) {
+            inc(p6S.followSkip, why);
+            return;
+        }
+        offAct("follow", "ok", followTap === "diamond" ? PF_DIAMOND : CHARGE);
+        p6S.follow++;
+        pfTapAt = now;
+        pfTries++;
+        offBusyUntil = Math.max(offBusyUntil, now + PF_RETRY_MS);
+    }
+    /** Per frame (part 6 on): before the near gate, so a follow-up goes ahead of its switch. @param {number} now */
+    function p6Tick(now) {
+        if (ranshiStrikeMs > 0) rsTick(now);
+        if (parryFollow) pfTick(now);
+        if (offQishu) qsTick(now);
     }
     /** oldWindow: the committed 横刀 set is over (burst out: the window goes on). @param {number} now @param {string} why */
     function owSetOver(now, why) {
@@ -3291,6 +3486,7 @@ export default function (args = {}) {
             if (offSeen("mdash") && left >= OFF_COST_MS.ranshi) return { a: "ranshi", p: DASH, hold: 0 }; // 燃此魂
             if (offSeen("buff") && left >= OFF_COST_MS.buff) return { a: "buff", p: BUFF, hold: 0 }; // 唤千军
         } else if (w === "hengdao") {
+            if (parryFollow && offSeen("swirl") && left >= PF_COST_MS) return { a: "follow", p: followTap === "diamond" ? PF_DIAMOND : CHARGE, hold: 0 }; // part 6
             if (hot && left >= OFF_COST_MS.switch + offHotHoldMs + slash) return { a: "switch", p: SWITCH, hold: 0 };
             if (offSeen("strike") && left >= OFF_COST_MS.strike) return { a: "strike", p: DASH, hold: 0 }; // 伤害
             // 爆发 swallows 卸势 ~2.4 s (E0): only after 处决 and only with that much 衰弱 left (by default 2000 < 2400: never)
@@ -3604,9 +3800,10 @@ export default function (args = {}) {
         ...(offGate ? { gate: offSummary() } : {}),
         ...(qiPlan ? { qi: { ...qpS, execShownToTapMs: qpShownToTap, bossDropPx: qpBossDrop, ...(qiSkill ? { skills: qpSkills } : {}),
             ...(qiApproach ? { approach: qpApproach } : {}) } } : {}),
-        ...(offActOn || qiPlan || offOkGate || oldWindow ? { act: offActSummary() } : {}),
+        ...(offActOn || qiPlan || offOkGate || oldWindow || offP6 ? { act: offActSummary() } : {}),
         ...(untilCleared ? { bossLeftPx: clrBossPx, bossLast: clrLast } : {}),
         ...(offOkGate || oldWindow ? { near: okSummary() } : {}),
+        ...(offP6 ? { p6: p6S } : {}),
     } : undefined;
     if (off) log(`off: ${JSON.stringify(off)}`);
     // v9 potion: only when one of its switches is on
