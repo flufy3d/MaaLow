@@ -124,6 +124,20 @@ const SLOW_EVERY = 250; // aux reads (boss / mean) and the potion decision: 4 Hz
 const FLARE_EVERY = 400;
 const CURTAIN_EVERY = 400;
 const POTION_HP = 0.3, POTION_URGENT = 0.15, POTION_HOLD_MS = 2000, POTION_YIELD_MS = 150, POTION_SAFE_FRAMES = 15;
+// v9 potion (2.3 patch, report8.md; all default off). Live 341-359: the tap always went out right after the hit's
+//   stagger + the posthit 卸势 (-50..-250 ms): post-patch 12/36 healed (pre 11/21). Arena test (potion_test.js, 34
+//   trials): a heal shows 1.2-1.65 s after the tap (+0.61 bar), the count stays 4 (dropped taps cost nothing), no
+//   cooldown (heals 5 s apart). A tap < 500 ms after our 卸势, or < 0.6 s (up to ~2 s on a knock-down) after a blow,
+//   is ignored; a 卸势 0.2-0.7 s into the drink or a blow cancels it (1.0 s: not); 闪避 0.3 s in does not (2/2).
+// potionSafe: the drink waits for a quiet moment (POTION_QUIET_MS after a hit, POTION_GAP_MS after our own 卸势 /
+//   dodge / offense touch, no plan item within POTION_PLAN_MS, fut1 mass in bins 0..8 (1-40 f) < POTION_MASS_TH, no
+//   tell / curtain); at hp <= POTION_URGENT only the touch gap and POTION_URGENT_QUIET_MS after a hit stay. While due,
+//   offense / qiPlan lights hold off; during the drink plan dodges still go (卸势 stay blocked, as before).
+// potionConfirm: a drink counts only once hp is up POTION_HEAL within POTION_CONFIRM_MS of the tap (a blow ends the
+//   wait at once); else not counted, again after POTION_RETRY_MS (potionMaxPresses taps at most); the hold ends there.
+// potionCdMs: no tap this long after a confirmed heal (live: no cooldown seen, default 0).
+const POTION_QUIET_MS = 1200, POTION_GAP_MS = 700, POTION_PLAN_MS = 1200, POTION_MASS_TH = 0.3, POTION_MASS_BINS = 9;
+const POTION_HEAL = 0.08, POTION_CONFIRM_MS = 2000, POTION_RETRY_MS = 600, POTION_URGENT_QUIET_MS = 900;
 const SLOW_SLACK_MS = 3; // a slow check may start while this much of the budget is left
 const BRANCH_LATE_MS = 400; // an unreleased branch this stale: drop
 
@@ -374,7 +388,9 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   qiApproach?: boolean, qiApproachMaxMs?: number, offOkGate?: boolean, offOkMs?: number, offVetoTh?: number,
  *   offDropPx?: number, offOkAfterHitMs?: number, offWhiffFar?: number, offColdMinMs?: number, offCommit?: boolean,
  *   offFar?: boolean, offFarMs?: number, offFarPushMs?: number, oldWindow?: boolean, oldWindowMs?: number,
- *   offGateVetoTh?: number, offChargeFree?: number}} [args]
+ *   offGateVetoTh?: number, offChargeFree?: number, potionSafe?: boolean, potionQuietMs?: number, potionGapMs?: number,
+ *   potionPlanMs?: number, potionMassTh?: number, potionConfirm?: boolean, potionConfirmMs?: number,
+ *   potionRetryMs?: number, potionMaxPresses?: number, potionCdMs?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -426,6 +442,17 @@ export default function (args = {}) {
     const potionHp = args.potionHp ?? POTION_HP;
     const potionHoldMs = args.potionHoldMs ?? POTION_HOLD_MS;
     const potionSafeFrames = args.potionSafeFrames ?? POTION_SAFE_FRAMES;
+    // v9 potion (@see POTION_QUIET_MS; all default off)
+    const potionSafe = args.potionSafe ?? false;
+    const potionQuietMs = args.potionQuietMs ?? POTION_QUIET_MS;
+    const potionGapMs = args.potionGapMs ?? POTION_GAP_MS;
+    const potionPlanMs = args.potionPlanMs ?? POTION_PLAN_MS;
+    const potionMassTh = args.potionMassTh ?? POTION_MASS_TH;
+    const potionConfirm = args.potionConfirm ?? false;
+    const potionConfirmMs = args.potionConfirmMs ?? POTION_CONFIRM_MS;
+    const potionRetryMs = args.potionRetryMs ?? POTION_RETRY_MS;
+    const potionMaxPresses = args.potionMaxPresses ?? (args.potions ?? 0) * 4;
+    const potionCdMs = args.potionCdMs ?? 0;
     const deadGrey = args.deadGrey ?? true; // test-only: false disables the grey-screen branch (button path alone)
     const s1Hi = args.s1Hi ?? 5; // S1 = fut1 bins 1..s1Hi (v4 window variant: 6 = 4-24 frames; recalibrate trigTh)
     const lockOn = args.lockOn ?? true; // keep the boss locked on (camera tracking); false for A/B
@@ -752,6 +779,16 @@ export default function (args = {}) {
     /** @type {number[]} */
     const meanRing = [];
     let potionsUsed = 0;
+    // v9 potion (@see POTION_QUIET_MS): the tap waiting for its heal, counts, the last offense touch
+    /** @type {{at: number, hp0: number} | null} */
+    let potionPend = null;
+    /** @type {{at: number, hp0: number} | null} */
+    let potionLate = null;
+    let potionTaps = 0, lastPotionOkAt = 0, lastPotionFailAt = 0, lastPotionWaitMark = 0, lastOffDownAt = 0;
+    const potS = { oks: 0, fails: 0, healMs: /** @type {number[]} */ ([]), gains: /** @type {number[]} */ ([]),
+                   failWhy: /** @type {Record<string, number>} */ ({}), waitWhy: /** @type {Record<string, number>} */ ({}),
+                   waitMs: /** @type {number[]} */ ([]), lateOks: 0 };
+    let potionDueAt = 0; // the first frame the drink was due (wait time = due -> tap)
     let dodgeSeq = 0, inDodge = false, stickSide = 0;
     let inCurtain = false, curtainLastAt = 0, curtainFirstAt = 0, curtainDodged = false, curtainDodgeAt = 0, lastFlareDodgeAt = 0, lastPotionHoldMark = 0;
     let curtainDarkSeen = 0; // v7 A2: consecutive tell-dark frames at the cover onset
@@ -1260,17 +1297,25 @@ export default function (args = {}) {
             if (!observe) tap(potionP);
             lastPotionAt = Date.now();
             potionHoldUntil = lastPotionAt + potionHoldMs;
-            potionsUsed++;
             pressFrame(frameIdx);
             presses.potion++;
             it.pressedAt = lastPotionAt;
-            mark("potion", `hp ${Math.round((hpNow ?? 0) * 100)}% (${potionsUsed}/${maxPotions})`);
+            if (potionDueAt) potS.waitMs.push(lastPotionAt - potionDueAt);
+            potionDueAt = 0;
+            if (potionConfirm) { // v9: counted at the heal (potionTick)
+                potionTaps++;
+                potionPend = { at: lastPotionAt, hp0: hpNow ?? 0 };
+                mark("potion", `tap hp ${Math.round((hpNow ?? 0) * 100)}% (tap ${potionTaps}, ${potionsUsed}/${maxPotions} healed)`);
+            } else {
+                potionsUsed++;
+                mark("potion", `hp ${Math.round((hpNow ?? 0) * 100)}% (${potionsUsed}/${maxPotions})`);
+            }
         }
     }
     /** @param {PlanItem} it @param {number} now @returns {string} */
     function pressBlocked(it, now) {
         if (now < staggerUntil) return "stagger";
-        if (now < potionHoldUntil) return "potion";
+        if (now < potionHoldUntil && !(potionSafe && it.kind === "dodge")) return "potion"; // v9: a dodge keeps the drink
         if (inDodge) return "dodge";
         if (it.kind === "parry" && now - lastParryAt < parryCd) return "parry cd";
         if (it.kind === "dodge" && now - lastDodgeAt < dodgeCd && !it.noCd) return "dodge cd";
@@ -1814,12 +1859,93 @@ export default function (args = {}) {
         lastFlareDodgeAt = now;
         addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: c1 - leadMs("other"), untilMs: c1 + missGraceMs, why: "flare color" });
     }
+    /** v9 potionSafe: why the drink must wait now ("" = go). @param {number} now */
+    function potionUnsafe(now) {
+        const urgent = hpNow != null && hpNow <= POTION_URGENT;
+        if (inCurtain) return "curtain";
+        const own = Math.max(lastParryAt, lastDodgeAt, lastOffDownAt);
+        if (now - own < (urgent ? Math.min(potionGapMs, 400) : potionGapMs)) return "own press";
+        if (offOn && (offHold || offWalking || now < offBusyUntil)) return "offense";
+        if (now - lastHitAt < (urgent ? Math.min(potionQuietMs, POTION_URGENT_QUIET_MS) : potionQuietMs)) return "after-hit";
+        if (urgent) return "";
+        if (plan.some((it) => !it.pressedAt && it.kind !== "potion" && it.atMs - now <= potionPlanMs)) return "plan";
+        const t = pred?.tell;
+        if (t && t.arg !== 0 && t.p >= tellTh) return "tell";
+        if (!pred) return "no pred";
+        let m = 0;
+        for (let i = 0; i < POTION_MASS_BINS; i++) m += futBin(0, i);
+        if (m >= potionMassTh) return "mass";
+        return "";
+    }
+    /** v9: the drink is due and waiting for a safe moment (offense / qiPlan lights hold off). */
+    function potionDue() {
+        if (!potionSafe || maxPotions <= 0 || potionsUsed >= maxPotions || hpNow == null || hpNow > potionHp) return false;
+        if (potionConfirm && potionTaps >= potionMaxPresses) return false;
+        return !(potionCdMs && lastPotionOkAt && Date.now() - lastPotionOkAt < potionCdMs);
+    }
+    /** v9 potionConfirm, per frame: the tap counts once hp is up POTION_HEAL; a blow (live: it cancels the drink) or
+     * potionConfirmMs without the heal = not counted, the hold ends there (defense back on). A heal still showing
+     * within potionConfirmMs after a blow-fail is counted late. @param {number} now */
+    function potionTick(now) {
+        if (potionLate) {
+            if (now - potionLate.at > potionConfirmMs) potionLate = null;
+            else if (hpNow != null && hpNow >= potionLate.hp0 + POTION_HEAL) {
+                potionsUsed++;
+                potS.oks++;
+                potS.fails--;
+                potS.lateOks++;
+                lastPotionOkAt = now;
+                mark("potion", `late heal ${now - potionLate.at} ms after the tap (${potionsUsed}/${maxPotions})`);
+                potionLate = null;
+            }
+        }
+        if (!potionPend) return;
+        const p = potionPend;
+        const healed = hpNow != null && hpNow >= p.hp0 + POTION_HEAL;
+        const hit = lastHitAt > p.at;
+        if (!healed && !hit && now - p.at < potionConfirmMs) return;
+        potionPend = null;
+        const it = plan.find((x) => x.kind === "potion");
+        if (it) plan.splice(plan.indexOf(it), 1);
+        potionHoldUntil = Math.min(potionHoldUntil, now);
+        if (healed) {
+            potionsUsed++;
+            potS.oks++;
+            potS.healMs.push(now - p.at);
+            potS.gains.push(Math.round(((hpNow ?? 0) - p.hp0) * 100) / 100);
+            lastPotionOkAt = now;
+            mark("potion", `healed ${Math.round(p.hp0 * 100)}%->${Math.round((hpNow ?? 0) * 100)}% after ${now - p.at} ms (${potionsUsed}/${maxPotions})`);
+        } else {
+            potS.fails++;
+            const why = hit ? "hit" : "no heal";
+            potS.failWhy[why] = (potS.failWhy[why] ?? 0) + 1;
+            lastPotionFailAt = now;
+            if (hit) potionLate = { at: p.at, hp0: hpNow ?? 0 };
+            mark("potion", `${hit ? `hit ${now - p.at} ms into the drink` : `no heal ${potionConfirmMs} ms after the tap`}, not counted`);
+        }
+    }
     /** @param {number} now */
     function slowPotion(now) {
         if (maxPotions <= 0 || potionsUsed >= maxPotions) return;
         if (hpNow == null || hpNow > potionHp) return;
+        if (potionConfirm && (potionPend || now - lastPotionFailAt < potionRetryMs || potionTaps >= potionMaxPresses)) return;
+        if (potionCdMs && lastPotionOkAt && now - lastPotionOkAt < potionCdMs) return;
+        if (potionSafe && !potionDueAt) potionDueAt = now;
         if (now < staggerUntil || now < potionHoldUntil || inDodge) return;
         if (plan.some((it) => it.kind === "potion")) return;
+        if (potionSafe) {
+            const why = potionUnsafe(now);
+            if (why) {
+                potS.waitWhy[why] = (potS.waitWhy[why] ?? 0) + 1;
+                if (now - lastPotionWaitMark > 1000) {
+                    lastPotionWaitMark = now;
+                    mark("plan", `potion wait: ${why} hp ${Math.round(hpNow * 100)}%`);
+                }
+                return;
+            }
+            addItem({ kind: "potion", k: -1, src: "potion", atMs: now, cMs: now, untilMs: now + 1500, why: `hp ${Math.round(hpNow * 100)}% safe` });
+            return;
+        }
         const st = pred ? futStats(pred.fut[0]) : null;
         const c1 = st && st.none < 0.65 && st.sum > 0.01 ? st.exp : Infinity;
         if (hpNow > POTION_URGENT && c1 <= potionSafeFrames) {
@@ -1902,6 +2028,7 @@ export default function (args = {}) {
         if (observe) return;
         if (offUpAt) touch.up(offContact);
         touch.down(p, offContact);
+        lastOffDownAt = Date.now();
         offUpAt = Date.now() + ms;
         offTouched = true;
     }
@@ -1940,6 +2067,7 @@ export default function (args = {}) {
         if (inDodge) return "dodge";
         if (now < staggerUntil) return "stagger";
         if (now < potionHoldUntil) return "potion";
+        if (potionDue()) return "potion due"; // v9 potionSafe
         if (now - lastHitAt < offAfterHitMs) return "after-hit";
         if (now - lastDodgeAt < offAfterDodgeMs) return "after-dodge";
         if (now - offTellAt < offAfterTellMs || now - flareSeenAt < offAfterTellMs || now - curtainLastAt < offAfterTellMs
@@ -2489,6 +2617,7 @@ export default function (args = {}) {
         if (inDodge) return "dodge";
         if (now < staggerUntil) return "stagger";
         if (now < potionHoldUntil) return "potion";
+        if (potionDue()) return "potion due"; // v9 potionSafe
         if (now - lastHitAt < offOkAfterHitMs) return "after-hit";
         if (now - offTellAt < offAfterTellMs || now - flareSeenAt < offAfterTellMs || now - curtainLastAt < offAfterTellMs
             || now - lastDarkAt < offAfterTellMs) return "after-tell";
@@ -2509,7 +2638,7 @@ export default function (args = {}) {
     /** A committed step may tap now: only the defense's own states hold it. @param {number} now */
     function commitCan(now) {
         if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || now < offBusyUntil || bossNow <= 50) return false;
-        if (offHold || offWalking) return false;
+        if (offHold || offWalking || potionDue()) return false;
         return !plan.some((it) => !it.pressedAt && Math.abs(it.atMs - now) <= 100); // not on top of a defense press
     }
     /** @param {string} a @param {boolean} strong */
@@ -2548,7 +2677,7 @@ export default function (args = {}) {
     }
     /** offFar: one close-in when far for offFarMs (燃此魂 / 突进 when lit, else a forward push). @param {number} now */
     function farCloseIn(now) {
-        if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || bossNow <= 50) return false;
+        if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || bossNow <= 50 || potionDue()) return false;
         if (offM30 > offVetoTh || plan.some((it) => !it.pressedAt && it.atMs - now <= offGuardMs)) return false;
         const far = now - okFarSince;
         okFarSince = now; // re-armed
@@ -2820,7 +2949,7 @@ export default function (args = {}) {
     /** @param {number} now @param {boolean} post */
     function qpLight(now, post) {
         if (offHold || offWalking || now < offBusyUntil) return;
-        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil) return;
+        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil || potionDue()) return;
         if (plan.some((x) => !x.pressedAt && x.atMs - now < QP_PENDING_MS)) return; // a tell dodge is about to go
         if (qiApproach && !qp.approached) { // walk in first when the box says far (qiApproachMaxMs at most)
             qp.approached = true;
@@ -2995,7 +3124,7 @@ export default function (args = {}) {
         } },
         { name: "curtain", every: curtainEvery, at: 0, active: () => inCurtain || stickSide !== 0 || curtainImg || curtainDark, run: slowCurtain },
         { name: "flare", every: flareEvery, at: 0, active: () => true, run: slowFlare },
-        { name: "potion", every: slowEvery, at: 0, active: () => maxPotions > 0 && potionsUsed < maxPotions && hpNow != null && hpNow <= potionHp, run: slowPotion },
+        { name: "potion", every: slowEvery, at: 0, active: () => !potionSafe && maxPotions > 0 && potionsUsed < maxPotions && hpNow != null && hpNow <= potionHp, run: slowPotion },
         { name: "closein", every: 100, at: 0, active: () => closeIn, run: closeInWalk },
         { name: "weak", every: 100, at: 0, active: () => qiAttack && !qiPlan, run: slowWeak }, // v8 offense: qiPlan replaces it
         { name: "officons", every: OFF_ICON_EVERY, at: 0, active: () => offIconsOn && !hd && !qp.shown, run: offIconsRead }, // v8 offense part 2
@@ -3066,6 +3195,8 @@ export default function (args = {}) {
                 if (curtainTimed) sweepTick(Date.now());
                 if (failEscape) failEscapeTick(Date.now());
                 expire(now2);
+                if (potionConfirm) potionTick(Date.now()); // v9 potion
+                if (potionSafe) slowPotion(Date.now()); // v9: every frame (cheap), safe windows are short
                 if (offOn) offenseTick(Date.now()); // v8 offense
                 predMark(now2);
             }
@@ -3120,9 +3251,14 @@ export default function (args = {}) {
         ...(offOkGate || oldWindow ? { near: okSummary() } : {}),
     } : undefined;
     if (off) log(`off: ${JSON.stringify(off)}`);
+    // v9 potion: only when one of its switches is on
+    const v9On = potionSafe || potionConfirm || potionCdMs > 0;
+    const potion = v9On ? { taps: presses.potion, healed: potionsUsed, ...potS } : undefined;
+    if (potion) log(`potion: ${JSON.stringify(potion)}`);
     return {
         ...(v8 ? { v8 } : {}),
         ...(off ? { off } : {}),
+        ...(potion ? { potion } : {}),
         reason, observe, looks, ready, headCalls, readyPct,
         presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, holds, holdPresses, insurePresses,
         rerepresses, weakWindows, weakLights, weakExecs,
