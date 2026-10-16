@@ -296,6 +296,17 @@ const OFF_NEAR_OK_MS = 5000, OFF_NEAR_DROP_MS = 3000, OFF_WHIFF_FAR = 2, OFF_FAR
 const OFF_COLD_MIN_MS = 1500, OFF_SWITCH_PEND_MS = 1500, OFF_FRESH_OK_MS = 1500, OFF_COMMIT_PAUSE_MS = 3000;
 const OLD_WINDOW_MS = 8000, OLD_CANCEL_MS = 1000, OLD_AFTER_HIT_MS = 700, OLD_QUIET_WAIT_MS = 800, OLD_RETRY_MS = 5000;
 const OFF_BOSS_RING_MS = 4000, OFF_DROP_MAX_PX = 80;
+// v8 offense part 4 (offline, data/tmp/dufu_breakthrough/live/relax7.py / hold7.py on 263-347; args default OFF):
+// offGateVetoTh: the near gate's own m30 veto (okGateWhy only; default offVetoTh, which still sets the actions'
+//   horizons, the close-in and oldWindow). Replay 341-347: gate 13.3% of the fight at 0.30, 16.0% at 0.45, 29.7%
+//   with the combo veto only; a hit within 1 s of an open frame 4.5% / 5.6% / 8.9%.
+// offChargeFree: a near-gate 蓄力 (hot or cold) starts only with fut1 mass over all 10 bins (a contact within 2 s)
+//   below it, else the gate's filler goes (轻击) and the 蓄力 waits for a quieter frame. Live 341-347 (104 holds):
+//   a 蓄力 lands only when let go on time with no defense press for ~700 ms after (E0: a 卸势 0-500 ms after the
+//   release leaves 0 damage): 39/104; full + clear hot 15.9 px, cold 12.0, the rest ~1.2. Start m60 AUC 0.75 (m30
+//   0.69): N6 below 0.7 kept 46/73 with 26 of the 30 that landed. The let-go timing itself cannot help: the plan
+//   items show ~0.6 s before contact, the press goes out regardless (offYield), cutting the slash either way.
+const OFF_CHARGE_FREE = 0;
 /** @type {Box} */ const DIST_ROI = [240, 30, 600, 600];
 /** @type {Box} */ const MDASH_LIT_ROI = [815, 575, 36, 36]; // 陌刀 突进's icon: white px, 107-111 lit, 0 grey (combat.js)
 const MDASH_LIT_PX = 40;
@@ -362,7 +373,8 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   qiColdHoldMs?: number, qiPostLeftMs?: number, offApproach?: boolean, offStrikeH?: number, offApproachMs?: number,
  *   qiApproach?: boolean, qiApproachMaxMs?: number, offOkGate?: boolean, offOkMs?: number, offVetoTh?: number,
  *   offDropPx?: number, offOkAfterHitMs?: number, offWhiffFar?: number, offColdMinMs?: number, offCommit?: boolean,
- *   offFar?: boolean, offFarMs?: number, offFarPushMs?: number, oldWindow?: boolean, oldWindowMs?: number}} [args]
+ *   offFar?: boolean, offFarMs?: number, offFarPushMs?: number, oldWindow?: boolean, oldWindowMs?: number,
+ *   offGateVetoTh?: number, offChargeFree?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -380,7 +392,8 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   action: light buff switch dash burst strike ranshi charge); qiSkill (qiColdHoldMs / qiPostLeftMs); offApproach
  *   (offStrikeH / offApproachMs), qiApproach (qiApproachMaxMs). Part 3 (@see OFF_OK_MS): offOkGate (offOkMs /
  *   offVetoTh / offDropPx / offOkAfterHitMs / offWhiffFar / offColdMinMs), offCommit, offFar (offFarMs /
- *   offFarPushMs); oldWindow (oldWindowMs).
+ *   offFarPushMs); oldWindow (oldWindowMs). Part 4 (@see OFF_CHARGE_FREE): offGateVetoTh (the near gate's m30
+ *   veto alone), offChargeFree (near-gate 蓄力 start: fut1 2 s mass below it; 0 = off).
  */
 export default function (args = {}) {
     const observe = args.observe ?? false;
@@ -517,6 +530,9 @@ export default function (args = {}) {
     const offFarPushMs = args.offFarPushMs ?? OFF_FAR_PUSH_MS;
     const oldWindow = (args.oldWindow ?? false) && !offOkGate; // combat.js buffWindow on the dufu defense
     const oldWindowMs = args.oldWindowMs ?? OLD_WINDOW_MS;
+    // v8 offense part 4 (@see OFF_CHARGE_FREE): default = part 3 as it was
+    const offGateVetoTh = args.offGateVetoTh ?? offVetoTh; // okGateWhy's m30 veto only
+    const offChargeFree = args.offChargeFree ?? OFF_CHARGE_FREE; // near-gate 蓄力: fut1 2 s mass below this (0 = off)
     const offActOn = offPoke || offSkill || offCharge;
     const offGate = offShadow || offActOn; // the quietGate is judged
     const offIconsOn = offSkill || offCharge || (qiPlan && qiSkill) || offOkGate || oldWindow;
@@ -1901,7 +1917,7 @@ export default function (args = {}) {
     }
 
     // --- quietGate shadow (offShadow)
-    let offRun = 0, offRunReady = -1, offM30 = 1, offM40 = 1, offTellAt = 0, offTickAt = 0;
+    let offRun = 0, offRunReady = -1, offM30 = 1, offM40 = 1, offM60 = 1, offTellAt = 0, offTickAt = 0;
     let offOpenAt = 0, offHitSeen = 0, offOkSeen = 0;
     const offS = { evalMs: 0, openMs: 0, strongMs: 0, opens: 0, closes: 0, aborts: 0, inOpenHit: 0, inOpenOk: 0 };
     /** @type {Record<string, number>} */ const offCloseWhy = {};
@@ -2017,6 +2033,7 @@ export default function (args = {}) {
             offRunReady = ready;
             offM30 = offMass(offQuietBins);
             offM40 = offMass(offStrongBins);
+            offM60 = offMass(10);
             offRun = offM30 < offQuietTh ? offRun + 1 : 0;
             if (pred.tell.arg !== 0 && pred.tell.p >= tellTh) offTellAt = now;
         }
@@ -2439,7 +2456,7 @@ export default function (args = {}) {
     const DMG_ACTS = new Set(["light", "charge", "coldCharge", "dash", "strike", "burst", "ranshi", "farRanshi", "farDash"]);
     /** @typedef {{n: number, hit: number, px: number}} OkRes */
     const okS = {
-        evalMs: 0, openMs: 0, farMs: 0, opens: 0, farByWhiff: 0, switchPend: 0,
+        evalMs: 0, openMs: 0, farMs: 0, opens: 0, farByWhiff: 0, switchPend: 0, chargeDefers: 0,
         /** @type {Record<string, number>} */ closeWhy: {}, /** @type {Record<string, number>} */ closeIns: {},
         /** @type {Record<string, OkRes>} */ res: { near: { n: 0, hit: 0, px: 0 }, far: { n: 0, hit: 0, px: 0 } },
         /** @type {Record<string, OkRes>} */ byAct: {},
@@ -2477,7 +2494,7 @@ export default function (args = {}) {
             || now - lastDarkAt < offAfterTellMs) return "after-tell";
         if (hpNow != null && hpNow < offHpMin) return "hp";
         if (offComboVeto && comboRunning()) return "combo";
-        if (offM30 > offVetoTh) return "m30";
+        if (offM30 > offGateVetoTh) return "m30";
         if (okFarByWhiff) return "whiffs";
         if (sinceOk(now) > offOkMs && sinceDrop(now) > OFF_DROP_WIN_MS) return "not near";
         return "";
@@ -2549,6 +2566,17 @@ export default function (args = {}) {
         mark("off", `far ${far} ms: close-in (sok ${sinceOk(now)}, sdrop ${sinceDrop(now)})`);
         return true;
     }
+    let okDeferAt = 0;
+    /** offChargeFree: a 蓄力 may start now (fut1 2 s mass below it); a deferral is counted / marked once per run of frames. @param {number} now @param {string} a */
+    function okChargeFree(now, a) {
+        if (!offChargeFree || offM60 < offChargeFree) return true;
+        if (now - okDeferAt > 1000) {
+            okS.chargeDefers++;
+            mark("off", `${a} deferred: m60 ${offM60.toFixed(3)} >= ${offChargeFree} ${offState()}`);
+        }
+        okDeferAt = now;
+        return false;
+    }
     /** @param {string} a @param {number} ms */
     function okCharge(a, ms) {
         okSwitchPend = 0;
@@ -2569,9 +2597,13 @@ export default function (args = {}) {
             return;
         }
         if (w === "modao") {
-            if (hot && okCan("charge", now)) return okCharge("charge", offHotHoldMs);
-            const hold = Math.min(qiColdHoldMs, left);
-            if (hold >= offColdMinMs && okCan("charge", now)) return okCharge("coldCharge", Math.round(hold));
+            const can = okCan("charge", now);
+            if (hot && can) {
+                if (okChargeFree(now, "charge")) return okCharge("charge", offHotHoldMs);
+            } else {
+                const hold = Math.min(qiColdHoldMs, left);
+                if (hold >= offColdMinMs && can && okChargeFree(now, "coldCharge")) return okCharge("coldCharge", Math.round(hold));
+            }
         } else if (w === "hengdao" && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && (hot || left >= OFF_COST_MS.switch + offColdMinMs)
             && okCan("switch", now)) {
             offAct("switch", "ok", SWITCH); // only for the 蓄力 right after it
@@ -2747,7 +2779,8 @@ export default function (args = {}) {
         const r = (/** @type {number} */ x, d = 3) => Math.round(x * 10 ** d) / 10 ** d;
         return {
             ...(offOkGate ? { fightMin: r(min, 2), gateFrac: okS.evalMs ? r(okS.openMs / okS.evalMs) : 0, farFrac: okS.evalMs ? r(okS.farMs / okS.evalMs) : 0,
-                opens: okS.opens, closeWhy: okS.closeWhy, farByWhiff: okS.farByWhiff, closeIns: okS.closeIns, switchPend: okS.switchPend } : {}),
+                opens: okS.opens, closeWhy: okS.closeWhy, farByWhiff: okS.farByWhiff, closeIns: okS.closeIns, switchPend: okS.switchPend,
+                ...(offChargeFree ? { chargeDefers: okS.chargeDefers } : {}) } : {}),
             res: okS.res, byAct: okS.byAct, ...(oldWindow ? { window: owS } : {}),
         };
     }
