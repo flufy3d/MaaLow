@@ -136,8 +136,12 @@ const POTION_HP = 0.3, POTION_URGENT = 0.15, POTION_HOLD_MS = 2000, POTION_YIELD
 // potionConfirm: a drink counts only once hp is up POTION_HEAL within POTION_CONFIRM_MS of the tap (a blow ends the
 //   wait at once); else not counted, again after POTION_RETRY_MS (potionMaxPresses taps at most); the hold ends there.
 // potionCdMs: no tap this long after a confirmed heal (live: no cooldown seen, default 0).
-const POTION_QUIET_MS = 1200, POTION_GAP_MS = 700, POTION_PLAN_MS = 1200, POTION_MASS_TH = 0.3, POTION_MASS_BINS = 9;
+const POTION_QUIET_MS = 1200, POTION_GAP_MS = 550, POTION_PLAN_MS = 1200, POTION_MASS_TH = 0.3, POTION_MASS_BINS = 9;
 const POTION_HEAL = 0.08, POTION_CONFIRM_MS = 2000, POTION_RETRY_MS = 600, POTION_URGENT_QUIET_MS = 900;
+// live 360: the bar fills over ~0.5 s, so a heal is seen at +0.09 first: no new tap POTION_SETTLE_MS after it (a
+// tap on the still-rising bar was counted as a third drink). potionWaitMaxMs: a drink due this long goes on the
+// urgent rules (360 waited 4.4 s on own presses, 26% -> 7%).
+const POTION_SETTLE_MS = 2500, POTION_WAIT_MAX_MS = 2500;
 const SLOW_SLACK_MS = 3; // a slow check may start while this much of the budget is left
 const BRANCH_LATE_MS = 400; // an unreleased branch this stale: drop
 
@@ -390,7 +394,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   offFar?: boolean, offFarMs?: number, offFarPushMs?: number, oldWindow?: boolean, oldWindowMs?: number,
  *   offGateVetoTh?: number, offChargeFree?: number, potionSafe?: boolean, potionQuietMs?: number, potionGapMs?: number,
  *   potionPlanMs?: number, potionMassTh?: number, potionConfirm?: boolean, potionConfirmMs?: number,
- *   potionRetryMs?: number, potionMaxPresses?: number, potionCdMs?: number}} [args]
+ *   potionRetryMs?: number, potionMaxPresses?: number, potionCdMs?: number, potionWaitMaxMs?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -453,6 +457,7 @@ export default function (args = {}) {
     const potionRetryMs = args.potionRetryMs ?? POTION_RETRY_MS;
     const potionMaxPresses = args.potionMaxPresses ?? (args.potions ?? 0) * 4;
     const potionCdMs = args.potionCdMs ?? 0;
+    const potionWaitMaxMs = args.potionWaitMaxMs ?? POTION_WAIT_MAX_MS;
     const deadGrey = args.deadGrey ?? true; // test-only: false disables the grey-screen branch (button path alone)
     const s1Hi = args.s1Hi ?? 5; // S1 = fut1 bins 1..s1Hi (v4 window variant: 6 = 4-24 frames; recalibrate trigTh)
     const lockOn = args.lockOn ?? true; // keep the boss locked on (camera tracking); false for A/B
@@ -1861,7 +1866,7 @@ export default function (args = {}) {
     }
     /** v9 potionSafe: why the drink must wait now ("" = go). @param {number} now */
     function potionUnsafe(now) {
-        const urgent = hpNow != null && hpNow <= POTION_URGENT;
+        const urgent = (hpNow != null && hpNow <= POTION_URGENT) || (potionDueAt > 0 && now - potionDueAt >= potionWaitMaxMs);
         if (inCurtain) return "curtain";
         const own = Math.max(lastParryAt, lastDodgeAt, lastOffDownAt);
         if (now - own < (urgent ? Math.min(potionGapMs, 400) : potionGapMs)) return "own press";
@@ -1881,6 +1886,7 @@ export default function (args = {}) {
     function potionDue() {
         if (!potionSafe || maxPotions <= 0 || potionsUsed >= maxPotions || hpNow == null || hpNow > potionHp) return false;
         if (potionConfirm && potionTaps >= potionMaxPresses) return false;
+        if (potionConfirm && lastPotionOkAt && Date.now() - lastPotionOkAt < POTION_SETTLE_MS) return false;
         return !(potionCdMs && lastPotionOkAt && Date.now() - lastPotionOkAt < potionCdMs);
     }
     /** v9 potionConfirm, per frame: the tap counts once hp is up POTION_HEAL; a blow (live: it cancels the drink) or
@@ -1927,9 +1933,13 @@ export default function (args = {}) {
     /** @param {number} now */
     function slowPotion(now) {
         if (maxPotions <= 0 || potionsUsed >= maxPotions) return;
-        if (hpNow == null || hpNow > potionHp) return;
+        if (hpNow == null || hpNow > potionHp) {
+            potionDueAt = 0;
+            return;
+        }
         if (potionConfirm && (potionPend || now - lastPotionFailAt < potionRetryMs || potionTaps >= potionMaxPresses)) return;
         if (potionCdMs && lastPotionOkAt && now - lastPotionOkAt < potionCdMs) return;
+        if (potionConfirm && lastPotionOkAt && now - lastPotionOkAt < POTION_SETTLE_MS) return; // the bar still fills
         if (potionSafe && !potionDueAt) potionDueAt = now;
         if (now < staggerUntil || now < potionHoldUntil || inDodge) return;
         if (plan.some((it) => it.kind === "potion")) return;
