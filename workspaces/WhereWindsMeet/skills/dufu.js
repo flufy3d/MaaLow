@@ -209,6 +209,21 @@ const FAIL_ESCAPE_MS = 250, FAIL_ESCAPE_SPAN_MS = 300, FAIL_ESCAPE_QUIET_MS = 10
 // dodge cd" — a fut-head dodge took the CD at onset +9..12; white flashes 15-20 f after the onset hit 0.33 vs 0.68
 // at 6-14. Parries, tell dodges (grab / slam) and combo / insure items are untouched.
 const FLARE_HOLD_F = 30, FLARE_HOLD_GAP_F = 6;
+// v8 flareSplit + curtainBeatEntry (data/tmp/dufu_breakthrough/flare_curtain2.md, fc2/; args default OFF; offline on
+// 380-419 with head8 per-frame scores, lit axis):
+// flareSplit: flare_other first contacts come in three tiers after the image onset (+9-15 / +16-23 / >= +24 f; after
+//   the device's first report +4-13 / +13-25 / +20-36). head8's fut1 mass at 4-15 f (bins 1..4) FLARE_SPLIT_F frames
+//   after the first report splits them: >= flareSplitTh -> fast (acc 0.82, fast recall 0.71, mid judged fast 0.14).
+//   Fast: the flareHoldFut hold ends at once (the held fut dodges go: 51 of 67 fast first-contact hits had one held
+//   before the contact, 26 with lead 0..4) and the anchored dodge moves to flareFastAnchor frames after the first
+//   report; slow: as before (anchor 14 + hold). Offline -0.15/min gross, risk +0.05 (mids the anchor-14 dodge saved).
+//   The fast tier is mostly the held fut dodges: the anchor itself barely matters (4/6/14 within 0.01/min).
+// curtainBeatEntry (needs curtainTimed): entering the curtain state syncs the timed sweep dodges to a first sweep
+//   curtainBeatF frames later (then every sweepPeriod, SWEEP_N + 1 of them), unless a dark sync just happened (the
+//   cover onset is a sweep itself); a curtain hit always re-syncs an entry sync; the "first sweep, not in the gap"
+//   dodge is off (no in-gap exemption: the timed dodge goes anyway). First curtain hits after the entry: median ~36 f
+//   but IQR -9..+12 around the beat, so the entry phase is coarse: offline only ~0.06/min of 0.39/min unsynced.
+const FLARE_SPLIT_F = 3, FLARE_SPLIT_TH = 0.6, FLARE_FAST_ANCHOR = 6, CURTAIN_BEAT_F = 36;
 // v8 hit chain (data/tmp/dufu_breakthrough/chain.md §4, chain_new.py; args all default OFF). Lit-axis facts (263-411):
 //   the device sees a blow at H+7 (median) and then pressed nothing for 500 ms (H+22); the real stun is ~H+8 on a
 //   light blow (< 4%), ~H+12-15 on a mid one, ~H+18-20 on a heavy one. A 卸势 after a whiffed (early) one is locked
@@ -415,6 +430,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   flareMode?: string, flareAnchor?: Record<string, number>, futDodgeLead?: number, flareGrabDodge?: boolean,
  *   curtainTimed?: boolean, sweepLead?: number, sweepPeriod?: number, curtainKeepParry?: boolean,
  *   flare2?: boolean, failEscape?: boolean, flareHoldFut?: boolean,
+ *   flareSplit?: boolean, flareSplitTh?: number, flareFastAnchor?: number, curtainBeatEntry?: boolean, curtainBeatF?: number,
  *   offShadow?: boolean, offQuietTh?: number, offQuietBins?: number, offQuietFrames?: number, offOkFast?: boolean,
  *   offComboVeto?: boolean, offGuardMs?: number, offAbortMs?: number, offAfterHitMs?: number, offAfterDodgeMs?: number,
  *   offAfterTellMs?: number, offHpMin?: number, offStrongTh?: number, offStrongBins?: number, offContact?: number,
@@ -545,6 +561,12 @@ export default function (args = {}) {
     const flare2 = args.flare2 ?? false; // v8 D: a second 金光 dodge FLARE2_MS after the first (combat.js flare2)
     const failEscape = args.failEscape ?? false; // v8 D: side dodge after a model 卸势 with no ok (combat.js)
     const flareHoldFut = args.flareHoldFut ?? false; // v8: fut dodges wait for the flare_other anchored dodge
+    // v8 flareSplit / curtainBeatEntry (@see FLARE_SPLIT_F): default off
+    const flareSplit = args.flareSplit ?? false; // fast flare_other (fut1 4-15 f mass) -> hold off + early anchor
+    const flareSplitTh = args.flareSplitTh ?? FLARE_SPLIT_TH;
+    const flareFastAnchor = args.flareFastAnchor ?? FLARE_FAST_ANCHOR; // frames after the first report
+    const curtainBeatEntry = (args.curtainBeatEntry ?? false) && curtainTimed; // sweep beat from the curtain entry
+    const curtainBeatF = args.curtainBeatF ?? CURTAIN_BEAT_F; // entry -> first sweep, frames
     // v8 hit chain (@see HIT_ESC_MAX_DROP): all default off
     const staggerByDrop = Array.isArray(args.staggerByDrop) && args.staggerByDrop.length ? args.staggerByDrop : null;
     const hitEscape = args.hitEscape === "parry" || args.hitEscape === "dodge" || args.hitEscape === "both" ? args.hitEscape : "";
@@ -898,6 +920,39 @@ export default function (args = {}) {
         else if (foItem && !foItem.pressedAt && !plan.includes(foItem)) foEnd("anchor dropped");
         else if (!foItem && now - foLastAt > FLARE_HOLD_GAP_F * FRAME_MS) foEnd("episode over");
     }
+    // v8 flareSplit: the current flare_other episode's first report (0 = none), its verdict, its anchored item
+    let fsFrom = 0;
+    /** @type {boolean | null} */
+    let fsFast = null;
+    /** @type {PlanItem | null} */
+    let fsItem = null;
+    const fsS = { fast: 0, slow: 0, moved: 0, holdEnds: 0 };
+    /** Per tell output: judge the episode fast / slow FLARE_SPLIT_F frames after its first report. @param {number} now */
+    function fsTick(now) {
+        if (!fsFrom || fsFast !== null) return;
+        if (now - fsFrom > FLARE_HOLD_F * FRAME_MS) {
+            fsFrom = 0;
+            return;
+        }
+        if (now - fsFrom < FLARE_SPLIT_F * FRAME_MS - 10) return;
+        let near = 0;
+        for (let i = 1; i <= 4; i++) near += futBin(0, i);
+        fsFast = near >= flareSplitTh;
+        fsS[fsFast ? "fast" : "slow"]++;
+        mark("flaresplit", `${fsFast ? "fast" : "slow"} (fut1 4-15f ${near.toFixed(2)} at +${Math.round((now - fsFrom) / FRAME_MS)}f)`);
+        if (!fsFast) return;
+        if (flareHoldFut && foFrom) {
+            fsS.holdEnds++;
+            foEnd("split fast");
+        }
+        if (fsItem && !fsItem.pressedAt && plan.includes(fsItem)) {
+            const at = Math.max(now, fsFrom + flareFastAnchor * FRAME_MS);
+            fsItem.atMs = at;
+            fsItem.untilMs = Math.max(fsItem.cMs, at) + missGraceMs;
+            fsItem.why += " split fast";
+            fsS.moved++;
+        }
+    }
     /** @type {Pred | null} */
     let pred = null;
     /** @type {PlanItem[]} */
@@ -1222,11 +1277,17 @@ export default function (args = {}) {
                     foS.holds++;
                     mark("flarehold", `start (flare_other first report p${Math.round(t.p * 100)})`);
                 }
+                if (flareSplit) {
+                    fsFrom = t.arg === 1 ? now : 0; // v8 flareSplit: a new episode
+                    fsFast = null;
+                    fsItem = null;
+                }
             }
             flareLastFireAt = now;
             flareLastArg = t.arg;
             if (t.arg === 1) foLastAt = now;
         }
+        if (flareSplit) fsTick(now);
         // v7 A2 fallback 2 (per-frame): the tell head's dark class fires at the curtain's black cover onset
         // (233-252: 77/82 dark streaks p>=0.7 (>=2 f) sit at a real episode; 46/54 episodes covered). Sampling a
         // 400 ms slow task would miss the short covers, so it lives here, in the per-frame tell path.
@@ -1296,6 +1357,7 @@ export default function (args = {}) {
             // fire is the image onset +-3 f (tells head vs flares_ds onsets, 233-252: p50 0 / p90 +3). v8: the
             // mode's table (late: show ~2 f before the contact); parry mode's grab dodge keeps the v7 table
             at = flareFirstAt + ((flareMode === "parry" ? ANCHOR_FRAMES[label] : anchorTab[label]) ?? 4) * FRAME_MS;
+            if (flareSplit && t.arg === 1 && fsFast === true && fsFrom === flareFirstAt) at = flareFirstAt + flareFastAnchor * FRAME_MS;
             if (at < now) at = now;
         } else if (t.arg === 4) {
             if (st.mode < 0) return;
@@ -1312,6 +1374,7 @@ export default function (args = {}) {
             foItem = tit;
             foS.anchorPlans++;
         }
+        if (flareSplit && anchored && t.arg === 1 && fsFrom && fsFrom === flareFirstAt && !fsItem) fsItem = tit;
     }
     /** @param {string} dir @returns {Point} */
     function dirPoint(dir) {
@@ -1720,7 +1783,7 @@ export default function (args = {}) {
             const est = now - SWEEP_HIT_LAG_F * FRAME_MS;
             const valid = sweepAt && est - sweepAt <= (SWEEP_N + 0.5) * sweepPeriodMs;
             const j = valid ? Math.round((est - sweepAt) / sweepPeriodMs) : 0;
-            if (!valid || (j >= 1 && Math.abs(est - sweepAt - j * sweepPeriodMs) <= SWEEP_HIT_NEAR_F * FRAME_MS)) sweepSync(est, "hit");
+            if (!valid || sweepSrc === "entry" || (j >= 1 && Math.abs(est - sweepAt - j * sweepPeriodMs) <= SWEEP_HIT_NEAR_F * FRAME_MS)) sweepSync(est, "hit");
         }
         let escaped = false;
         if (hitEscape) {
@@ -1948,8 +2011,9 @@ export default function (args = {}) {
     }
     /** The next timed sweep dodge's tap time, or 0 (none due: unsynced / done / not in the curtain). */
     function sweepPressAt() {
-        if (!curtainTimed || !sweepAt || !inCurtain || sweepK > SWEEP_N) return 0;
-        if (Date.now() - sweepAt > (SWEEP_N + 0.5) * sweepPeriodMs) return 0; // a stale sync (e.g. a dark blip long before)
+        const sweepN = sweepSrc === "entry" ? SWEEP_N + 1 : SWEEP_N; // v8 curtainBeatEntry: entry + 3 beats
+        if (!curtainTimed || !sweepAt || !inCurtain || sweepK > sweepN) return 0;
+        if (Date.now() - sweepAt > (sweepN + 0.5) * sweepPeriodMs) return 0; // a stale sync (e.g. a dark blip long before)
         // a dodge tapped at t shows DODGE_SHOW_F after a 卸势 tapped at t would light: show = sweep - sweepLead
         return sweepAt + sweepK * sweepPeriodMs - (sweepLead + DODGE_SHOW_F) * FRAME_MS;
     }
@@ -1978,6 +2042,21 @@ export default function (args = {}) {
         const at = sweepPressAt();
         return !!at && at - now < SWEEP_QUIET_MS && at - now > -SWEEP_LATE_MS;
     };
+    // v8 curtainBeatEntry: the curtain state's last seen value, counters
+    let beatWasIn = false;
+    const beatS = { entries: 0, keptDark: 0 };
+    /** v8 curtainBeatEntry, per frame: on entering the curtain state, sync the first sweep curtainBeatF later. @param {number} now */
+    function beatEntryTick(now) {
+        if (inCurtain === beatWasIn) return;
+        beatWasIn = inCurtain;
+        if (!inCurtain) return;
+        if (sweepAt && sweepSrc === "dark" && now - sweepAt < SWEEP_DARK_GAP_MS + SWEEP_DARK_LAG_F * FRAME_MS) {
+            beatS.keptDark++; // the cover onset just synced (a sweep itself): keep it
+            return;
+        }
+        beatS.entries++;
+        sweepSync(now + curtainBeatF * FRAME_MS - sweepPeriodMs, "entry");
+    }
     /**
      * v8 failEscape (combat.js windupAct): the last model 卸势 (fut/combo) shows no ok FAIL_ESCAPE_MS after its press
      * while the timing head still sees a blow (S1 >= trigTh): one side dodge (left / right in turn), only within
@@ -2070,7 +2149,7 @@ export default function (args = {}) {
         }
         const [a, b] = g;
         const inGap = a - GAP_IN <= ME_X && ME_X <= b + GAP_IN;
-        if (!curtainDodged && now - curtainFirstAt >= CURTAIN_FIRST_DODGE_MS && !inGap && !sweepQuiet(now)) {
+        if (!curtainBeatEntry && !curtainDodged && now - curtainFirstAt >= CURTAIN_FIRST_DODGE_MS && !inGap && !sweepQuiet(now)) {
             curtainDodged = true;
             walkOff();
             mark("curtain", "first sweep, not in the gap: dodge");
@@ -3469,6 +3548,7 @@ export default function (args = {}) {
                 executePlan(now2);
                 if (hitEscape) hitEscParryTick(Date.now());
                 if (earlyRepress) earlyRepressTick(Date.now());
+                if (curtainBeatEntry) beatEntryTick(Date.now()); // v8: before the tick (an entry beat can't be due yet)
                 if (curtainTimed) sweepTick(Date.now());
                 if (failEscape) failEscapeTick(Date.now());
                 expire(now2);
@@ -3513,9 +3593,10 @@ export default function (args = {}) {
     log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, ` +
         `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, weak ${weakWindows} (${weakLights} light, ${weakExecs} exec), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
-    const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn;
+    const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn || flareSplit;
     if (flareHoldFut) foEnd("run over");
-    const v8 = v8On ? { flareMode, tellParries, flare2s, timedSweeps, failEscapes, ...(flareHoldFut ? { holdFut: foS } : {}), ...(chainOn ? { chain: hcS } : {}) } : undefined;
+    const v8 = v8On ? { flareMode, tellParries, flare2s, timedSweeps, failEscapes, ...(flareHoldFut ? { holdFut: foS } : {}), ...(chainOn ? { chain: hcS } : {}),
+        ...(flareSplit ? { split: fsS } : {}), ...(curtainBeatEntry ? { beatEntry: beatS } : {}) } : undefined;
     if (v8) log(`v8: ${JSON.stringify(v8)}`);
     // v8 offense: only when one of its switches is on (the default return is unchanged)
     if (qiPlan && qp.shown) qpEnd(Date.now(), "run over");
