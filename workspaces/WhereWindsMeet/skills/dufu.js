@@ -155,6 +155,75 @@ const QI_LIGHT_MS = 420, QI_EXEC_WAIT_MS = 4000, QI_EXEC_EVERY = 3;
 /** @type {Box} */ const EXEC_ROI = [815, 391, 75, 75];
 const EXEC_THRESHOLD = 0.7;
 
+// v8 switches (args, all default OFF; offline checks in data/tmp/dufu_breakthrough/newargs/, see attribution.md /
+// ceiling.md there). Device timing measured on the lit axis of attr_hits.py (253-262 run logs):
+//   anchored flare dodge: first tell fire = image onset + 3.3 f (other) / 4.2 f (grab), press -> white flash +1.3 f;
+//   flare contacts after the image onset: device "other" 20-21 f (p25-75), device "grab" 12-14 f (half of them 20-21).
+// flareMode "late": the flare dodge shows 0-4 f before the contact (the measured dodge window; anchor 4 showed it
+//   9 f after the onset = 11-12 f early on "other", 80% hit). Replayed on the 253-262 anchored presses (v8_check.py):
+//   other 13 -> lead median 2.6, 49% in 0..4 (anchor 4: 5%; 14: 1.6 / 51% but 23% late); grab 5 -> 46% (4: 23%).
+// flareMode "parry": flare tells press a 卸势 (lit ~5-6 f before the contact, the ps peak) instead of a dodge, and fut
+//   dodges become parries while a flare is live (ceiling.md: flare segments parry-only P(hit) 0.10 vs dodge 0.43);
+//   other 11 -> lit lead median 5.6, 79% in 2..9 (ps table ~0.87 ok before the 0.87 flare discount). slam: no device
+//   data, contact ~+19 (levers.md) -> late 12 / parry 9.
+//   Grabs keep the v7 anchor-4 dodge unless flareGrabDodge:false (grab-timed contacts parry only 11/22).
+/** @type {Record<string, number>} */ const ANCHOR_LATE = { flare_grab: 5, flare_slam: 12, flare_other: 13 };
+/** @type {Record<string, number>} */ const ANCHOR_PARRY = { flare_grab: 3, flare_slam: 9, flare_other: 11 };
+const FUT_DODGE_LEAD_LATE = 2; // flareMode late: fut-head dodge items target a 2 f show lead (parries keep 9)
+const FLARE_LIVE_MS = 1000; // a flare tell / image flare this recent: "a flare is live" (parry mode)
+// curtainTimed: 幕布 sweeps come every 65 f (219-262: 63 single gaps median 65.0, sd 1.8; 31 double gaps 129), three
+//   per episode (sweep index 0/1/2: 102/50/60 contacts), the first one at the black cover onset (tell dark p>=0.7
+//   onset +0/+1 f in 44/56). Sync = the first frame of a tell-dark run (sweep at its press-clock time - 3.3 f) or a
+//   hit in the curtain (- 7.2 f); the next SWEEP_N sweeps get one back dodge each, showing sweepLead f before.
+const SWEEP_PERIOD_F = 65, SWEEP_N = 2, SWEEP_LEAD_F = 2;
+const SWEEP_DARK_LAG_F = 3.3, SWEEP_HIT_LAG_F = 7.2; // device sync time - sweep frame (press-lit clock)
+const DODGE_SHOW_F = 0.65; // a dodge tap shows white this long after a 卸势 tapped at the same moment would light
+const SWEEP_LATE_MS = 100, SWEEP_GAP_MS = 300, SWEEP_QUIET_MS = 600, SWEEP_DARK_GAP_MS = 500, SWEEP_HIT_NEAR_F = 10;
+// flare2 (combat.js): the 金光 dodge gets a second one FLARE_AGAIN_MS (250) after the 50 ms tap, whatever happened
+const FLARE2_MS = 300;
+// failEscape (combat.js, rounds 88-90: 10.3 -> 7.8 hits/min): a model 卸势 with no ok 250 ms after its press while the
+// timing head still sees a blow (S1 >= trigTh): one side dodge, at most within 300 ms after that, >= 1 s after a dodge
+const FAIL_ESCAPE_MS = 250, FAIL_ESCAPE_SPAN_MS = 300, FAIL_ESCAPE_QUIET_MS = 1000;
+// flareHoldFut: from the device tell's first flare_other report until that episode's anchored dodge is pressed (or
+// the episode ends: no flare_other report for FLARE_HOLD_GAP_F with no anchored item, the item dropped, or
+// FLARE_HOLD_F after the first report), unpressed fut dodge items are not pressed (kept, so they can still expire or
+// go after the hold). Batch 2 (287-302, flareAnchor other 14): 66 other anchored plans, 23 pressed, 42 "blocked
+// dodge cd" — a fut-head dodge took the CD at onset +9..12; white flashes 15-20 f after the onset hit 0.33 vs 0.68
+// at 6-14. Parries, tell dodges (grab / slam) and combo / insure items are untouched.
+const FLARE_HOLD_F = 30, FLARE_HOLD_GAP_F = 6;
+
+// v8 offense (data/tmp/dufu_breakthrough/offense_plan.md, part 1; args all default OFF: with none of offShadow /
+// qiPlan / untilCleared nothing below runs, no read, no touch, no extra return field).
+// offShadow (§2): quietGate = fut1 m30 (bins 0..offQuietBins-1 = a contact within 1-30 f) < offQuietTh for
+//   offQuietFrames head frames in a row (1 within OFF_OK_FAST_MS of a 卸势 ok), no combo veto (a next segment
+//   expected), no unpressed plan item within offGuardMs, not in curtain / dodge / stagger / potion, offAfterTellMs
+//   past any tell (金光 / curtain / dark / sweep), offAfterHitMs past a hit, offAfterDodgeMs past a dodge, hp >=
+//   offHpMin (not in a qiPlan window). 253-262 offline: 26% of the time, then no contact for 1 s 96.8% / 2 s 86%,
+//   ~12 opens/min. offenseGuard's give-up rules (a plan item <= offAbortMs away, a tell, a hit since the open,
+//   curtain / dodge / potion) are logged as aborts. Shadow = reads + `off` events + return stats, no touches.
+// qiPlan (§3 T0, replaces qiAttack): 气竭 = 真气 read empty twice (the empty bar reads -1, @see slowWeak) AND the
+//   处决 button seen (combat.js weakNow: round 120's fake 衰弱 had 真气 0 while the boss struck on); the button can show
+//   before 真气 reads empty (126/127), so it is also looked for while 真气 <= QP_EXEC_QI_MAX. Clock = the button's first
+//   sighting (it goes ~3.2 s later: 129 lost it): 轻击 every qiLightMs until qiExecAfter, 处决 when seen from then
+//   (late mark past qiExecMax), its scene QP_EXEC_SCENE_MS, 轻击 until 真气 is back (qiPostMs at most). Unpressed
+//   fut items are dropped every frame of the window (tell / combo / insure items stay). Taps go on contact
+//   offContact with a self-managed lift (never tap()'s contact 1 / upDue). Hot 蓄力 / weapon switch: not yet.
+// untilCleared: combat.js deadCheck's phase-one-cleared rule (阶段二 in the quest line twice in a row, or the boss
+//   bar full again after CLR_LOW_READS reads in its last 10%) ends the run with reason "cleared".
+const OFF_QUIET_TH = 0.10, OFF_QUIET_BINS = 8, OFF_QUIET_FRAMES = 3, OFF_STRONG_TH = 0.05, OFF_STRONG_BINS = 9;
+const OFF_GUARD_MS = 600, OFF_ABORT_MS = 150, OFF_AFTER_HIT_MS = 1500, OFF_AFTER_DODGE_MS = 300, OFF_AFTER_TELL_MS = 1500;
+const OFF_HP_MIN = 0.35, OFF_OK_FAST_MS = 1000, OFF_CONTACT = 3, OFF_TAP_MS = 40;
+const QP_EXEC_AFTER_MS = 2600, QP_EXEC_MAX_MS = 2900, QP_LIGHT_MS = 300, QP_POST_MS = 3500;
+const QP_EXEC_SCENE_MS = 1100, QP_EXEC_TAP_MS = 50, QP_MAX_MS = 9000, QP_CAND_MS = 8000, QP_EXEC_QI_MAX = 25;
+const QP_PENDING_MS = 300; // a tell / combo item this close: no 轻击 now
+const CLR_EVERY_MS = 400, CLR_LOW_PX = 38, CLR_LOW_READS = 3, CLR_FULL_PX = 378, CLR_FULL_READS = 2, CLR_GAP = 12;
+/** @type {Box} */ const CLR_LAST_ROI = [349, 27, 16, 6]; // the bar used up: its left end pale lilac (combat.js)
+const CLR_LAST = { lower: [150, 140, 200], upper: [225, 225, 255] };
+const QUEST_WHITE = { lower: [0, 0, 190], upper: [180, 70, 255], method: 40 };
+/** @type {Box} */ const PHASE2_TOP = [222, 140, 12, 4]; // 二: >= 8 px
+/** @type {Box} */ const PHASE2_BOTTOM = [220, 147, 16, 4]; // >= 10 px
+/** @type {Box} */ const PHASE1_MID = [220, 144, 16, 3]; // 一: <= 2 px
+
 // 重伤 (dead): the grey screen with both bars gone, or the 再次训练 panel (combat.js)
 /** @type {Box} */ const GREY_ROI = [100, 100, 880, 500];
 const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
@@ -173,7 +242,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
-/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean}} PlanItem */
+/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, noCd?: boolean}} PlanItem */
 
 /**
  * @param {{observe?: boolean, ms?: number, potions?: number, model?: string, backModel?: string, parry?: Point,
@@ -186,7 +255,15 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   lockOn?: boolean, staggerHold?: boolean, holdMinLead?: number, presched?: boolean, preschedN?: number,
  *   comboV6?: boolean, keepPlanOnHit?: boolean, posthit?: number, posthitNarrow?: boolean,
  *   tellAnchor?: boolean, curtainImg?: boolean, curtainDark?: boolean, repress?: boolean, repressGap?: number,
- *   closeIn?: boolean, qiAttack?: boolean, qiExecWait?: number, execThreshold?: number}} [args]
+ *   closeIn?: boolean, qiAttack?: boolean, qiExecWait?: number, execThreshold?: number,
+ *   flareMode?: string, flareAnchor?: Record<string, number>, futDodgeLead?: number, flareGrabDodge?: boolean,
+ *   curtainTimed?: boolean, sweepLead?: number, sweepPeriod?: number, curtainKeepParry?: boolean,
+ *   flare2?: boolean, failEscape?: boolean, flareHoldFut?: boolean,
+ *   offShadow?: boolean, offQuietTh?: number, offQuietBins?: number, offQuietFrames?: number, offOkFast?: boolean,
+ *   offComboVeto?: boolean, offGuardMs?: number, offAbortMs?: number, offAfterHitMs?: number, offAfterDodgeMs?: number,
+ *   offAfterTellMs?: number, offHpMin?: number, offStrongTh?: number, offStrongBins?: number, offContact?: number,
+ *   qiPlan?: boolean, qiExecAfter?: number, qiExecMax?: number, qiLightMs?: number, qiPostMs?: number,
+ *   untilCleared?: boolean}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -194,6 +271,12 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   staggerHold / presched: the v5 scheduler switches (@see HOLD_MIN_LEAD / COMBO_GAPS; both default off);
  *   comboV6: the v6 pair's combo slot is the gap-to-next-segment bins (presched/preschedN switch semantics);
  *   keepPlanOnHit / posthit / posthitNarrow: the v6 second-segment lifecycle switches (all default off).
+ *   v8 (all default off, @see ANCHOR_LATE / SWEEP_PERIOD_F / FLARE2_MS / FAIL_ESCAPE_MS): flareMode dodge | late |
+ *   parry, flareAnchor (overrides the mode's anchor table), futDodgeLead, flareGrabDodge; curtainTimed (sweepLead,
+ *   sweepPeriod); curtainKeepParry; flare2; failEscape; flareHoldFut (@see FLARE_HOLD_F).
+ *   v8 offense (all default off, @see OFF_QUIET_TH / QP_EXEC_AFTER_MS / CLR_LOW_PX): offShadow (+ the off* gate
+ *   parameters; logs only, no touches); qiPlan (qiExecAfter / qiExecMax / qiLightMs / qiPostMs; replaces qiAttack);
+ *   untilCleared.
  */
 export default function (args = {}) {
     const observe = args.observe ?? false;
@@ -254,6 +337,47 @@ export default function (args = {}) {
     /** @type {Record<string, number>} */
     const dodgeLead = { grab: 5, slam: 4, other: 5, sweep: 5, ...(args.dodgeLead ?? {}) };
     const leadMs = (/** @type {string} */ kind) => (dodgeLead[kind] ?? 0) * FRAME_MS;
+    // v8 A: flare handling. "dodge" = v7 (tellAnchor decides the anchoring); "late" = anchored dodges that show ~2 f
+    // before the contact + fut dodges at futDodgeLead; "parry" = flare tells press an anchored 卸势, fut dodges turn
+    // into parries while a flare is live (grabs keep the v7 anchor dodge while flareGrabDodge)
+    const flareMode = args.flareMode === "late" || args.flareMode === "parry" ? args.flareMode : "dodge";
+    const flareGrabDodge = args.flareGrabDodge ?? true; // parry mode: grab tells still dodge (anchor 4)
+    /** @type {Record<string, number>} the anchor table of the mode (frames after the episode's first tell fire) */
+    const anchorTab = { ...(flareMode === "late" ? ANCHOR_LATE : flareMode === "parry" ? ANCHOR_PARRY : ANCHOR_FRAMES), ...(args.flareAnchor ?? {}) };
+    // fut-head dodge items: own target show lead (default = the parry's, i.e. the v7 issue lead; late mode 2 f)
+    const dodgeIssueLead = args.futDodgeLead != null || flareMode === "late"
+        ? Math.round(((args.futDodgeLead ?? FUT_DODGE_LEAD_LATE) + (args.latencyFrames ?? LATENCY_FRAMES)) * FRAME_MS) : issueLead;
+    const leadOf = (/** @type {string} */ kind) => (kind === "dodge" ? dodgeIssueLead : issueLead);
+    const curtainTimed = args.curtainTimed ?? false; // v8 B: timed back dodges at the 幕布 sweeps (65 f period)
+    const sweepLead = args.sweepLead ?? SWEEP_LEAD_F; // frames the timed sweep dodge shows before the sweep
+    const sweepPeriodMs = (args.sweepPeriod ?? SWEEP_PERIOD_F) * FRAME_MS;
+    const curtainKeepParry = args.curtainKeepParry ?? false; // v8 C: entering 幕布 drops only dodge-type plan items
+    const flare2 = args.flare2 ?? false; // v8 D: a second 金光 dodge FLARE2_MS after the first (combat.js flare2)
+    const failEscape = args.failEscape ?? false; // v8 D: side dodge after a model 卸势 with no ok (combat.js)
+    const flareHoldFut = args.flareHoldFut ?? false; // v8: fut dodges wait for the flare_other anchored dodge
+    // v8 offense (offense_plan.md part 1, @see OFF_QUIET_TH): all default off
+    const offShadow = args.offShadow ?? false; // quietGate + offenseGuard judged and logged every frame, no touches
+    const offQuietTh = args.offQuietTh ?? OFF_QUIET_TH;
+    const offQuietBins = args.offQuietBins ?? OFF_QUIET_BINS;
+    const offQuietFrames = args.offQuietFrames ?? OFF_QUIET_FRAMES;
+    const offOkFast = args.offOkFast ?? true;
+    const offComboVeto = args.offComboVeto ?? true;
+    const offGuardMs = args.offGuardMs ?? OFF_GUARD_MS;
+    const offAbortMs = args.offAbortMs ?? OFF_ABORT_MS;
+    const offAfterHitMs = args.offAfterHitMs ?? OFF_AFTER_HIT_MS;
+    const offAfterDodgeMs = args.offAfterDodgeMs ?? OFF_AFTER_DODGE_MS;
+    const offAfterTellMs = args.offAfterTellMs ?? OFF_AFTER_TELL_MS;
+    const offHpMin = args.offHpMin ?? OFF_HP_MIN;
+    const offStrongTh = args.offStrongTh ?? OFF_STRONG_TH;
+    const offStrongBins = args.offStrongBins ?? OFF_STRONG_BINS;
+    const offContact = args.offContact ?? OFF_CONTACT; // the offense finger (0 stick, 1 parry/tap, 2 dodge)
+    const qiPlan = args.qiPlan ?? false; // 气竭 window v2 from the 处决 button's first sighting (replaces qiAttack)
+    const qiExecAfter = args.qiExecAfter ?? QP_EXEC_AFTER_MS;
+    const qiExecMax = args.qiExecMax ?? QP_EXEC_MAX_MS;
+    const qiLightMs = args.qiLightMs ?? QP_LIGHT_MS;
+    const qiPostMs = args.qiPostMs ?? QP_POST_MS;
+    const untilCleared = args.untilCleared ?? false; // end with reason "cleared" at phase one's end (combat.js)
+    const offOn = offShadow || qiPlan || untilCleared;
 
     const start = Date.now();
     const until = start + untilMs;
@@ -474,6 +598,33 @@ export default function (args = {}) {
     let lastAvoidDropAt = 0; // an "avoid" (curtain) item just handled: no new one for a moment
     let lastTellArg = -1, lastTellDodgeArg = -1, lastTellDodgeAt = 0; // tell continuity + one dodge per episode
     let flareLastFireAt = 0, flareFirstAt = 0, flareLastArg = -1; // v7 A1 anchor: the current flare episode's onset
+    let flareSeenAt = 0; // v8: the image flare rule's last hit (parry mode's "flare live")
+    let sweepAt = 0, sweepK = 1, sweepSrc = "", lastDarkAt = 0, timedSweeps = 0; // v8 curtainTimed
+    let lastPlanParryAt = 0, failEscapeFor = 0, failEscapes = 0, flare2s = 0, tellParries = 0; // v8 flare2 / failEscape
+    // v8 flareHoldFut: the hold's start (0 = off), the last flare_other report, the episode's anchored item
+    let foFrom = 0, foLastAt = 0;
+    /** @type {PlanItem | null} */
+    let foItem = null;
+    /** @type {Set<PlanItem>} */
+    const foHeld = new Set();
+    /** @type {{holds: number, blockedItems: number, blockedFrames: number, anchorPlans: number, anchorPressed: number, heldPressedAfter: number, ends: Record<string, number>, pressMsAfterFirst: number[]}} */
+    const foS = { holds: 0, blockedItems: 0, blockedFrames: 0, anchorPlans: 0, anchorPressed: 0, heldPressedAfter: 0, ends: {}, pressMsAfterFirst: [] };
+    /** @param {string} why */
+    function foEnd(why) {
+        if (!foFrom) return;
+        foS.ends[why] = (foS.ends[why] ?? 0) + 1;
+        mark("flarehold", `end (${why}) +${Math.round((Date.now() - foFrom) / FRAME_MS)}f, ${foHeld.size} fut dodge held`);
+        foFrom = 0;
+        foItem = null;
+        foHeld.clear();
+    }
+    /** Per frame after tellPlan: end the hold when its episode is over. @param {number} now */
+    function foTick(now) {
+        if (!foFrom) return;
+        if (now - foFrom > FLARE_HOLD_F * FRAME_MS) foEnd("timeout");
+        else if (foItem && !foItem.pressedAt && !plan.includes(foItem)) foEnd("anchor dropped");
+        else if (!foItem && now - foLastAt > FLARE_HOLD_GAP_F * FRAME_MS) foEnd("episode over");
+    }
     /** @type {Pred | null} */
     let pred = null;
     /** @type {PlanItem[]} */
@@ -599,8 +750,15 @@ export default function (args = {}) {
         for (let i = 1; i < 5; i++) if (p[i] > p[bi]) bi = i;
         if (bi === 0) return null;
         if (bi === 3) return /** @type {"avoid"} */ ("avoid");
-        if (bi === 2) return (p[2] ?? 0) >= dodgeMinP ? /** @type {"dodge"} */ ("dodge") : /** @type {"parry"} */ ("parry");
+        if (bi === 2) return (p[2] ?? 0) >= dodgeMinP && !flareParryNow() ? /** @type {"dodge"} */ ("dodge") : /** @type {"parry"} */ ("parry");
         return /** @type {"parry"} */ ("parry");
+    }
+    /** v8 parry mode: a flare (tell class 1-3 or the image rule) is live and not a grab that keeps its dodge. */
+    function flareParryNow() {
+        if (flareMode !== "parry") return false;
+        const now = Date.now();
+        if (now - flareLastFireAt > FLARE_LIVE_MS && now - flareSeenAt > FLARE_LIVE_MS) return false;
+        return !(flareGrabDodge && flareLastArg === 2 && now - flareLastFireAt <= FLARE_LIVE_MS);
     }
     /** @param {Partial<PlanItem>} o */
     function addItem(o) {
@@ -627,7 +785,9 @@ export default function (args = {}) {
     function cancelFuture(why) {
         let n = 0;
         for (const it of [...plan]) {
-            if (it.src === "fut" && !it.committed && !it.pressedAt) {
+            // v8 curtainKeepParry: only the dodge-type items go (v7 also dropped the 卸势 of plain blows: A arm 4/8
+            // "predicted, not pressed" hits were planned parries cancelled by curtainImg/curtainDark entries)
+            if (it.src === "fut" && !it.committed && !it.pressedAt && !(curtainKeepParry && it.kind === "parry")) {
                 plan.splice(plan.indexOf(it), 1);
                 n++;
             }
@@ -677,7 +837,7 @@ export default function (args = {}) {
                 main0.kind = defAction(pred.def[k]) ?? /** @type {"parry"} */ ("parry");
                 if (main0.kind === "avoid" && !inCurtain) main0.kind = "parry";
                 main0.cMs = now + st2.exp * FRAME_MS;
-                main0.atMs = main0.cMs - issueLead;
+                main0.atMs = main0.cMs - leadOf(main0.kind);
                 main0.untilMs = main0.cMs + missGraceMs;
                 rerepresses++;
                 mark("re-press", `k${k} ${main0.kind} late fill c+${Math.round(st2.exp)}f`);
@@ -689,7 +849,7 @@ export default function (args = {}) {
                 main0.repressed = true;
                 main0.pressedAt = 0;
                 main0.atMs = now + REPRESS_DELAY_FRAMES * FRAME_MS;
-                main0.cMs = main0.atMs + issueLead;
+                main0.cMs = main0.atMs + leadOf(main0.kind);
                 main0.untilMs = main0.atMs + 40 * FRAME_MS;
                 rerepresses++;
                 mark("re-press", `k${k} ${main0.kind} second tap +${REPRESS_DELAY_FRAMES}f`);
@@ -721,7 +881,7 @@ export default function (args = {}) {
                 if (now - lastAvoidDropAt < 500) return;
                 lastAvoidDropAt = now;
             }
-            addItem({ kind: t.kind, k, src: "fut", cMs: t.cMs, atMs: t.cMs - issueLead, untilMs: t.cMs + missGraceMs, why: `pred k${k}${t.covers ? " covers both" : ""}` });
+            addItem({ kind: t.kind, k, src: "fut", cMs: t.cMs, atMs: t.cMs - leadOf(t.kind), untilMs: t.cMs + missGraceMs, why: `pred k${k}${t.covers ? " covers both" : ""}` });
         } else if (!main.committed && !main.pressedAt) {
             if (Math.abs(t.cMs - main.cMs) > REVISE_MOVE_MS || t.kind !== main.kind) {
                 revisions++;
@@ -729,7 +889,7 @@ export default function (args = {}) {
                 main.kind = t.kind;
             }
             main.cMs = t.cMs;
-            main.atMs = t.cMs - issueLead;
+            main.atMs = t.cMs - leadOf(t.kind);
             main.untilMs = t.cMs + missGraceMs;
         } else if (repress && main.pressedAt && !main.repressed && t.cMs - main.cMs > REVISE_MOVE_MS
                    && t.cMs - main.pressedAt >= repressGapMs && t.cMs - now >= LATE_FRAMES * FRAME_MS
@@ -739,16 +899,16 @@ export default function (args = {}) {
             main.repressed = true;
             main.pressedAt = 0;
             main.cMs = t.cMs;
-            main.atMs = t.cMs - issueLead;
+            main.atMs = t.cMs - leadOf(main.kind);
             main.untilMs = t.cMs + missGraceMs;
             rerepresses++;
             mark("re-press", `k${k} ${main.kind} contact moved +${Math.round(moved / FRAME_MS)}f`);
         }
         if (t.branchMs) {
-            if (!br) addItem({ kind: t.kind, k, src: "fut", branch: true, cMs: t.branchMs, atMs: t.branchMs - issueLead, untilMs: t.branchMs + missGraceMs, t1Ms: t.cMs, why: "branch (bimodal)" });
+            if (!br) addItem({ kind: t.kind, k, src: "fut", branch: true, cMs: t.branchMs, atMs: t.branchMs - leadOf(t.kind), untilMs: t.branchMs + missGraceMs, t1Ms: t.cMs, why: "branch (bimodal)" });
             else if (!br.pressedAt) {
                 br.cMs = t.branchMs;
-                br.atMs = t.branchMs - issueLead;
+                br.atMs = t.branchMs - leadOf(br.kind);
                 br.untilMs = t.branchMs + missGraceMs;
                 br.t1Ms = t.cMs;
             }
@@ -777,14 +937,27 @@ export default function (args = {}) {
         lastTellArg = t.arg;
         // v7 A1: track flare episodes for the onset anchor (first fire of a flare run of the same class)
         if (t.arg >= 1 && t.arg <= 3) {
-            if (now - flareLastFireAt > 20 * FRAME_MS || t.arg !== flareLastArg) flareFirstAt = now;
+            if (now - flareLastFireAt > 20 * FRAME_MS || t.arg !== flareLastArg) {
+                flareFirstAt = now;
+                if (flareHoldFut && t.arg === 1) {
+                    if (foFrom) foEnd("new episode");
+                    foFrom = now;
+                    foItem = null;
+                    foS.holds++;
+                    mark("flarehold", `start (flare_other first report p${Math.round(t.p * 100)})`);
+                }
+            }
             flareLastFireAt = now;
             flareLastArg = t.arg;
+            if (t.arg === 1) foLastAt = now;
         }
         // v7 A2 fallback 2 (per-frame): the tell head's dark class fires at the curtain's black cover onset
         // (233-252: 77/82 dark streaks p>=0.7 (>=2 f) sit at a real episode; 46/54 episodes covered). Sampling a
         // 400 ms slow task would miss the short covers, so it lives here, in the per-frame tell path.
         if (t.arg === 6 && t.p >= 0.7) {
+            // v8 curtainTimed: a dark run's first frame is a sweep (the cover onset or a later black sweep): sync
+            if (curtainTimed && now - lastDarkAt > SWEEP_DARK_GAP_MS) sweepSync(now - SWEEP_DARK_LAG_F * FRAME_MS, "dark");
+            lastDarkAt = now;
             if (++curtainDarkSeen >= 2 && curtainDark && !inCurtain
                 && (t.p >= 0.85 || (meanNow >= 0 && meanNow < 30))) {
                 inCurtain = true;
@@ -815,7 +988,8 @@ export default function (args = {}) {
         if (t.p < tellDodgeP || !sustained) return;
         if (t.arg === lastTellDodgeArg && now - lastTellDodgeAt < tellEpisodeMs) return;
         const st = futStats(pred.fut[0]);
-        const anchored = tellAnchor && t.arg >= 1 && t.arg <= 3;
+        // v8: the late / parry flare modes are onset-anchored whatever tellAnchor says
+        const anchored = (tellAnchor || flareMode !== "dodge") && t.arg >= 1 && t.arg <= 3;
         if (!anchored && (st.none >= 0.65 || st.sum <= 0.01)) return;
         const c1 = st.none >= 0.65 || st.sum <= 0.01 ? now + 350 : now + st.exp * FRAME_MS;
         if (c1 - now < LATE_FRAMES * FRAME_MS) {
@@ -825,10 +999,21 @@ export default function (args = {}) {
         }
         const label = TELL_LABELS[t.arg];
         let at;
+        if (anchored && flareMode === "parry" && !(flareGrabDodge && t.arg === 2)) {
+            // v8 parry mode: the flare gets a 卸势 lit ~5-6 f before its contact (one per episode, like the dodge)
+            const pat = Math.max(now, flareFirstAt + (anchorTab[label] ?? ANCHOR_PARRY.flare_other) * FRAME_MS);
+            if (plan.some((x) => x.src === "tell" && x.kind === "parry" && Math.abs(x.atMs - pat) < TELL_DEDUP_MS)) return;
+            lastTellDodgeArg = t.arg;
+            lastTellDodgeAt = now;
+            tellParries++;
+            addItem({ kind: "parry", k: -1, src: "tell", cMs: pat + issueLead, atMs: pat, untilMs: pat + issueLead + missGraceMs, why: `tell ${label} parry anchor p${Math.round(t.p * 100)}` });
+            return;
+        }
         if (anchored) {
             // v7 A1: press at the episode onset + anchor frames (the appearance lands ~5 f later); the head's first
-            // fire is the image onset +-3 f (tells head vs flares_ds onsets, 233-252: p50 0 / p90 +3)
-            at = flareFirstAt + (ANCHOR_FRAMES[label] ?? 4) * FRAME_MS;
+            // fire is the image onset +-3 f (tells head vs flares_ds onsets, 233-252: p50 0 / p90 +3). v8: the
+            // mode's table (late: show ~2 f before the contact); parry mode's grab dodge keeps the v7 table
+            at = flareFirstAt + ((flareMode === "parry" ? ANCHOR_FRAMES[label] : anchorTab[label]) ?? 4) * FRAME_MS;
             if (at < now) at = now;
         } else if (t.arg === 4) {
             if (st.mode < 0) return;
@@ -840,7 +1025,11 @@ export default function (args = {}) {
         if (plan.some((x) => x.src === "tell" && x.kind === "dodge" && Math.abs(x.atMs - at) < TELL_DEDUP_MS)) return;
         lastTellDodgeArg = t.arg;
         lastTellDodgeAt = now;
-        addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: at, untilMs: Math.max(c1, at) + missGraceMs, why: `tell ${label}${anchored ? " anchor" : ""} p${Math.round(t.p * 100)}` });
+        const tit = addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: at, untilMs: Math.max(c1, at) + missGraceMs, why: `tell ${label}${anchored ? " anchor" : ""} p${Math.round(t.p * 100)}` });
+        if (flareHoldFut && foFrom && anchored && t.arg === 1 && !foItem) {
+            foItem = tit;
+            foS.anchorPlans++;
+        }
     }
     /** @param {string} dir @returns {Point} */
     function dirPoint(dir) {
@@ -883,13 +1072,28 @@ export default function (args = {}) {
             presses.parry++;
             it.pressedAt = lastParryAt;
             if (it.src !== "insure") pressedSinceHit = true;
+            if (it.src === "fut" || it.src === "combo") lastPlanParryAt = lastParryAt; // v8 failEscape's timer
             mark("press", `parry${observe ? " sim" : ""} k${it.k} ${it.src} c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f ${it.why}`);
         } else if (it.kind === "dodge") {
+            const tapAt = Date.now();
             pressDodge(it.dir);
             pressFrame(frameIdx);
             presses.dodge++;
             it.pressedAt = Date.now();
             mark("press", `dodge${observe ? " sim" : ""} ${it.dir} k${it.k} ${it.src} c+${Math.round((it.cMs - it.pressedAt) / FRAME_MS)}f ${it.why}`);
+            if (flareHoldFut) {
+                if (it === foItem) {
+                    foS.anchorPressed++;
+                    foS.pressMsAfterFirst.push(tapAt - foFrom);
+                    foEnd("anchor pressed");
+                } else if (it.src === "fut" && foHeld.has(it)) foS.heldPressedAfter++;
+            }
+            if (flare2 && it.src === "tell" && it.why.includes("flare") && !it.why.startsWith("flare2")) {
+                // v8 flare2 (combat.js): the second 金光 dodge goes whatever happened, same way, past the dodge CD
+                flare2s++;
+                addItem({ kind: "dodge", dir: it.dir, k: -1, src: "tell", cMs: it.cMs, atMs: tapAt + FLARE2_MS,
+                          untilMs: tapAt + FLARE2_MS + missGraceMs, noCd: true, why: "flare2 (second 金光 dodge)" });
+            }
         } else if (it.kind === "potion") {
             if (!observe) tap(potionP);
             lastPotionAt = Date.now();
@@ -907,7 +1111,7 @@ export default function (args = {}) {
         if (now < potionHoldUntil) return "potion";
         if (inDodge) return "dodge";
         if (it.kind === "parry" && now - lastParryAt < parryCd) return "parry cd";
-        if (it.kind === "dodge" && now - lastDodgeAt < dodgeCd) return "dodge cd";
+        if (it.kind === "dodge" && now - lastDodgeAt < dodgeCd && !it.noCd) return "dodge cd";
         return "";
     }
     /** @param {number} now */
@@ -934,6 +1138,16 @@ export default function (args = {}) {
                 continue;
             }
             if (it.kind === "potion" && plan.some((o) => o !== it && o.kind !== "potion" && !o.pressedAt && o.atMs <= now + POTION_YIELD_MS)) continue;
+            if (foFrom && it.src === "fut" && it.kind === "dodge") {
+                // v8 flareHoldFut: the flare_other anchored dodge owns the dodge CD; keep the item for after the hold
+                foS.blockedFrames++;
+                if (!foHeld.has(it)) {
+                    foHeld.add(it);
+                    foS.blockedItems++;
+                    mark("flarehold", `fut dodge k${it.k} held c+${Math.round((it.cMs - now) / FRAME_MS)}f`);
+                }
+                continue;
+            }
             if (it.src === "insure") {
                 // v6 post-hit insurance (dufu.js arg posthit): fires at the stagger's end; blocked -> retry (until
                 // expiry); narrow -> skipped when the plan already has a pending item or a plan press since the hit
@@ -997,7 +1211,7 @@ export default function (args = {}) {
                         it.kind = defAction(pred.def[it.k]) ?? /** @type {"parry"} */ ("parry");
                         if (it.kind === "avoid" && !inCurtain) it.kind = "parry";
                         it.cMs = now + st2.exp * FRAME_MS;
-                        it.atMs = it.cMs - issueLead;
+                        it.atMs = it.cMs - leadOf(it.kind);
                         it.untilMs = it.cMs + missGraceMs;
                         rerepresses++;
                         mark("re-press", `k${it.k} late fill c+${Math.round(st2.exp)}f`);
@@ -1026,6 +1240,7 @@ export default function (args = {}) {
             for (let k = 0; k < 3; k++) syncK(now, k);
         }
         tellPlan(now);
+        if (flareHoldFut) foTick(now);
         if (comboDropped()) {
             const st = futStats(pred.fut[0]);
             if (st.none >= 0.65 || st.exp > 30) {
@@ -1073,6 +1288,13 @@ export default function (args = {}) {
             mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n} planned cancelled)`);
         }
         mark("stagger", `${staggerMs} ms`);
+        // v8 curtainTimed: a hit in the curtain is a sweep (re-sync when unsynced or near a predicted sweep)
+        if (curtainTimed && (inCurtain || now - curtainLastAt < CURTAIN_GONE_MS)) {
+            const est = now - SWEEP_HIT_LAG_F * FRAME_MS;
+            const valid = sweepAt && est - sweepAt <= (SWEEP_N + 0.5) * sweepPeriodMs;
+            const j = valid ? Math.round((est - sweepAt) / sweepPeriodMs) : 0;
+            if (!valid || (j >= 1 && Math.abs(est - sweepAt - j * sweepPeriodMs) <= SWEEP_HIT_NEAR_F * FRAME_MS)) sweepSync(est, "hit");
+        }
         if (posthitN > 0) {
             addItem({ kind: "parry", k: -1, src: "insure", cMs: now + staggerMs, atMs: now + staggerMs,
                       untilMs: now + staggerMs + 30 * FRAME_MS, why: `posthit ${posthitNarrow ? "narrow" : "wide"}` });
@@ -1107,7 +1329,7 @@ export default function (args = {}) {
             const c = now - DROP_LAG * FRAME_MS + g * FRAME_MS;
             if (c - now > PLAN_FRAMES_MAX * FRAME_MS || c - now < LATE_FRAMES * FRAME_MS) return;
             for (const o of [...plan]) if (o.src === "fut" && o.k === 0 && !o.pressedAt) dropItem(o, "combo owns slot");
-            addItem({ kind, k: 0, src: "combo", cMs: c, atMs: c - issueLead, untilMs: c + missGraceMs, committed: true,
+            addItem({ kind, k: 0, src: "combo", cMs: c, atMs: c - leadOf(kind), untilMs: c + missGraceMs, committed: true,
                       why: `v6 gap ${g.toFixed(1)}f p${pb.toFixed(2)}` });
             return;
         }
@@ -1121,7 +1343,7 @@ export default function (args = {}) {
         for (let i = 0; i < n; i++) {
             c += gr[idx + i] * FRAME_MS;
             if (c - now > PLAN_FRAMES_MAX * FRAME_MS || c - now < LATE_FRAMES * FRAME_MS) break;
-            addItem({ kind, k: i, src: "combo", cMs: c, atMs: c - issueLead, untilMs: c + missGraceMs, committed: true, why: `template T${pred.combo.arg - 1} seg${st + i}` });
+            addItem({ kind, k: i, src: "combo", cMs: c, atMs: c - leadOf(kind), untilMs: c + missGraceMs, committed: true, why: `template T${pred.combo.arg - 1} seg${st + i}` });
         }
     }
     /** @param {number} now */
@@ -1264,6 +1486,75 @@ export default function (args = {}) {
         }
         stickSide = v;
     }
+    /**
+     * v8 curtainTimed: a sweep happened at press-clock time `at` (the moment a 卸势 tap would have lit at the sweep's
+     * frame): the next SWEEP_N sweeps (period sweepPeriod) get one back dodge each (@see sweepTick).
+     * @param {number} at @param {string} src
+     */
+    function sweepSync(at, src) {
+        sweepAt = at;
+        sweepK = 1;
+        sweepSrc = src;
+        mark("curtain", `sweep sync (${src})${inCurtain ? "" : " (not in curtain yet)"}`);
+    }
+    /** The next timed sweep dodge's tap time, or 0 (none due: unsynced / done / not in the curtain). */
+    function sweepPressAt() {
+        if (!curtainTimed || !sweepAt || !inCurtain || sweepK > SWEEP_N) return 0;
+        if (Date.now() - sweepAt > (SWEEP_N + 0.5) * sweepPeriodMs) return 0; // a stale sync (e.g. a dark blip long before)
+        // a dodge tapped at t shows DODGE_SHOW_F after a 卸势 tapped at t would light: show = sweep - sweepLead
+        return sweepAt + sweepK * sweepPeriodMs - (sweepLead + DODGE_SHOW_F) * FRAME_MS;
+    }
+    /** v8 curtainTimed, per frame: tap the timed back dodge when due (late by > SWEEP_LATE_MS: skip that sweep). @param {number} now */
+    function sweepTick(now) {
+        for (;;) {
+            const at = sweepPressAt();
+            if (!at || now < at) return;
+            if (now - at > SWEEP_LATE_MS) {
+                mark("curtain", `timed sweep ${sweepK} late by ${now - at} ms: skipped`);
+                sweepK++;
+                continue;
+            }
+            if (inDodge || now < staggerUntil || now < potionHoldUntil || now - lastDodgeAt < SWEEP_GAP_MS) return; // retry
+            pressDodge("back");
+            pressFrame(frameIdx);
+            presses.dodge++;
+            timedSweeps++;
+            mark("curtain", `timed sweep ${sweepK} dodge${observe ? " sim" : ""} (${sweepSrc} sync +${Math.round((now - sweepAt) / FRAME_MS)}f)`);
+            sweepK++;
+            return;
+        }
+    }
+    /** v8 curtainTimed: keep the gap rule's own dodges away from a timed one that is about to go. @param {number} now */
+    const sweepQuiet = (now) => {
+        const at = sweepPressAt();
+        return !!at && at - now < SWEEP_QUIET_MS && at - now > -SWEEP_LATE_MS;
+    };
+    /**
+     * v8 failEscape (combat.js windupAct): the last model 卸势 (fut/combo) shows no ok FAIL_ESCAPE_MS after its press
+     * while the timing head still sees a blow (S1 >= trigTh): one side dodge (left / right in turn), only within
+     * FAIL_ESCAPE_SPAN_MS of that, never within FAIL_ESCAPE_QUIET_MS of a dodge, not in stagger / curtain / potion.
+     * @param {number} now
+     */
+    function failEscapeTick(now) {
+        if (!failEscape || !lastPlanParryAt || failEscapeFor === lastPlanParryAt || !pred) return;
+        const dt = now - lastPlanParryAt;
+        if (dt < FAIL_ESCAPE_MS) return;
+        if (dt >= FAIL_ESCAPE_MS + FAIL_ESCAPE_SPAN_MS || lastOkAt >= lastPlanParryAt || lastHitAt >= lastPlanParryAt) {
+            failEscapeFor = lastPlanParryAt; // window over, or it worked (ok), or it is already a hit (stagger)
+            return;
+        }
+        if (inDodge || inCurtain || weakSince || now < staggerUntil || now < potionHoldUntil || now - lastDodgeAt < FAIL_ESCAPE_QUIET_MS) return;
+        let s1 = 0;
+        for (let i = 1; i <= s1Hi; i++) s1 += futBin(0, i);
+        if (s1 < trigTh) return;
+        failEscapeFor = lastPlanParryAt;
+        failEscapes++;
+        const dir = failEscapes % 2 ? "left" : "right";
+        pressDodge(dir);
+        pressFrame(frameIdx);
+        presses.dodge++;
+        mark("press", `dodge${observe ? " sim" : ""} ${dir} k-1 failEscape 卸势没卸住 +${dt}ms S1 ${s1.toFixed(2)}`);
+    }
     /** @param {number} now */
     function slowCurtain(now) {
         if (!curtainOn) return;
@@ -1291,7 +1582,7 @@ export default function (args = {}) {
                 curtainLastAt = now;
                 if (!curtainFirstAt) curtainFirstAt = now;
                 walkOff();
-                if (!curtainDodged && now - curtainDodgeAt > CURTAIN_DODGE_GAP_MS && now - lastDodgeAt > dodgeCd) {
+                if (!curtainDodged && now - curtainDodgeAt > CURTAIN_DODGE_GAP_MS && now - lastDodgeAt > dodgeCd && !sweepQuiet(now)) {
                     curtainDodged = true;
                     curtainDodgeAt = now;
                     mark("curtain", "cover: dodge");
@@ -1315,7 +1606,7 @@ export default function (args = {}) {
         if (!curtainFirstAt) curtainFirstAt = now;
         if (g === "covered") {
             walkOff();
-            if (now - curtainDodgeAt > CURTAIN_DODGE_GAP_MS && now - lastDodgeAt > dodgeCd) {
+            if (now - curtainDodgeAt > CURTAIN_DODGE_GAP_MS && now - lastDodgeAt > dodgeCd && !sweepQuiet(now)) {
                 curtainDodgeAt = now;
                 mark("curtain", "covered: dodge");
                 if (observe) {
@@ -1330,7 +1621,7 @@ export default function (args = {}) {
         }
         const [a, b] = g;
         const inGap = a - GAP_IN <= ME_X && ME_X <= b + GAP_IN;
-        if (!curtainDodged && now - curtainFirstAt >= CURTAIN_FIRST_DODGE_MS && !inGap) {
+        if (!curtainDodged && now - curtainFirstAt >= CURTAIN_FIRST_DODGE_MS && !inGap && !sweepQuiet(now)) {
             curtainDodged = true;
             walkOff();
             mark("curtain", "first sweep, not in the gap: dodge");
@@ -1349,8 +1640,10 @@ export default function (args = {}) {
         const seen = seeFlash();
         flare = seen ? 1 : 0;
         if (!seen) return;
+        flareSeenAt = now; // v8 parry mode: the flare is live
         mark("flare", "gold + streak");
         if (!flareDodge || inCurtain) return;
+        if (flareMode === "parry") return; // v8: the fut items turn into parries meanwhile (@see flareParryNow)
         if (now - lastDodgeAt < dodgeCd || now - lastFlareDodgeAt < 1000) return;
         if (plan.some((x) => x.kind === "dodge" && Math.abs(x.atMs - now) < TELL_DEDUP_MS * 2)) return;
         const st = pred ? futStats(pred.fut[0]) : null;
@@ -1434,6 +1727,313 @@ export default function (args = {}) {
         const on = (now - start) % CI_CYCLE_MS < CI_ON_MS;
         strideF(on && !pending && !inDodge ? 1 : 0);
     }
+
+    // ===================================================================================================== v8 offense
+    // offense_plan.md part 1 (@see OFF_QUIET_TH). Reads plan / pred / lastHitAt / lastOkAt / staggerUntil / inDodge /
+    // inCurtain / potionHoldUntil / bossNow / qiNow / qiEmpty; writes only its own state, plus weakSince while a
+    // qiPlan window is on (so closeIn stops walking and failEscape stays quiet, as with qiAttack) and the unpressed
+    // fut items it drops in that window. Called from the main loop only when offOn.
+    let offUpAt = 0, offTouched = false; // offContact is down until offUpAt (0: up); lifted by offUp, never by upDue
+    /** Put the offense finger down on p for ms (the lift comes from offUp, every loop turn). @param {Point} p @param {number} ms */
+    function offDown(p, ms) {
+        if (observe) return;
+        if (offUpAt) touch.up(offContact);
+        touch.down(p, offContact);
+        offUpAt = Date.now() + ms;
+        offTouched = true;
+    }
+    /** Lift the offense finger when due (or now). */
+    function offUp(force = false) {
+        if (!offUpAt || (!force && Date.now() < offUpAt)) return;
+        touch.up(offContact);
+        offUpAt = 0;
+    }
+
+    // --- quietGate shadow (offShadow)
+    let offRun = 0, offRunReady = -1, offM30 = 1, offM40 = 1, offTellAt = 0, offTickAt = 0;
+    let offOpenAt = 0, offHitSeen = 0, offOkSeen = 0;
+    const offS = { evalMs: 0, openMs: 0, strongMs: 0, opens: 0, closes: 0, aborts: 0, inOpenHit: 0, inOpenOk: 0 };
+    /** @type {Record<string, number>} */ const offCloseWhy = {};
+    /** @type {Record<string, number>} */ const offAbortWhy = {};
+    /** @type {number[]} */ const offLens = [];
+    /** @type {number[]} */ const offStarts = [];
+    /** @type {number[]} */ const offContactTs = [];
+    /** fut1 mass in bins 0..n-1. @param {number} n */
+    const offMass = (n) => {
+        let s = 0;
+        for (let i = 0; i < n; i++) s += futBin(0, i);
+        return s;
+    };
+    const offComboLabel = () => (pred ? `${(comboV6 ? COMBO6_LABELS : COMBO_LABELS)[pred.combo.arg]} ${pred.combo.p.toFixed(2)}` : "-");
+    const offState = () => `m30 ${offM30.toFixed(3)} m40 ${offM40.toFixed(3)} combo ${offComboLabel()}`;
+    /** Why the gate is shut now ("" = open). @param {number} now */
+    function offGateWhy(now) {
+        if (!pred) return "no pred";
+        if (inCurtain) return "curtain";
+        if (inDodge) return "dodge";
+        if (now < staggerUntil) return "stagger";
+        if (now < potionHoldUntil) return "potion";
+        if (now - lastHitAt < offAfterHitMs) return "after-hit";
+        if (now - lastDodgeAt < offAfterDodgeMs) return "after-dodge";
+        if (now - offTellAt < offAfterTellMs || now - flareSeenAt < offAfterTellMs || now - curtainLastAt < offAfterTellMs
+            || now - lastDarkAt < offAfterTellMs) return "after-tell";
+        if (!qp.shown && hpNow != null && hpNow < offHpMin) return "hp";
+        const near = plan.find((it) => !it.pressedAt && it.atMs - now <= offGuardMs);
+        if (near) return `plan(${near.kind} ${near.src})`;
+        if (offComboVeto && comboRunning()) return "combo";
+        if (offM30 >= offQuietTh) return "m30";
+        const need = offOkFast && now - lastOkAt < OFF_OK_FAST_MS ? 1 : offQuietFrames;
+        if (offRun < need) return "quiet-run";
+        return "";
+    }
+    /** offenseGuard's give-up rules while the (shadow) gate is open ("" = keep on). @param {number} now */
+    function offAbortNow(now) {
+        if (lastHitAt >= offOpenAt) return "hit";
+        if (inCurtain) return "curtain";
+        if (inDodge) return "dodge";
+        if (now < potionHoldUntil) return "potion";
+        const t = pred?.tell;
+        if (t && t.arg !== 0 && t.p >= tellTh) return `tell(${t.label})`;
+        const near = plan.find((it) => !it.pressedAt && it.atMs - now <= offAbortMs);
+        if (near) return `plan(${near.kind} ${near.src})`;
+        return "";
+    }
+    /** @param {number} now @param {string} why @param {boolean} abort */
+    function offClose(now, why, abort) {
+        const len = now - offOpenAt;
+        offLens.push(len);
+        const key = why.replace(/\(.*$/, "");
+        if (abort) {
+            offS.aborts++;
+            offAbortWhy[key] = (offAbortWhy[key] ?? 0) + 1;
+        } else {
+            offS.closes++;
+            offCloseWhy[key] = (offCloseWhy[key] ?? 0) + 1;
+        }
+        mark("off", `${abort ? "abort" : "close"} ${why} after ${len} ms, ${offState()}`);
+        offOpenAt = 0;
+    }
+    /** New hits / oks (onHit / onOk times): counted when they land while the gate is open. */
+    function offContacts() {
+        /** @param {number} t @param {string} kind */
+        const one = (t, kind) => {
+            offContactTs.push(t);
+            if (!offOpenAt || t < offOpenAt) return;
+            if (kind === "hit") offS.inOpenHit++;
+            else offS.inOpenOk++;
+            mark("off", `contact ${kind} in the open gate +${t - offOpenAt} ms`);
+        };
+        if (lastHitAt > offHitSeen) one((offHitSeen = lastHitAt), "hit");
+        if (lastOkAt > offOkSeen) one((offOkSeen = lastOkAt), "ok");
+    }
+    /** Per frame, before executePlan: lifts, contact bookkeeping, the qiPlan fut filter, the shadow aborts. @param {number} now */
+    function offenseGuard(now) {
+        offUp();
+        if (qiPlan && qp.shown) {
+            // the boss strikes nothing in 衰弱: the fut items would only eat the window (tell dodges stay)
+            for (const it of [...plan]) {
+                if (it.src === "fut" && !it.pressedAt) {
+                    plan.splice(plan.indexOf(it), 1);
+                    qp.futDrops++;
+                }
+            }
+        }
+        if (!offShadow) return;
+        offContacts();
+        if (!offOpenAt) return;
+        const why = offAbortNow(now);
+        if (why) offClose(now, why, true);
+    }
+    /** Per frame, after expire: the gate (shadow) and the qiPlan window. @param {number} now */
+    function offenseTick(now) {
+        offUp();
+        if (qiPlan) qpTick(now);
+        if (!offShadow || !pred) return;
+        if (ready !== offRunReady) { // a new head output: the run counts head frames
+            offRunReady = ready;
+            offM30 = offMass(offQuietBins);
+            offM40 = offMass(offStrongBins);
+            offRun = offM30 < offQuietTh ? offRun + 1 : 0;
+            if (pred.tell.arg !== 0 && pred.tell.p >= tellTh) offTellAt = now;
+        }
+        const dt = offTickAt ? Math.min(200, now - offTickAt) : 0;
+        offTickAt = now;
+        const why = offGateWhy(now);
+        if (bossNow > 50) { // fight time only (the walk-in / cut scenes do not count)
+            offS.evalMs += dt;
+            if (offOpenAt) offS.openMs += dt;
+            if (!why && offM40 < offStrongTh) offS.strongMs += dt;
+        }
+        if (!why && !offOpenAt) {
+            offOpenAt = now;
+            offS.opens++;
+            offStarts.push(now);
+            mark("off", `open ${offState()} run ${offRun}${now - lastOkAt < OFF_OK_FAST_MS ? " (ok fast)" : ""}${offM40 < offStrongTh ? " strong" : ""}`);
+        } else if (why && offOpenAt) offClose(now, why, false);
+    }
+    /** The shadow's return stats (rates per fight minute; the clean-after-open shares over opens >= 2 s old). */
+    function offSummary() {
+        const end = Date.now();
+        const min = offS.evalMs / 60000;
+        const sorted = [...offLens].sort((a, b) => a - b);
+        let n2 = 0, clean1 = 0, clean2 = 0;
+        for (const s of offStarts) {
+            if (s + 2000 > end) continue;
+            n2++;
+            if (!offContactTs.some((t) => t > s && t <= s + 1000)) clean1++;
+            if (!offContactTs.some((t) => t > s && t <= s + 2000)) clean2++;
+        }
+        const r = (/** @type {number} */ x, d = 3) => Math.round(x * 10 ** d) / 10 ** d;
+        return {
+            gateFrac: offS.evalMs ? r(offS.openMs / offS.evalMs) : 0, strongFrac: offS.evalMs ? r(offS.strongMs / offS.evalMs) : 0,
+            fightMin: r(min, 2), opens: offS.opens, opensPerMin: min ? r(offS.opens / min, 2) : 0,
+            openMsMedian: sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0,
+            inOpenHit: offS.inOpenHit, inOpenOk: offS.inOpenOk, inOpenPerMin: min ? r((offS.inOpenHit + offS.inOpenOk) / min, 2) : 0,
+            clean1s: n2 ? r(clean1 / n2) : 0, clean2s: n2 ? r(clean2 / n2) : 0, closes: offS.closes, aborts: offS.aborts,
+            closeWhy: offCloseWhy, abortWhy: offAbortWhy,
+        };
+    }
+
+    // --- qiPlan: the 气竭 window v2, clocked from the 处决 button's first sighting
+    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0 };
+    const qpS = { windows: 0, fakes: 0, execs: 0, lost: 0, lights: 0, postLights: 0, futDrops: 0 };
+    /** @type {number[]} */ const qpShownToTap = [];
+    /** @type {number[]} */ const qpBossDrop = [];
+    /** @param {number} now @param {boolean} post */
+    function qpLight(now, post) {
+        if (now - qp.lastLight < qiLightMs) return;
+        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil) return;
+        if (plan.some((x) => !x.pressedAt && x.atMs - now < QP_PENDING_MS)) return; // a tell dodge is about to go
+        qp.lastLight = now;
+        offDown(LIGHT, OFF_TAP_MS);
+        if (post) qp.post++;
+        else qp.lights++;
+        mark("qi", `qiPlan 轻击${observe ? " sim" : ""}${post ? " (after 处决)" : ""} +${now - qp.shown} ms`);
+    }
+    /** @param {number} now @param {string} why */
+    function qpEnd(now, why) {
+        const drop = qp.boss0 - bossNow;
+        qpS.lights += qp.lights;
+        qpS.postLights += qp.post;
+        qpS.futDrops += qp.futDrops;
+        qpBossDrop.push(drop);
+        if (!qp.tapAt) qpS.lost++;
+        mark("qi", `qiPlan window over (${why}) after ${now - qp.shown} ms: ${qp.lights} + ${qp.post} 轻击, 处决 ` +
+            `${qp.tapAt ? `at ${qp.tapAt - qp.shown} ms` : "not tapped"}, boss ${qp.boss0} -> ${bossNow} px, ${qp.futDrops} fut items dropped`);
+        weakSince = 0;
+        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0 });
+    }
+    /** @param {number} now */
+    function qpTick(now) {
+        // 真气 empty: read 0, or the read keeps failing while the boss bar is up and the last read was tiny (slowWeak)
+        const empty = qiNow === 0 || (qiEmpty >= 2 && qiNow >= 0 && qiNow <= 25 && bossNow > 50);
+        qp.zeroRun = empty ? qp.zeroRun + 1 : 0;
+        const back = qiEmpty === 0 && qiNow > 4;
+        if (!qp.cand && !qp.shown && qp.zeroRun >= 2) {
+            qp.cand = now;
+            mark("qi", `qiPlan: 真气 empty (read ${qiNow}, miss ${qiEmpty}), 处决 looked for`);
+        }
+        // the 处决 button (combat/execute.png, @see slowWeak): every QI_EXEC_EVERY frames while 真气 is low, every
+        // frame once it is due; the button may show before 真气 reads empty (126/127)
+        const low = qp.cand > 0 || (qiNow >= 0 && qiNow <= QP_EXEC_QI_MAX && bossNow > 50);
+        const due = qp.shown > 0 && !qp.tapAt && now - qp.shown >= qiExecAfter;
+        let ex = false;
+        if ((low || qp.shown) && !qp.tapAt && (due || now - qp.lastMatch >= QI_EXEC_EVERY * FRAME_MS)) {
+            qp.lastMatch = now;
+            ex = perFrame("exec", (im) => match("combat/execute.png", { image: im, roi: EXEC_ROI, threshold: execThreshold }).hit);
+        }
+        if (!qp.shown) {
+            if (ex && !back) {
+                qp.shown = now;
+                qp.boss0 = bossNow;
+                qpS.windows++;
+                weakSince = now;
+                walkOff();
+                mark("qi", `qiPlan: 处决 shows ${qp.cand ? `${now - qp.cand} ms after 真气 empty` : `before 真气 read empty (真气 ${qiNow})`}`);
+            } else if (qp.cand && (back || now - qp.cand > QP_CAND_MS)) {
+                qpS.fakes++;
+                mark("qi", `qiPlan: no 处决 in ${now - qp.cand} ms (${back ? "真气 back" : "timeout"}): not 衰弱`);
+                qp.cand = 0;
+            }
+            return;
+        }
+        if (back) return qpEnd(now, "真气 back");
+        if (now - qp.shown > QP_MAX_MS) return qpEnd(now, "window limit");
+        if (qp.tapAt && now - qp.tapAt > QP_EXEC_SCENE_MS + qiPostMs) return qpEnd(now, "qiPostMs");
+        if (!qp.tapAt) {
+            if (due && ex) {
+                qp.tapAt = now;
+                qpS.execs++;
+                qpShownToTap.push(now - qp.shown);
+                offDown(EXECUTE, QP_EXEC_TAP_MS);
+                pressFrame(frameIdx);
+                mark("qi", `qiPlan 处决 tap${observe ? " sim" : ""} ${now - qp.shown} ms after it showed${now - qp.shown > qiExecMax ? " (late)" : ""}`);
+                return;
+            }
+            if (now - qp.shown > qiExecMax && !qp.lateMarked) {
+                qp.lateMarked = true;
+                mark("qi", `qiPlan: 处决 not seen at ${now - qp.shown} ms (qiExecMax ${qiExecMax}), still looked for`);
+            }
+            // before qiExecAfter strike; after it wait for the button (covered by effects at times, combat.js 130),
+            // striking again once it is well past its ~3.2 s life
+            if (!due || now - qp.shown > qiExecMax + 300) qpLight(now, false);
+            return;
+        }
+        if (now - qp.tapAt >= QP_EXEC_SCENE_MS) qpLight(now, true);
+    }
+
+    // --- untilCleared: phase one over (combat.js deadCheck / phase2 / cleared)
+    let clrAt = 0, clrLow = 0, clrFull = 0, clrLast = false, clrPhase2 = 0, clrBossPx = -1;
+    /** The boss bar read from its left end (combat.js bossOn): px, 0 when used up, null when not read. */
+    function clrBoss() {
+        const red = color({ ...BOSS_RED, image: img, roi: BOSS_ROI, count: 10, connected: true });
+        if (red.hit) {
+            const boxes = red.results.map((m) => m.box).sort((p, q) => p[0] - q[0]);
+            if (boxes[0][0] <= BOSS_ROI[0] + 2) {
+                let right = boxes[0][0] + boxes[0][2];
+                for (const [x, , w] of boxes.slice(1)) {
+                    if (x - right > CLR_GAP) break;
+                    right = Math.max(right, x + w);
+                }
+                return right - BOSS_ROI[0];
+            }
+        }
+        if (color({ ...CLR_LAST, image: img, roi: CLR_LAST_ROI, count: 48 }).hit) return 0;
+        return null;
+    }
+    /** The quest line reads 「…阶段二」 (combat.js phase2). */
+    function clrPhase2Now() {
+        const n = (/** @type {Box} */ roi) => {
+            const h = color({ ...QUEST_WHITE, image: img, roi, count: 1 });
+            return h.hit ? h.results[0]?.count ?? 0 : 0;
+        };
+        return n(PHASE2_TOP) >= 8 && n(PHASE2_BOTTOM) >= 10 && n(PHASE1_MID) <= 2;
+    }
+    /** @param {number} now @returns {boolean} the run is over (cleared) */
+    function clearedCheck(now) {
+        if (now - clrAt < CLR_EVERY_MS) return false;
+        clrAt = now;
+        clrPhase2 = clrPhase2Now() ? clrPhase2 + 1 : 0;
+        if (clrPhase2 >= 2) {
+            mark("cleared", "阶段二 in the quest line");
+            return true;
+        }
+        const b = clrBoss();
+        if (b == null) return false;
+        clrBossPx = b;
+        clrLow = b <= CLR_LOW_PX ? clrLow + 1 : 0;
+        if (clrLow >= CLR_LOW_READS && !clrLast) {
+            clrLast = true;
+            mark("cleared", `boss bar in its last 10% (${b} px)`);
+        }
+        clrFull = b >= CLR_FULL_PX ? clrFull + 1 : 0;
+        if (clrFull >= CLR_FULL_READS && clrLast) {
+            mark("cleared", "the boss bar full again after its last 10%");
+            return true;
+        }
+        return false;
+    }
+    // ================================================================================================= end v8 offense
     /** @type {{name: string, every: number, at: number, active: () => boolean, run: (now: number) => void}[]} */
     const slowQueue = [
         { name: "boss", every: slowEvery, at: 0, active: () => true, run: () => { bossNow = bossRead(); } },
@@ -1447,7 +2047,7 @@ export default function (args = {}) {
         { name: "flare", every: flareEvery, at: 0, active: () => true, run: slowFlare },
         { name: "potion", every: slowEvery, at: 0, active: () => maxPotions > 0 && potionsUsed < maxPotions && hpNow != null && hpNow <= potionHp, run: slowPotion },
         { name: "closein", every: 100, at: 0, active: () => closeIn, run: closeInWalk },
-        { name: "weak", every: 100, at: 0, active: () => qiAttack, run: slowWeak },
+        { name: "weak", every: 100, at: 0, active: () => qiAttack && !qiPlan, run: slowWeak }, // v8 offense: qiPlan replaces it
     ];
 
     /** The newest stream frame: img's if that is it, else a screenshot of it; a still screen waits NEXT_MS. */
@@ -1483,6 +2083,10 @@ export default function (args = {}) {
                 reason = "dead";
                 break;
             }
+            if (untilCleared && clearedCheck(now)) { // v8 offense
+                reason = "cleared";
+                break;
+            }
             approach(now);
             lockCheck(now);
             const dtMs = lastEntryT ? Math.min(300, Math.max(10, now - lastEntryT)) : FRAME_MS;
@@ -1505,8 +2109,12 @@ export default function (args = {}) {
             if (pred) {
                 const now2 = Date.now();
                 syncPlan(now2);
+                if (offOn) offenseGuard(now2); // v8 offense
                 executePlan(now2);
+                if (curtainTimed) sweepTick(Date.now());
+                if (failEscape) failEscapeTick(Date.now());
                 expire(now2);
+                if (offOn) offenseTick(Date.now()); // v8 offense
                 predMark(now2);
             }
             for (const s of slowQueue) {
@@ -1536,6 +2144,7 @@ export default function (args = {}) {
         if (!observe) {
             releaseDue(true);
             tup(0);
+            if (offTouched) touch.up(offContact); // v8 offense
         }
     }
     const backS = stats(tMs.back), headS = stats(tMs.head), readS = stats(tMs.reads), loopS = stats(tMs.loop);
@@ -1543,7 +2152,21 @@ export default function (args = {}) {
     log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, ` +
         `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, weak ${weakWindows} (${weakLights} light, ${weakExecs} exec), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
+    const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut;
+    if (flareHoldFut) foEnd("run over");
+    const v8 = v8On ? { flareMode, tellParries, flare2s, timedSweeps, failEscapes, ...(flareHoldFut ? { holdFut: foS } : {}) } : undefined;
+    if (v8) log(`v8: ${JSON.stringify(v8)}`);
+    // v8 offense: only when one of its switches is on (the default return is unchanged)
+    if (qiPlan && qp.shown) qpEnd(Date.now(), "run over");
+    const off = offOn ? {
+        ...(offShadow ? { gate: offSummary() } : {}),
+        ...(qiPlan ? { qi: { ...qpS, execShownToTapMs: qpShownToTap, bossDropPx: qpBossDrop } } : {}),
+        ...(untilCleared ? { bossLeftPx: clrBossPx, bossLast: clrLast } : {}),
+    } : undefined;
+    if (off) log(`off: ${JSON.stringify(off)}`);
     return {
+        ...(v8 ? { v8 } : {}),
+        ...(off ? { off } : {}),
         reason, observe, looks, ready, headCalls, readyPct,
         presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, holds, holdPresses, insurePresses,
         rerepresses, weakWindows, weakLights, weakExecs,
