@@ -209,6 +209,27 @@ const FAIL_ESCAPE_MS = 250, FAIL_ESCAPE_SPAN_MS = 300, FAIL_ESCAPE_QUIET_MS = 10
 // dodge cd" — a fut-head dodge took the CD at onset +9..12; white flashes 15-20 f after the onset hit 0.33 vs 0.68
 // at 6-14. Parries, tell dodges (grab / slam) and combo / insure items are untouched.
 const FLARE_HOLD_F = 30, FLARE_HOLD_GAP_F = 6;
+// v8 hit chain (data/tmp/dufu_breakthrough/chain.md §4, chain_new.py; args all default OFF). Lit-axis facts (263-411):
+//   the device sees a blow at H+7 (median) and then pressed nothing for 500 ms (H+22); the real stun is ~H+8 on a
+//   light blow (< 4%), ~H+12-15 on a mid one, ~H+18-20 on a heavy one. A 卸势 after a whiffed (early) one is locked
+//   for 10 f (lit gap 6-9 f ok 0.59-0.66, >= 10 f 0.93-0.99); after a 卸势 that worked (ok) there is no lock (6-9 f
+//   later 243/244 ok). 闪避 then 卸势: no lock.
+// staggerByDrop [[maxDrop, ms], ...]: the post-hit stagger by the read hp drop (first row with drop <= maxDrop; none:
+//   staggerMs); staggerHold's held items go at the new end.
+// hitEscape parry | dodge | both: one press per hit at its stagger end (HIT_ESC_WIN_F to get out, else given up), not
+//   on a hit in / just after the curtain, while drinking (potion hold / tap pending) or above hitEscapeMaxDrop (those
+//   keep posthit as it was); it replaces posthit. parry: yields to a plan 卸势 pressed / due within HIT_ESC_YIELD_F
+//   of it. dodge: side dodge, left / right in turn, dodgeCd. both: the dodge, then the parry rule HIT_ESC_BOTH_GAP_F
+//   later (no lock after a dodge).
+// parryRelockMs: a 卸势 within it of the last one with no ok / hit since and the same believed contact (a re-armed /
+//   insurance item, or contacts <= RELOCK_SAME_F apart) waits until then; its lit lead there < RELOCK_MIN_LEAD_F: dropped.
+// earlyRepress: a model 卸势 (fut / combo) with no ok / hit earlyRepressF frames after it while S1 >= earlyRepressTh
+//   (within EARLY_SPAN_F more frames): one more 卸势 (parryRelockMs applies).
+// curtainParryPlan: in the curtain state the fut head still plans 卸势 items (dodge / avoid targets are ignored); it
+//   needs curtainKeepParry (the curtain tell's cancelFuture would drop them every frame). v8 380-411: 47 plain blows
+//   (0.64/min) landed while the device sat in the curtain state with no planning at all (curtainKeepParry was on).
+const HIT_ESC_MAX_DROP = 0.065, HIT_ESC_WIN_F = 4, HIT_ESC_YIELD_F = 3, HIT_ESC_BOTH_GAP_F = 4;
+const RELOCK_SAME_F = 8, RELOCK_MIN_LEAD_F = 2, EARLY_REPRESS_F = 12, EARLY_SPAN_F = 4;
 
 // v8 offense (data/tmp/dufu_breakthrough/offense_plan.md, part 1; args all default OFF: with none of offShadow /
 // qiPlan / untilCleared nothing below runs, no read, no touch, no extra return field).
@@ -377,7 +398,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut, land: number | null}} Pred */
-/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, noCd?: boolean}} PlanItem */
+/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, noCd?: boolean, relocked?: boolean}} PlanItem */
 
 /**
  * @param {{observe?: boolean, ms?: number, potions?: number, model?: string, backModel?: string, parry?: Point,
@@ -408,7 +429,9 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   offGateVetoTh?: number, offChargeFree?: number, potionSafe?: boolean, potionQuietMs?: number, potionGapMs?: number,
  *   potionPlanMs?: number, potionMassTh?: number, potionConfirm?: boolean, potionConfirmMs?: number,
  *   potionRetryMs?: number, potionMaxPresses?: number, potionCdMs?: number, potionWaitMaxMs?: number,
- *   landTh?: number, landFloor?: number, qiFinish?: number, oursTellTh?: number, oursTellMs?: number}} [args]
+ *   landTh?: number, landFloor?: number, qiFinish?: number, oursTellTh?: number, oursTellMs?: number,
+ *   staggerByDrop?: number[][], hitEscape?: string, hitEscapeMaxDrop?: number, parryRelockMs?: number,
+ *   earlyRepress?: boolean, earlyRepressF?: number, earlyRepressTh?: number, curtainParryPlan?: boolean}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -430,6 +453,8 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   veto alone), offChargeFree (near-gate 蓄力 start: fut1 2 s mass below it; 0 = off). Part 5 (@see LAND_TH):
  *   landTh / landFloor (the v8 land probe in the near gate), qiFinish (真气 low: the gate is near), oursTellTh /
  *   oursTellMs (a 金光 dodge just after our own press needs a surer tell).
+ *   v8 hit chain (all default off, @see HIT_ESC_MAX_DROP): staggerByDrop, hitEscape (hitEscapeMaxDrop), parryRelockMs,
+ *   earlyRepress (earlyRepressF / earlyRepressTh), curtainParryPlan.
  */
 export default function (args = {}) {
     const observe = args.observe ?? false;
@@ -520,6 +545,17 @@ export default function (args = {}) {
     const flare2 = args.flare2 ?? false; // v8 D: a second 金光 dodge FLARE2_MS after the first (combat.js flare2)
     const failEscape = args.failEscape ?? false; // v8 D: side dodge after a model 卸势 with no ok (combat.js)
     const flareHoldFut = args.flareHoldFut ?? false; // v8: fut dodges wait for the flare_other anchored dodge
+    // v8 hit chain (@see HIT_ESC_MAX_DROP): all default off
+    const staggerByDrop = Array.isArray(args.staggerByDrop) && args.staggerByDrop.length ? args.staggerByDrop : null;
+    const hitEscape = args.hitEscape === "parry" || args.hitEscape === "dodge" || args.hitEscape === "both" ? args.hitEscape : "";
+    const hitEscapeMaxDrop = args.hitEscapeMaxDrop ?? HIT_ESC_MAX_DROP;
+    const parryRelockMs = args.parryRelockMs ?? 0;
+    const earlyRepress = args.earlyRepress ?? false;
+    const earlyRepressMs = (args.earlyRepressF ?? EARLY_REPRESS_F) * FRAME_MS;
+    const earlyRepressTh = args.earlyRepressTh ?? trigTh;
+    const curtainParryPlan = args.curtainParryPlan ?? false;
+    const latencyF = args.latencyFrames ?? LATENCY_FRAMES;
+    const chainOn = !!staggerByDrop || !!hitEscape || parryRelockMs > 0 || earlyRepress || curtainParryPlan;
     // v8 offense (offense_plan.md part 1, @see OFF_QUIET_TH): all default off
     const offShadow = args.offShadow ?? false; // quietGate + offenseGuard judged and logged every frame, no touches
     const offQuietTh = args.offQuietTh ?? OFF_QUIET_TH;
@@ -827,6 +863,17 @@ export default function (args = {}) {
     let flareSeenAt = 0; // v8: the image flare rule's last hit (parry mode's "flare live")
     let sweepAt = 0, sweepK = 1, sweepSrc = "", lastDarkAt = 0, timedSweeps = 0; // v8 curtainTimed
     let lastPlanParryAt = 0, failEscapeFor = 0, failEscapes = 0, flare2s = 0, tellParries = 0; // v8 flare2 / failEscape
+    // v8 hit chain (@see HIT_ESC_MAX_DROP): the pending escape, the last 卸势's believed contact / plan press, counts
+    /** @type {{hitAt: number, at: number, dodged: boolean, parried: boolean} | null} */
+    let esc = null;
+    let lastParryC = 0, lastItemParryAt = 0, earlyFor = 0, escDodges = 0, curtainSync = false;
+    const hcS = {
+        stagger: /** @type {Record<string, number>} */ ({}),
+        esc: { scheduled: 0, parry: 0, dodge: 0, yieldPlan: 0, superseded: 0, late: 0, skip: /** @type {Record<string, number>} */ ({}) },
+        relock: { delayed: 0, pressed: 0, gaveUp: 0, bySrc: /** @type {Record<string, number>} */ ({}) },
+        early: { fired: 0, resolved: 0, quiet: 0 },
+        curtainPlans: 0,
+    };
     // v8 flareHoldFut: the hold's start (0 = off), the last flare_other report, the episode's anchored item
     let foFrom = 0, foLastAt = 0;
     /** @type {PlanItem | null} */
@@ -1084,6 +1131,7 @@ export default function (args = {}) {
             }
         }
         const t = targetOf(now, k);
+        if (curtainSync && t && !t.far && t.kind !== "parry") return; // v8 curtainParryPlan: 卸势 targets only
         const main = plan.find((x) => x.k === k && x.src === "fut" && !x.branch);
         const br = plan.find((x) => x.k === k && x.src === "fut" && x.branch);
         if (!t) {
@@ -1108,7 +1156,8 @@ export default function (args = {}) {
                 if (now - lastAvoidDropAt < 500) return;
                 lastAvoidDropAt = now;
             }
-            addItem({ kind: t.kind, k, src: "fut", cMs: t.cMs, atMs: t.cMs - leadOf(t.kind), untilMs: t.cMs + missGraceMs, why: `pred k${k}${t.covers ? " covers both" : ""}` });
+            if (curtainSync) hcS.curtainPlans++;
+            addItem({ kind: t.kind, k, src: "fut", cMs: t.cMs, atMs: t.cMs - leadOf(t.kind), untilMs: t.cMs + missGraceMs, why: `pred k${k}${t.covers ? " covers both" : ""}${curtainSync ? " curtain" : ""}` });
         } else if (!main.committed && !main.pressedAt) {
             if (Math.abs(t.cMs - main.cMs) > REVISE_MOVE_MS || t.kind !== main.kind) {
                 revisions++;
@@ -1305,6 +1354,8 @@ export default function (args = {}) {
             pressFrame(frameIdx);
             presses.parry++;
             it.pressedAt = lastParryAt;
+            lastParryC = it.cMs; // v8 parryRelockMs / hitEscape
+            lastItemParryAt = lastParryAt;
             if (it.src !== "insure") pressedSinceHit = true;
             if (it.src === "fut" || it.src === "combo") lastPlanParryAt = lastParryAt; // v8 failEscape's timer
             mark("press", `parry${observe ? " sim" : ""} k${it.k} ${it.src} c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f ${it.why}`);
@@ -1394,6 +1445,7 @@ export default function (args = {}) {
                 // v6 post-hit insurance (dufu.js arg posthit): fires at the stagger's end; blocked -> retry (until
                 // expiry); narrow -> skipped when the plan already has a pending item or a plan press since the hit
                 if (pressBlocked(it, now)) continue;
+                if (parryRelockMs > 0 && relockAt(now, it.cMs, true)) continue; // v8: retried until it expires
                 if (pressedSinceHit) {
                     dropItem(it, "posthit: plan pressed");
                     continue;
@@ -1408,11 +1460,31 @@ export default function (args = {}) {
                 presses.parry++;
                 insurePresses++;
                 it.pressedAt = lastParryAt;
+                lastParryC = it.cMs;
                 mark("press", `parry${observe ? " sim" : ""} posthit c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f`);
                 dropItem(it, "posthit done");
                 continue;
             }
             const why = pressBlocked(it, now);
+            if (parryRelockMs > 0 && it.kind === "parry" && (why === "" || why === "parry cd")) {
+                // v8 parryRelockMs: a second 卸势 at the same believed contact inside the game's lock waits for its end
+                const end = relockAt(now, it.cMs, !!it.repressed);
+                if (end) {
+                    const lead = (it.cMs - end) / FRAME_MS - latencyF;
+                    const src = it.src + (it.repressed ? "+re" : "");
+                    if (lead < RELOCK_MIN_LEAD_F) {
+                        hcS.relock.gaveUp++;
+                        mark("relock", `${it.kind} k${it.k} ${src} given up: lead ${lead.toFixed(1)}f at +${end - now} ms`);
+                        dropItem(it, "relock: too late");
+                    } else if (!it.relocked) {
+                        it.relocked = true;
+                        hcS.relock.delayed++;
+                        hcS.relock.bySrc[src] = (hcS.relock.bySrc[src] ?? 0) + 1;
+                        mark("relock", `${it.kind} k${it.k} ${src} waits ${end - now} ms (lead ${lead.toFixed(1)}f)`);
+                    }
+                    continue;
+                }
+            }
             if (why) {
                 blocked[why] = (blocked[why] ?? 0) + 1;
                 if (staggerOn && why === "stagger" && !it.branch && it.cMs - now >= holdMinLead * FRAME_MS) {
@@ -1433,7 +1505,108 @@ export default function (args = {}) {
             }
             press(it, now);
             if (it.held) holdPresses++;
+            if (it.relocked) hcS.relock.pressed++;
         }
+    }
+    /**
+     * v8 parryRelockMs: when a 卸势 for believed contact cMs may go (0 = now): the last 卸势 is younger than
+     * parryRelockMs, nothing (ok / hit) came back since, and it is the same contact (same = a re-armed / insurance
+     * press, or believed contacts <= RELOCK_SAME_F apart; a different contact after an ok is never locked in-game).
+     * @param {number} now @param {number} cMs @param {boolean} same
+     */
+    function relockAt(now, cMs, same) {
+        if (!parryRelockMs || !lastParryAt) return 0;
+        const end = lastParryAt + parryRelockMs;
+        if (now >= end || lastOkAt >= lastParryAt || lastHitAt >= lastParryAt) return 0;
+        if (!same && Math.abs(cMs - lastParryC) > RELOCK_SAME_F * FRAME_MS) return 0;
+        return end;
+    }
+    /** v8 hitEscape: one tap of the parry button outside the plan (escape / early re-press). @param {number} c @param {string} what */
+    function extraParry(c, what) {
+        if (!observe) tap(parryP);
+        lastParryAt = Date.now();
+        lastParryC = c;
+        pressFrame(frameIdx);
+        presses.parry++;
+        mark("press", `parry${observe ? " sim" : ""} k-1 ${what} c+${Math.round((c - lastParryAt) / FRAME_MS)}f`);
+    }
+    /** v8 hitEscape dodge / both, before executePlan: the side dodge at the stagger end. @param {number} now */
+    function hitEscDodgeTick(now) {
+        if (!esc || esc.dodged || now < esc.at) return;
+        if (now > esc.at + HIT_ESC_WIN_F * FRAME_MS) {
+            esc.dodged = true;
+            hcS.esc.late++;
+            mark("escape", `dodge given up (+${now - esc.at} ms past the stagger end)`);
+            return;
+        }
+        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil || now - lastDodgeAt < dodgeCd) return;
+        esc.dodged = true;
+        const dir = escDodges++ % 2 ? "right" : "left";
+        pressDodge(dir);
+        pressFrame(frameIdx);
+        presses.dodge++;
+        hcS.esc.dodge++;
+        mark("press", `dodge${observe ? " sim" : ""} ${dir} k-1 hitEscape +${now - esc.hitAt}ms`);
+    }
+    /** v8 hitEscape parry / both, after executePlan: the 卸势 at the stagger end unless a plan 卸势 goes then. @param {number} now */
+    function hitEscParryTick(now) {
+        if (!esc) return;
+        if (esc.parried) {
+            if (esc.dodged) esc = null;
+            return;
+        }
+        if (hitEscape === "both" && !esc.dodged) return; // the dodge first
+        const at = esc.at + (hitEscape === "both" ? HIT_ESC_BOTH_GAP_F * FRAME_MS : 0);
+        if (now < at) return;
+        const yieldF = HIT_ESC_YIELD_F * FRAME_MS;
+        if ((lastItemParryAt > esc.hitAt && lastItemParryAt >= at - yieldF)
+            || plan.some((o) => o.kind === "parry" && o.src !== "insure" && !o.pressedAt && !o.branch && o.atMs <= now + yieldF)) {
+            esc.parried = true;
+            hcS.esc.yieldPlan++;
+            mark("escape", "parry: a plan 卸势 goes now");
+            return;
+        }
+        if (now > at + HIT_ESC_WIN_F * FRAME_MS) {
+            esc.parried = true;
+            hcS.esc.late++;
+            mark("escape", `parry given up (+${now - at} ms past the stagger end)`);
+            return;
+        }
+        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil || now - lastParryAt < parryCd) return;
+        if (parryRelockMs > 0 && relockAt(now, now + issueLead, true)) return;
+        esc.parried = true;
+        hcS.esc.parry++;
+        extraParry(now + issueLead, `hitEscape +${now - esc.hitAt}ms`);
+    }
+    /**
+     * v8 earlyRepress: the last model 卸势 (fut / combo) got no ok / hit within earlyRepressF frames while S1 still sees
+     * a blow (>= earlyRepressTh, within EARLY_SPAN_F more frames): one more 卸势 (parryRelockMs applies).
+     * @param {number} now
+     */
+    function earlyRepressTick(now) {
+        if (!lastPlanParryAt || earlyFor === lastPlanParryAt || !pred) return;
+        const dt = now - lastPlanParryAt;
+        if (dt < earlyRepressMs) return;
+        if (lastOkAt >= lastPlanParryAt || lastHitAt >= lastPlanParryAt) {
+            earlyFor = lastPlanParryAt;
+            hcS.early.resolved++;
+            return;
+        }
+        if (dt > earlyRepressMs + EARLY_SPAN_F * FRAME_MS) {
+            earlyFor = lastPlanParryAt;
+            hcS.early.quiet++;
+            return;
+        }
+        if (inDodge || inCurtain || weakSince || now < staggerUntil || now < potionHoldUntil || now - lastParryAt < parryCd) return;
+        let s1 = 0;
+        for (let i = 1; i <= s1Hi; i++) s1 += futBin(0, i);
+        if (s1 < earlyRepressTh) return;
+        const st = futStats(pred.fut[0]);
+        const c = now + (st.sum > 0.01 && Number.isFinite(st.exp) ? st.exp : TARGET_GLOW_LEAD + latencyF) * FRAME_MS;
+        if (parryRelockMs > 0 && relockAt(now, c, true)) return;
+        earlyFor = lastPlanParryAt;
+        hcS.early.fired++;
+        extraParry(c, `early re-press +${Math.round(dt / FRAME_MS)}f S1 ${s1.toFixed(2)}`);
     }
     /** @param {number} now */
     function expire(now) {
@@ -1477,6 +1650,10 @@ export default function (args = {}) {
             if (now - curtainLastAt > CURTAIN_GONE_MS) {
                 inCurtain = false;
                 mark("curtain", "over");
+            } else if (curtainParryPlan) {
+                curtainSync = true;
+                for (let k = 0; k < 3; k++) syncK(now, k);
+                curtainSync = false;
             }
         } else {
             for (let k = 0; k < 3; k++) syncK(now, k);
@@ -1513,7 +1690,15 @@ export default function (args = {}) {
         hits++;
         lastHitAt = now;
         pressedSinceHit = false;
-        staggerUntil = Math.max(staggerUntil, now + staggerMs);
+        // v8 staggerByDrop: the stagger by the read drop (off: staggerMs)
+        const drop = before - after;
+        let stg = staggerMs;
+        if (staggerByDrop) {
+            const row = staggerByDrop.find((x) => drop <= x[0] + 1e-9);
+            if (row) stg = row[1];
+            hcS.stagger[stg] = (hcS.stagger[stg] ?? 0) + 1;
+        }
+        staggerUntil = Math.max(staggerUntil, now + stg);
         const n = plan.length;
         if (holdOn) {
             // v6: keep the unpressed items that still target a future contact; only stale/consumed ones go
@@ -1529,7 +1714,7 @@ export default function (args = {}) {
             clearPlan("hit");
             mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n} planned cancelled)`);
         }
-        mark("stagger", `${staggerMs} ms`);
+        mark("stagger", `${stg} ms${staggerByDrop ? ` (drop ${Math.round(drop * 1000) / 10}%)` : ""}`);
         // v8 curtainTimed: a hit in the curtain is a sweep (re-sync when unsynced or near a predicted sweep)
         if (curtainTimed && (inCurtain || now - curtainLastAt < CURTAIN_GONE_MS)) {
             const est = now - SWEEP_HIT_LAG_F * FRAME_MS;
@@ -1537,12 +1722,34 @@ export default function (args = {}) {
             const j = valid ? Math.round((est - sweepAt) / sweepPeriodMs) : 0;
             if (!valid || (j >= 1 && Math.abs(est - sweepAt - j * sweepPeriodMs) <= SWEEP_HIT_NEAR_F * FRAME_MS)) sweepSync(est, "hit");
         }
-        if (posthitN > 0) {
-            addItem({ kind: "parry", k: -1, src: "insure", cMs: now + staggerMs, atMs: now + staggerMs,
-                      untilMs: now + staggerMs + 30 * FRAME_MS, why: `posthit ${posthitNarrow ? "narrow" : "wide"}` });
+        let escaped = false;
+        if (hitEscape) {
+            // v8 hitEscape: one press at this hit's stagger end instead of posthit (a skipped hit keeps posthit as it
+            // was: heavy blows, curtain, potion); a newer hit supersedes a pending one
+            if (esc && !(esc.dodged && esc.parried)) {
+                hcS.esc.superseded++;
+                mark("escape", "superseded by a new hit");
+            }
+            esc = null;
+            const skip = inCurtain || now - curtainLastAt < CURTAIN_GONE_MS ? "curtain"
+                : now < potionHoldUntil || potionPend || plan.some((x) => x.kind === "potion") ? "potion"
+                : drop > hitEscapeMaxDrop ? "heavy" : "";
+            if (skip) {
+                hcS.esc.skip[skip] = (hcS.esc.skip[skip] ?? 0) + 1;
+                mark("escape", `skip (${skip})`);
+            } else {
+                escaped = true;
+                esc = { hitAt: now, at: staggerUntil, dodged: hitEscape === "parry", parried: hitEscape === "dodge" };
+                hcS.esc.scheduled++;
+                mark("escape", `${hitEscape} at +${staggerUntil - now} ms`);
+            }
+        }
+        if (posthitN > 0 && !escaped) {
+            addItem({ kind: "parry", k: -1, src: "insure", cMs: now + stg, atMs: now + stg,
+                      untilMs: now + stg + 30 * FRAME_MS, why: `posthit ${posthitNarrow ? "narrow" : "wide"}` });
             if (posthitN > 1) {
-                addItem({ kind: "parry", k: -1, src: "insure", cMs: now + staggerMs + 10 * FRAME_MS,
-                          atMs: now + staggerMs + 10 * FRAME_MS, untilMs: now + staggerMs + 40 * FRAME_MS, why: "posthit 2" });
+                addItem({ kind: "parry", k: -1, src: "insure", cMs: now + stg + 10 * FRAME_MS,
+                          atMs: now + stg + 10 * FRAME_MS, untilMs: now + stg + 40 * FRAME_MS, why: "posthit 2" });
             }
         }
         if (preschedOn) comboPlan(now);
@@ -3258,7 +3465,10 @@ export default function (args = {}) {
                 const now2 = Date.now();
                 syncPlan(now2);
                 if (offOn) offenseGuard(now2); // v8 offense
+                if (hitEscape) hitEscDodgeTick(now2); // v8 hit chain
                 executePlan(now2);
+                if (hitEscape) hitEscParryTick(Date.now());
+                if (earlyRepress) earlyRepressTick(Date.now());
                 if (curtainTimed) sweepTick(Date.now());
                 if (failEscape) failEscapeTick(Date.now());
                 expire(now2);
@@ -3303,9 +3513,9 @@ export default function (args = {}) {
     log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, ` +
         `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, weak ${weakWindows} (${weakLights} light, ${weakExecs} exec), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
-    const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut;
+    const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn;
     if (flareHoldFut) foEnd("run over");
-    const v8 = v8On ? { flareMode, tellParries, flare2s, timedSweeps, failEscapes, ...(flareHoldFut ? { holdFut: foS } : {}) } : undefined;
+    const v8 = v8On ? { flareMode, tellParries, flare2s, timedSweeps, failEscapes, ...(flareHoldFut ? { holdFut: foS } : {}), ...(chainOn ? { chain: hcS } : {}) } : undefined;
     if (v8) log(`v8: ${JSON.stringify(v8)}`);
     // v8 offense: only when one of its switches is on (the default return is unchanged)
     if (qiPlan && qp.shown) qpEnd(Date.now(), "run over");
