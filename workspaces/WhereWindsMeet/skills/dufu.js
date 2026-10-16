@@ -325,6 +325,19 @@ const OFF_BOSS_RING_MS = 4000, OFF_DROP_MAX_PX = 80;
 //   0.69): N6 below 0.7 kept 46/73 with 26 of the 30 that landed. The let-go timing itself cannot help: the plan
 //   items show ~0.6 s before contact, the press goes out regardless (offYield), cutting the slash either way.
 const OFF_CHARGE_FREE = 0;
+// v8 offense part 5 (data/tmp/dufu_breakthrough/qi_mech.md; args default OFF). The boss 真气 never refills by itself
+//   (only after 气竭): 385 px are cumulative, a 卸势 ok takes 12.3, a landed 蓄力 ~14, the 横刀 set ~12, 轻击 /
+//   燃此魂 ~0; the first 气竭 time tracks the opening ok/min (r -0.79).
+// landTh: the near gate is also near when the v8 land probe (head8 out 131..132, P(boss px within 1.2 s)) is >= it
+//   (OR with the ok / drop signals; out of sample 380-395: land >= 0.55 landed 61% vs 36%, AUC 0.68; hit-in-1-s does
+//   not depend on it: the m30 veto keeps that job, offGateVetoTh 0.35 lines v8's m30 up with v6's veto rate).
+// landFloor: no near-gate action (蓄力 / switch / 唤千军 / 轻击 / the committed set's start) while land < it
+//   (land < 0.35 landed 25%).
+// qiFinish: 0 < 真气 <= qiFinish px (not in a window): the gate is near too (<= 40 px: 22% of the cycles died before
+//   the 气竭, median 9.5 s to empty), the cold 蓄力 gets its full hold.
+// oursTellTh: within oursTellMs of our own offense press a 金光 tell dodge needs tell p >= it (v8 false 金光 while we
+//   attack: 6.4/min offline); below it the episode waits (the fut 卸势 stays).
+const LAND_TH = 0, OURS_TELL_MS = 500;
 /** @type {Box} */ const DIST_ROI = [240, 30, 600, 600];
 /** @type {Box} */ const MDASH_LIT_ROI = [815, 575, 36, 36]; // 陌刀 突进's icon: white px, 107-111 lit, 0 grey (combat.js)
 const MDASH_LIT_PX = 40;
@@ -363,7 +376,7 @@ const LOCK_MS = 2000; // between re-lock taps (combat.js)
 const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
-/** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
+/** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut, land: number | null}} Pred */
 /** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, noCd?: boolean}} PlanItem */
 
 /**
@@ -394,7 +407,8 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   offFar?: boolean, offFarMs?: number, offFarPushMs?: number, oldWindow?: boolean, oldWindowMs?: number,
  *   offGateVetoTh?: number, offChargeFree?: number, potionSafe?: boolean, potionQuietMs?: number, potionGapMs?: number,
  *   potionPlanMs?: number, potionMassTh?: number, potionConfirm?: boolean, potionConfirmMs?: number,
- *   potionRetryMs?: number, potionMaxPresses?: number, potionCdMs?: number, potionWaitMaxMs?: number}} [args]
+ *   potionRetryMs?: number, potionMaxPresses?: number, potionCdMs?: number, potionWaitMaxMs?: number,
+ *   landTh?: number, landFloor?: number, qiFinish?: number, oursTellTh?: number, oursTellMs?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -413,7 +427,9 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   (offStrikeH / offApproachMs), qiApproach (qiApproachMaxMs). Part 3 (@see OFF_OK_MS): offOkGate (offOkMs /
  *   offVetoTh / offDropPx / offOkAfterHitMs / offWhiffFar / offColdMinMs), offCommit, offFar (offFarMs /
  *   offFarPushMs); oldWindow (oldWindowMs). Part 4 (@see OFF_CHARGE_FREE): offGateVetoTh (the near gate's m30
- *   veto alone), offChargeFree (near-gate 蓄力 start: fut1 2 s mass below it; 0 = off).
+ *   veto alone), offChargeFree (near-gate 蓄力 start: fut1 2 s mass below it; 0 = off). Part 5 (@see LAND_TH):
+ *   landTh / landFloor (the v8 land probe in the near gate), qiFinish (真气 low: the gate is near), oursTellTh /
+ *   oursTellMs (a 金光 dodge just after our own press needs a surer tell).
  */
 export default function (args = {}) {
     const observe = args.observe ?? false;
@@ -565,6 +581,12 @@ export default function (args = {}) {
     // v8 offense part 4 (@see OFF_CHARGE_FREE): default = part 3 as it was
     const offGateVetoTh = args.offGateVetoTh ?? offVetoTh; // okGateWhy's m30 veto only
     const offChargeFree = args.offChargeFree ?? OFF_CHARGE_FREE; // near-gate 蓄力: fut1 2 s mass below this (0 = off)
+    // v8 offense part 5 (@see LAND_TH): all default off
+    const landTh = args.landTh ?? LAND_TH; // near = land probe >= this (OR), 0 = off
+    const landFloor = args.landFloor ?? 0; // near-gate actions need land >= this, 0 = off
+    const qiFinish = args.qiFinish ?? 0; // 真气 <= this px: near, 0 = off
+    const oursTellTh = args.oursTellTh ?? 0; // 金光 dodge within oursTellMs of our press: tell p >= this, 0 = off
+    const oursTellMs = args.oursTellMs ?? OURS_TELL_MS;
     const offActOn = offPoke || offSkill || offCharge;
     const offGate = offShadow || offActOn; // the quietGate is judged
     const offIconsOn = offSkill || offCharge || (qiPlan && qiSkill) || offOkGate || oldWindow;
@@ -800,6 +822,7 @@ export default function (args = {}) {
     let weakSince = 0, qiZeroSeen = 0, qiEmpty = 0, lastLightAt = 0, lastExecTapAt = 0, lastExecMatchAt = 0; // v7 C
     let lastAvoidDropAt = 0; // an "avoid" (curtain) item just handled: no new one for a moment
     let lastTellArg = -1, lastTellDodgeArg = -1, lastTellDodgeAt = 0; // tell continuity + one dodge per episode
+    let oursTellWaitAt = 0; // v8 part 5 oursTellTh
     let flareLastFireAt = 0, flareFirstAt = 0, flareLastArg = -1; // v7 A1 anchor: the current flare episode's onset
     let flareSeenAt = 0; // v8: the image flare rule's last hit (parry mode's "flare live")
     let sweepAt = 0, sweepK = 1, sweepSrc = "", lastDarkAt = 0, timedSweeps = 0; // v8 curtainTimed
@@ -885,6 +908,7 @@ export default function (args = {}) {
             fut: [0, 1, 2].map((i) => softmax(out, 22 + i * 11, 11)),
             def: [0, 1, 2].map((i) => softmax(out, 55 + i * 5, 5)),
             tell: headOut(softmax(out, 70, 7), TELL_LABELS),
+            land: out.length >= 133 ? softmax(out, 131, 2)[1] : null, // v8 land probe (model_head8_report §五 3)
         };
     }
     const seqData = () => {
@@ -1190,6 +1214,12 @@ export default function (args = {}) {
         // a one-frame blip is noise; one dodge per episode (the tell stays lit while the flare is on screen)
         if (t.p < tellDodgeP || !sustained) return;
         if (t.arg === lastTellDodgeArg && now - lastTellDodgeAt < tellEpisodeMs) return;
+        // part 5 oursTellTh: our own press just went out (its effect looks like 金光 to v8): a surer tell first
+        if (oursTellTh > 0 && t.arg >= 1 && t.arg <= 3 && t.p < oursTellTh && lastOffDownAt && now - lastOffDownAt < oursTellMs) {
+            if (now - oursTellWaitAt > 300) okS.oursTellWaits++;
+            oursTellWaitAt = now;
+            return;
+        }
         const st = futStats(pred.fut[0]);
         // v8: the late / parry flare modes are onset-anchored whatever tellAnchor says
         const anchored = (tellAnchor || flareMode !== "dodge") && t.arg >= 1 && t.arg <= 3;
@@ -2069,7 +2099,7 @@ export default function (args = {}) {
         return s;
     };
     const offComboLabel = () => (pred ? `${(comboV6 ? COMBO6_LABELS : COMBO_LABELS)[pred.combo.arg]} ${pred.combo.p.toFixed(2)}` : "-");
-    const offState = () => `m30 ${offM30.toFixed(3)} m40 ${offM40.toFixed(3)} combo ${offComboLabel()}`;
+    const offState = () => `m30 ${offM30.toFixed(3)} m40 ${offM40.toFixed(3)} combo ${offComboLabel()}${pred?.land != null ? ` land ${pred.land.toFixed(2)}` : ""}`;
     /** Why the gate is shut now ("" = open). @param {number} now */
     function offGateWhy(now) {
         if (!pred) return "no pred";
@@ -2594,7 +2624,8 @@ export default function (args = {}) {
     const DMG_ACTS = new Set(["light", "charge", "coldCharge", "dash", "strike", "burst", "ranshi", "farRanshi", "farDash"]);
     /** @typedef {{n: number, hit: number, px: number}} OkRes */
     const okS = {
-        evalMs: 0, openMs: 0, farMs: 0, opens: 0, farByWhiff: 0, switchPend: 0, chargeDefers: 0,
+        evalMs: 0, openMs: 0, farMs: 0, opens: 0, farByWhiff: 0, switchPend: 0, chargeDefers: 0, landSkips: 0,
+        landOpens: 0, qiOpens: 0, landMs: 0, qiMs: 0, oursTellWaits: 0,
         /** @type {Record<string, number>} */ closeWhy: {}, /** @type {Record<string, number>} */ closeIns: {},
         /** @type {Record<string, OkRes>} */ res: { near: { n: 0, hit: 0, px: 0 }, far: { n: 0, hit: 0, px: 0 } },
         /** @type {Record<string, OkRes>} */ byAct: {},
@@ -2635,9 +2666,17 @@ export default function (args = {}) {
         if (offComboVeto && comboRunning()) return "combo";
         if (offM30 > offGateVetoTh) return "m30";
         if (okFarByWhiff) return "whiffs";
-        if (sinceOk(now) > offOkMs && sinceDrop(now) > OFF_DROP_WIN_MS) return "not near";
+        if (sinceOk(now) > offOkMs && sinceDrop(now) > OFF_DROP_WIN_MS && !landNear() && !qiLow()) return "not near";
         return "";
     }
+    /** landTh: the land probe says an action now lands. */
+    const landNear = () => landTh > 0 && pred?.land != null && pred.land >= landTh;
+    /** landFloor: the land probe says an action now misses. */
+    const landLow = () => landFloor > 0 && pred?.land != null && pred.land < landFloor;
+    /** qiFinish: the last bit of 真气 (not empty, not in a window). */
+    const qiLow = () => qiFinish > 0 && qiEmpty === 0 && qiNow > 4 && qiNow <= qiFinish && bossNow > 50 && !qp.shown;
+    /** Why the gate is near by part 5 only ("" = by the ok / drop signals or not near). @param {number} now */
+    const nearBy = (now) => (sinceOk(now) <= offOkMs || sinceDrop(now) <= OFF_DROP_WIN_MS ? "" : qiLow() ? "qi" : landNear() ? "land" : "");
     /** Action a fits now (no gate here): its horizon below offVetoTh, no plan item before it can be cut. @param {string} a @param {number} now */
     function okCan(a, now) {
         if (offHold || offWalking || hd || now < offBusyUntil || bossNow <= 50) return false;
@@ -2705,7 +2744,7 @@ export default function (args = {}) {
         mark("off", `far ${far} ms: close-in (sok ${sinceOk(now)}, sdrop ${sinceDrop(now)})`);
         return true;
     }
-    let okDeferAt = 0;
+    let okDeferAt = 0, okLandSkipAt = 0, okOpenBy = "";
     /** offChargeFree: a 蓄力 may start now (fut1 2 s mass below it); a deferral is counted / marked once per run of frames. @param {number} now @param {string} a */
     function okChargeFree(now, a) {
         if (!offChargeFree || offM60 < offChargeFree) return true;
@@ -2727,7 +2766,16 @@ export default function (args = {}) {
         if (okSwitchPend && now < okSwitchPend) offW = offWeaponNow() ?? offW; // after a switch: per frame, not 4 Hz
         const w = offW;
         const so = sinceOk(now);
-        const left = Math.max(OFF_NEAR_OK_MS - so, OFF_NEAR_DROP_MS - sinceDrop(now), 0);
+        if (landLow()) {
+            if (now - okLandSkipAt > 1000) {
+                okS.landSkips++;
+                mark("off", `near-gate action skipped: land ${pred?.land?.toFixed(2)} < ${landFloor} ${offState()}`);
+            }
+            okLandSkipAt = now;
+            return;
+        }
+        const by = nearBy(now); // part 5: near by the probe / 真气 low only: the 蓄力 gets its full hold
+        const left = by ? qiColdHoldMs : Math.max(OFF_NEAR_OK_MS - so, OFF_NEAR_DROP_MS - sinceDrop(now), 0);
         if (!pend && offCommit && w && burstReady(now) && now >= offSetRetryAt && so <= OFF_FRESH_OK_MS && commitCan(now)) {
             hd = { step: w === "hengdao" ? "dash1" : "switch", stepAt: now, readyAt: 0, tapAt: 0, tries: 0, gone: false, goneAt: 0, owner: "ok" };
             offSetS.started++;
@@ -2774,23 +2822,29 @@ export default function (args = {}) {
             okWhiff = 0;
             mark("off", `near again (${lastOkAt > okWhiffAt ? "ok" : "boss drop"})`);
         }
-        const far = (sinceOk(now) > OFF_NEAR_OK_MS && sinceDrop(now) > OFF_NEAR_DROP_MS) || okFarByWhiff;
+        const far = (sinceOk(now) > OFF_NEAR_OK_MS && sinceDrop(now) > OFF_NEAR_DROP_MS && !landNear() && !qiLow()) || okFarByWhiff;
         if (!far || !fight) okFarSince = 0;
         else if (!okFarSince) okFarSince = now;
         if (hd && !offActOn) hdTick(now);
         const why = okGateWhy(now);
+        const by = why ? "" : nearBy(now);
         if (fight) {
             okS.evalMs += dt;
             if (okOpenAt) okS.openMs += dt;
             if (far) okS.farMs += dt;
+            if (okOpenAt && by === "land") okS.landMs += dt;
+            if (okOpenAt && by === "qi") okS.qiMs += dt;
         }
         if (!why && !okOpenAt) {
             okOpenAt = now;
             okS.opens++;
-            mark("off", `ok-gate open sok ${sinceOk(now)} sdrop ${sinceDrop(now)} ${offState()}`);
+            okOpenBy = by;
+            if (by === "land") okS.landOpens++;
+            if (by === "qi") okS.qiOpens++;
+            mark("off", `ok-gate open sok ${sinceOk(now)} sdrop ${sinceDrop(now)}${by ? ` by ${by}` : ""}${by === "qi" ? ` 真气 ${qiNow}` : ""} ${offState()}`);
         } else if (why && okOpenAt) {
             inc(okS.closeWhy, why);
-            mark("off", `ok-gate close ${why} after ${now - okOpenAt} ms`);
+            mark("off", `ok-gate close ${why} after ${now - okOpenAt} ms${okOpenBy ? ` (opened by ${okOpenBy})` : ""}`);
             okOpenAt = 0;
         }
         if (hd || offHold || offWalking || now < offBusyUntil) return;
@@ -2919,7 +2973,10 @@ export default function (args = {}) {
         return {
             ...(offOkGate ? { fightMin: r(min, 2), gateFrac: okS.evalMs ? r(okS.openMs / okS.evalMs) : 0, farFrac: okS.evalMs ? r(okS.farMs / okS.evalMs) : 0,
                 opens: okS.opens, closeWhy: okS.closeWhy, farByWhiff: okS.farByWhiff, closeIns: okS.closeIns, switchPend: okS.switchPend,
-                ...(offChargeFree ? { chargeDefers: okS.chargeDefers } : {}) } : {}),
+                ...(offChargeFree ? { chargeDefers: okS.chargeDefers } : {}),
+                ...(landTh || landFloor || qiFinish ? { landOpens: okS.landOpens, qiOpens: okS.qiOpens, landFrac: okS.evalMs ? r(okS.landMs / okS.evalMs) : 0,
+                    qiFrac: okS.evalMs ? r(okS.qiMs / okS.evalMs) : 0, landSkips: okS.landSkips } : {}) } : {}),
+            ...(oursTellTh ? { oursTellWaits: okS.oursTellWaits } : {}),
             res: okS.res, byAct: okS.byAct, ...(oldWindow ? { window: owS } : {}),
         };
     }
