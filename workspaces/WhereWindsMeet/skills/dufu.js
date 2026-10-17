@@ -269,6 +269,13 @@ const OFF_GUARD_MS = 600, OFF_ABORT_MS = 150, OFF_AFTER_HIT_MS = 1500, OFF_AFTER
 const OFF_HP_MIN = 0.35, OFF_OK_FAST_MS = 1000, OFF_CONTACT = 3, OFF_TAP_MS = 40;
 const QP_EXEC_AFTER_MS = 2600, QP_EXEC_MAX_MS = 2900, QP_LIGHT_MS = 300, QP_POST_MS = 3500;
 const QP_EXEC_SCENE_MS = 1100, QP_EXEC_TAP_MS = 50, QP_MAX_MS = 9000, QP_CAND_MS = 8000, QP_EXEC_QI_MAX = 25;
+// qiExecFix (default on with qiPlan; false = the old window): the late 处决 (10 of 78 windows 396-452 tapped 3.1-5.7 s
+//   after the sighting) is the button going away, not a template miss: it shows ~2.0-2.4 s and is gone (the boss out
+//   of reach) when qiExecAfter comes, back once we are near again. 5 of the 7 windows with a dodge before 2.6 s were
+//   late against 5 of 71 without; the dodges are flare tells, and in 120 windows no hit landed (衰弱 strikes nothing).
+//   So before the tap all unpressed plan items are dropped (tell ones too), and a button not seen for QP_LOST_MS
+//   walks us in (QP_CHASE_MS pushes, every-frame matching) and is tapped at once when it shows again.
+const QP_LOST_MS = 300, QP_CHASE_MS = 500;
 const QP_PENDING_MS = 300; // a tell / combo item this close: no 轻击 now
 const CLR_EVERY_MS = 400, CLR_LOW_PX = 38, CLR_LOW_READS = 3, CLR_FULL_PX = 378, CLR_FULL_READS = 2, CLR_GAP = 12;
 /** @type {Box} */ const CLR_LAST_ROI = [349, 27, 16, 6]; // the bar used up: its left end pale lilac (combat.js)
@@ -470,7 +477,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   offShadow?: boolean, offQuietTh?: number, offQuietBins?: number, offQuietFrames?: number, offOkFast?: boolean,
  *   offComboVeto?: boolean, offGuardMs?: number, offAbortMs?: number, offAfterHitMs?: number, offAfterDodgeMs?: number,
  *   offAfterTellMs?: number, offHpMin?: number, offStrongTh?: number, offStrongBins?: number, offContact?: number,
- *   qiPlan?: boolean, qiExecAfter?: number, qiExecMax?: number, qiLightMs?: number, qiPostMs?: number,
+ *   qiPlan?: boolean, qiExecAfter?: number, qiExecMax?: number, qiLightMs?: number, qiPostMs?: number, qiExecFix?: boolean,
  *   untilCleared?: boolean, offQuietOff?: number, offMinOpenMs?: number, offPoke?: boolean, offLightMs?: number,
  *   offLightMax?: number, offBurstMs?: number, offWhiffN?: number, offSkill?: boolean, offSkillPauseMs?: number,
  *   offCharge?: boolean, offHotHoldMs?: number, offNoCancelMs?: Record<string, number>, qiSkill?: boolean,
@@ -637,6 +644,7 @@ export default function (args = {}) {
     const qiExecMax = args.qiExecMax ?? QP_EXEC_MAX_MS;
     const qiLightMs = args.qiLightMs ?? QP_LIGHT_MS;
     const qiPostMs = args.qiPostMs ?? QP_POST_MS;
+    const qiExecFix = qiPlan && (args.qiExecFix ?? true); // @see QP_LOST_MS
     const untilCleared = args.untilCleared ?? false; // end with reason "cleared" at phase one's end (combat.js)
     // v8 offense part 2 (@see OFF_QUIET_OFF): all default off
     const offQuietOff = args.offQuietOff ?? OFF_QUIET_OFF; // an open gate closes on m30 only above this ...
@@ -2513,11 +2521,17 @@ export default function (args = {}) {
     function offenseGuard(now) {
         offUp();
         if (qiPlan && qp.shown) {
-            // the boss strikes nothing in 衰弱: the fut items would only eat the window (tell dodges stay)
+            // the boss strikes nothing in 衰弱: the fut items would only eat the window (tell dodges stay; qiExecFix:
+            // they go too until the 处决 tap, a dodge takes us out of its reach)
             for (const it of [...plan]) {
-                if (it.src === "fut" && !it.pressedAt) {
+                if (it.pressedAt) continue;
+                if (it.src === "fut") {
                     plan.splice(plan.indexOf(it), 1);
                     qp.futDrops++;
+                } else if (qiExecFix && !qp.tapAt) {
+                    plan.splice(plan.indexOf(it), 1);
+                    qpS.preDrops++;
+                    mark("qi", `qiPlan: ${it.kind} ${it.src} dropped before 处决 (${it.why ?? ""})`);
                 }
             }
         }
@@ -2530,7 +2544,7 @@ export default function (args = {}) {
         const why = offAbortNow(now);
         if (why) {
             offClose(now, why, true);
-            if (offWalking && offWalkWhy !== "qi approach" && offWalkWhy !== "far push") offWalkStop(`abort ${why}`);
+            if (offWalking && offWalkWhy !== "qi approach" && offWalkWhy !== "qi chase" && offWalkWhy !== "far push") offWalkStop(`abort ${why}`);
             if (hd && !hd.tapAt) offStopWhy[`set wait:${why.replace(/\(.*$/, "")}`] = (offStopWhy[`set wait:${why.replace(/\(.*$/, "")}`] ?? 0) + 1;
         }
     }
@@ -2572,7 +2586,7 @@ export default function (args = {}) {
             offOpenWalked = false;
         } else if (why && offOpenAt) {
             offClose(now, why, false);
-            if (offWalking && offWalkWhy !== "qi approach" && offWalkWhy !== "far push") offWalkStop(`gate ${why}`);
+            if (offWalking && offWalkWhy !== "qi approach" && offWalkWhy !== "qi chase" && offWalkWhy !== "far push") offWalkStop(`gate ${why}`);
         }
         if (offActOn && !qp.shown) offActTick(now);
     }
@@ -3542,8 +3556,8 @@ export default function (args = {}) {
     }
 
     // --- qiPlan: the 气竭 window v2, clocked from the 处决 button's first sighting
-    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, approached: false, walkAt: 0, h0: -1 };
-    const qpS = { windows: 0, fakes: 0, execs: 0, lost: 0, lights: 0, postLights: 0, futDrops: 0 };
+    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, approached: false, walkAt: 0, h0: -1, seenAt: 0, lostAt: 0 };
+    const qpS = { windows: 0, fakes: 0, execs: 0, lost: 0, lights: 0, postLights: 0, futDrops: 0, preDrops: 0, btnLost: 0, chases: 0, reseenTaps: 0 };
     /** @type {number[]} */ const qpShownToTap = [];
     /** @type {number[]} */ const qpBossDrop = [];
     /** @type {{ms: number, h0: number, h1: number}[]} */ const qpApproach = [];
@@ -3623,10 +3637,10 @@ export default function (args = {}) {
         mark("qi", `qiPlan window over (${why}) after ${now - qp.shown} ms: ${qp.lights} + ${qp.post} 轻击, 处决 ` +
             `${qp.tapAt ? `at ${qp.tapAt - qp.shown} ms` : "not tapped"}, boss ${qp.boss0} -> ${bossNow} px, ${qp.futDrops} fut items dropped`);
         if (offHold && offHold.src === "qi") offRelease(now, "window over", true);
-        if (offWalking && offWalkWhy === "qi approach") offWalkStop("window over");
+        if (offWalking && (offWalkWhy === "qi approach" || offWalkWhy === "qi chase")) offWalkStop("window over");
         if (qp.walkAt) qpApproach.push({ ms: now - qp.walkAt, h0: qp.h0, h1: offH });
         weakSince = 0;
-        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, approached: false, walkAt: 0, h0: -1 });
+        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, approached: false, walkAt: 0, h0: -1, seenAt: 0, lostAt: 0 });
     }
     /** @param {number} now */
     function qpTick(now) {
@@ -3643,13 +3657,14 @@ export default function (args = {}) {
         const low = qp.cand > 0 || (qiNow >= 0 && qiNow <= QP_EXEC_QI_MAX && bossNow > 50);
         const due = qp.shown > 0 && !qp.tapAt && now - qp.shown >= qiExecAfter;
         let ex = false;
-        if ((low || qp.shown) && !qp.tapAt && (due || now - qp.lastMatch >= QI_EXEC_EVERY * FRAME_MS)) {
+        if ((low || qp.shown) && !qp.tapAt && (due || qp.lostAt > 0 || now - qp.lastMatch >= QI_EXEC_EVERY * FRAME_MS)) {
             qp.lastMatch = now;
             ex = perFrame("exec", (im) => match("combat/execute.png", { image: im, roi: EXEC_ROI, threshold: execThreshold }).hit);
         }
         if (!qp.shown) {
             if (ex && !back) {
                 qp.shown = now;
+                qp.seenAt = now;
                 qp.boss0 = bossNow;
                 qpS.windows++;
                 weakSince = now;
@@ -3666,7 +3681,17 @@ export default function (args = {}) {
         if (now - qp.shown > QP_MAX_MS) return qpEnd(now, "window limit");
         if (qp.tapAt && now - qp.tapAt > QP_EXEC_SCENE_MS + qiPostMs) return qpEnd(now, "qiPostMs");
         if (!qp.tapAt) {
-            if (due && ex) {
+            const reseen = qiExecFix && ex && qp.lostAt > 0;
+            if (qiExecFix) { // the button gone for QP_LOST_MS: walk in (below), tap it once it shows again
+                if (ex) qp.seenAt = now;
+                else if (!qp.lostAt && now - qp.seenAt >= QP_LOST_MS) {
+                    qp.lostAt = now;
+                    qpS.btnLost++;
+                    mark("qi", `qiPlan: 处决 gone at ${now - qp.shown} ms (last seen ${now - qp.seenAt} ms ago), walking in`);
+                }
+            }
+            if ((due || reseen) && ex) {
+                if (reseen) qpS.reseenTaps++;
                 qp.tapAt = now;
                 qpS.execs++;
                 qpShownToTap.push(now - qp.shown);
@@ -3674,12 +3699,19 @@ export default function (args = {}) {
                 if (offWalking) offWalkStop("处决");
                 offAct("execute", "qi", EXECUTE, QP_EXEC_TAP_MS);
                 pressFrame(frameIdx);
-                mark("qi", `qiPlan 处决 tap${observe ? " sim" : ""} ${now - qp.shown} ms after it showed${now - qp.shown > qiExecMax ? " (late)" : ""}`);
+                mark("qi", `qiPlan 处决 tap${observe ? " sim" : ""} ${now - qp.shown} ms after it showed${now - qp.shown > qiExecMax ? " (late)" : ""}${reseen ? ` (back ${now - qp.lostAt} ms after it went)` : ""}`);
                 return;
             }
             if (now - qp.shown > qiExecMax && !qp.lateMarked) {
                 qp.lateMarked = true;
                 mark("qi", `qiPlan: 处决 not seen at ${now - qp.shown} ms (qiExecMax ${qiExecMax}), still looked for`);
+            }
+            if (qp.lostAt) { // qiExecFix: out of its reach, walk in (轻击 when a walk cannot go)
+                if (offWalking) return;
+                if (!offHold && offWalk(now, QP_CHASE_MS, "qi chase")) {
+                    qpS.chases++;
+                    return;
+                }
             }
             // before qiExecAfter strike; after it wait for the button (covered by effects at times, combat.js 130),
             // striking again once it is well past its ~3.2 s life
