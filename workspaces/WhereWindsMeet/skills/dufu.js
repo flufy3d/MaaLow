@@ -419,14 +419,16 @@ const PF_HOLD_EXTRA_MS = 400, PF_DISC_WAIT_MS = 400;
 //   press, then lit again unless 刀势 < 2 (it costs 2: the icon goes dim, template 0.68-0.70, no white). E0: a 卸势
 //   cuts it until 600 ms (no summon, lit again), then ~2 s of summon swallow 卸势. So: cast on 陌刀, lit, at most every
 //   buffEveryMs, where safe (buffWhere): "open" (boss bar up, no contact yet, QS_OPEN_MS), "qi" (after the 处决 scene,
-//   fut items free), "ok" (within QS_OK_MS of an ok, m40 < buffM40), "quiet" (m40 < buffM40 and fut1 over all bins,
+//   fut items free; not by default: batch 19 had 5/5 qi taps not out on the video), "ok" (within QS_OK_MS of an ok, m40 < buffM40), "quiet" (m40 < buffM40 and fut1 over all bins,
 //   a contact within ~2.2 s, < buffTh); always the p6 busy states, a tell, no plan item within buffNoCancelMs +
-//   offAbortMs, fut1 before the cut point < buffTh, else "唤千军 put off". Out = the countdown digits (template < 0.6,
-//   white >= BF_CD_WHITE) or the dim icon on 2 frames within QS_CONFIRM_MS; lit again by QS_LIT_AGAIN_MS = not out
-//   (one retry soon); a defense 卸势 within BF_CUT_MS of the tap = cut (no summon: not counted as out). Then nothing of
-//   ours until the tap + buffNoCancelMs + OFF_COST_MS.buff.
-const BF_LIT_TH = 0.8, BF_LIT_PX = 50, BF_CD_TH = 0.6, BF_CD_WHITE = 120, BF_DIM_WHITE = 20, BF_CUT_MS = 600;
-const BF_EVERY_MS = 30_000, BF_RETRY_MS = 3000;
+//   offAbortMs, fut1 before the cut point < buffTh, else "唤千军 put off". Out = the countdown (template < BF_OUT_TH:
+//   0.27-0.37 for > 3 s) or the dim icon on BF_OUT_FRAMES frames in a row within BF_CONFIRM_MS; lit again by
+//   QS_LIT_AGAIN_MS or neither = not out (one retry soon). Batch 19: the press ripple (white 150-470, template 0.44-0.76,
+//   <= 5 frames, also on taps that did nothing) passed the old 2-frame check: 26 outs logged, 12 real on the video;
+//   buffreplay20.py: 26/26 presses agree with the video (old 15/26). A defense 卸势 within BF_CUT_MS of the tap = cut
+//   (no summon: not counted as out). Then nothing of ours until the tap + buffNoCancelMs + OFF_COST_MS.buff.
+const BF_LIT_TH = 0.8, BF_LIT_PX = 50, BF_CD_TH = 0.6, BF_DIM_WHITE = 20, BF_CUT_MS = 600;
+const BF_EVERY_MS = 30_000, BF_RETRY_MS = 3000, BF_OUT_TH = 0.45, BF_OUT_FRAMES = 10, BF_CONFIRM_MS = 1500;
 /** @type {ColorOptions} */ const QS_DARK = { lower: [0, 0, 0], upper: [180, 255, 34], method: 40 };
 const RS_WINDOW_MS = 3000, RS_COST_MS = 900, PF_WINDOW_MS = 3000, PF_COST_MS = 900, PF_RETRY_MS = 350, PF_TRIES = 3, QS_LIT_PX = 30;
 /** @type {Point} */ const QISHU = [881, 525];
@@ -730,7 +732,7 @@ export default function (args = {}) {
     const followStay = (args.followStay ?? false) && parryFollow && offOkGate; // stay on 横刀 (hot 蓄力 only on 陌刀)
     const followDelayMs = args.followDelayMs ?? 400; // a tap right after the ok is swallowed (pf1: sok 60-140 ms)
     const offBuff = args.offBuff ?? false; // 唤千军 where safe (buffWhere; @see BF_LIT_TH)
-    const buffWhere = args.buffWhere ?? ["open", "qi", "ok", "quiet"];
+    const buffWhere = args.buffWhere ?? ["open", "ok", "quiet"]; // "qi": 0/5 out in batch 19
     const buffNoCancelMs = args.buffNoCancelMs ?? OFF_NO_CANCEL_MS.buff; // the summon swallows 卸势 this long
     const buffTh = args.buffTh ?? 0.1; // fut1 mass before it can be cut
     const buffM40 = args.buffM40 ?? 0.2; // "ok" / "quiet": m40 below this
@@ -3282,7 +3284,7 @@ export default function (args = {}) {
     /** @type {{buff: Record<string, number>, buffOut: Record<string, number>, buffPutOff: Record<string, number>, buffNotOut: number, buffCut: number, buffRetry: number, buffDim: number}} */
     const bfS = /** @type {any} */ (p6S);
     let bfTapAt = 0, bfWhereTap = "", bfOutN = 0, bfOutSeq = -1, bfLastOut = 0, bfRetryAt = 0, bfSoon = true;
-    let bfBusyTo = 0, bfBossAt = 0, bfOpenOk = true, bfPutOffAt = 0, bfParry0 = 0, bfDimSeen = false;
+    let bfBusyTo = 0, bfBossAt = 0, bfOpenOk = true, bfPutOffAt = 0, bfParry0 = 0, bfDimN = 0;
     /** combat.js qishuLit (4 Hz): the template and the white strokes in the middle. @param {number} now */
     function qsLitRead(now) {
         if (now - qsLitAt < OFF_ICON_EVERY) return qsLit;
@@ -3475,13 +3477,14 @@ export default function (args = {}) {
         p6S.followHoldFrames++;
         return true;
     }
-    /** 唤千军's button now (per frame): "lit", "cd" (the ~1 s countdown / the tap's flash), "dim" (刀势 < 2) or "". */
+    /** 唤千军's button now (per frame): "lit", "cd" (the countdown; the tap's ripple too for <= 5 frames), "dim"
+     * (刀势 < 2; the press darkening too for ~2 frames) or "". */
     function bfState() {
         return perFrame("buffState", (im) => {
             /** @param {number} n */
             const white = (n) => color({ ...ICON_WHITE, image: im, roi: [BUFF[0] - 22, BUFF[1] - 22, 44, 44], count: n }).hit;
             if (match(OFF_T.buff[0], { image: im, roi: OFF_T.buff[1], threshold: BF_LIT_TH }).hit) return white(BF_LIT_PX) ? "lit" : "";
-            if (white(BF_CD_WHITE)) return "cd";
+            if (!match(OFF_T.buff[0], { image: im, roi: OFF_T.buff[1], threshold: BF_OUT_TH }).hit) return "cd";
             if (!white(BF_DIM_WHITE + 1) && match(OFF_T.buff[0], { image: im, roi: OFF_T.buff[1], threshold: BF_CD_TH }).hit) return "dim";
             return "";
         });
@@ -3521,19 +3524,19 @@ export default function (args = {}) {
     }
     /** offBuff: 唤千军 on 陌刀 where safe (@see BF_LIT_TH). @param {number} now */
     function bfTick(now) {
-        if (bfTapAt) { // out once the countdown (or the dim icon) shows on 2 frames; a 卸势 inside BF_CUT_MS cut it
+        if (bfTapAt) { // out once the countdown (or the dim icon) shows on BF_OUT_FRAMES frames in a row (past the ripple)
             if (lastParryAt > bfParry0 && lastParryAt - bfTapAt < BF_CUT_MS) return bfDone(now, "cut");
             const st = bfState();
             const ms = now - bfTapAt;
-            if ((st === "cd" || st === "dim") && img.seq !== bfOutSeq) {
+            if (img.seq !== bfOutSeq) { // a new frame: the runs go on or reset
                 bfOutSeq = img.seq;
-                bfOutN++;
-                if (st === "dim") bfDimSeen = true;
+                bfOutN = st === "cd" ? bfOutN + 1 : 0;
+                bfDimN = st === "dim" ? bfDimN + 1 : 0;
             }
-            if (bfOutN >= 2) { // a cut one counts down too: decided once BF_CUT_MS is past
-                if (ms >= BF_CUT_MS) bfDone(now, bfDimSeen ? "dim" : "out");
+            if (bfOutN >= BF_OUT_FRAMES || bfDimN >= BF_OUT_FRAMES) { // a cut one counts down too: decided past BF_CUT_MS
+                if (ms >= BF_CUT_MS) bfDone(now, bfDimN >= BF_OUT_FRAMES ? "dim" : "out");
             } else if (st === "lit" && ms >= QS_LIT_AGAIN_MS) bfDone(now, "lit");
-            else if (ms > QS_CONFIRM_MS) bfDone(now, "none");
+            else if (ms > BF_CONFIRM_MS) bfDone(now, "none");
             return;
         }
         if (now < bfRetryAt || bossNow <= 50 || offW !== "modao") return;
@@ -3554,9 +3557,9 @@ export default function (args = {}) {
         bfWhereTap = where;
         bfOutN = 0;
         bfOutSeq = -1;
-        bfDimSeen = false;
+        bfDimN = 0;
         bfParry0 = lastParryAt;
-        bfBusyTo = Math.max(offBusyUntil, now + QS_CONFIRM_MS); // nothing of ours until it is known
+        bfBusyTo = Math.max(offBusyUntil, now + BF_CONFIRM_MS); // nothing of ours until it is known
         offBusyUntil = bfBusyTo;
     }
     /** Per frame (part 6 on): before the near gate, so a follow-up goes ahead of its switch. @param {number} now */
