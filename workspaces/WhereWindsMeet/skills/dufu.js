@@ -411,6 +411,21 @@ const LAND_TH = 0, OURS_TELL_MS = 500;
 const QS_OK_MS = 1500, QS_OPEN_MS = 15_000, QS_RETRY_MS = 3000, QS_EVAL_MS = 7000;
 const QS_CONFIRM_MS = 1000, QS_LIT_AGAIN_MS = 350, QS_RETRY_SOON_MS = 300, QS_COOL_WHITE = 70, QS_COOL_DARK = 600;
 const PF_HOLD_EXTRA_MS = 400, PF_DISC_WAIT_MS = 400;
+// offBuff (teacher 2026-10-17: "why no 增益?"; data/tmp/dufu_breakthrough/buff19/an_buff.py; default OFF): 唤千军 (陌刀
+//   BUFF) was never cast in 380-496 (the near gate's buff branch sits behind its 蓄力 and needs fut1 2 s < 0.3).
+//   Dummy: the cast itself does 0, then 安西军 strikes ride on our hits (陌刀安西军 ~1 per 焚此心 hit, 横刀安西军 1 per
+//   冢上霜 hit: +18-22% of the hit damage) for >= ~30 s; the button has no long cooldown: a ~1 s countdown after each
+//   press, then lit again unless 刀势 < 2 (it costs 2: the icon goes dim, template 0.68-0.70, no white). E0: a 卸势
+//   cuts it until 600 ms (no summon, lit again), then ~2 s of summon swallow 卸势. So: cast on 陌刀, lit, at most every
+//   buffEveryMs, where safe (buffWhere): "open" (boss bar up, no contact yet, QS_OPEN_MS), "qi" (after the 处决 scene,
+//   fut items free), "ok" (within QS_OK_MS of an ok, m40 < buffM40), "quiet" (m40 < buffM40 and fut1 over all bins,
+//   a contact within ~2.2 s, < buffTh); always the p6 busy states, a tell, no plan item within buffNoCancelMs +
+//   offAbortMs, fut1 before the cut point < buffTh, else "唤千军 put off". Out = the countdown digits (template < 0.6,
+//   white >= BF_CD_WHITE) or the dim icon on 2 frames within QS_CONFIRM_MS; lit again by QS_LIT_AGAIN_MS = not out
+//   (one retry soon); a defense 卸势 within BF_CUT_MS of the tap = cut (no summon: not counted as out). Then nothing of
+//   ours until the tap + buffNoCancelMs + OFF_COST_MS.buff.
+const BF_LIT_TH = 0.8, BF_LIT_PX = 50, BF_CD_TH = 0.6, BF_CD_WHITE = 120, BF_DIM_WHITE = 20, BF_CUT_MS = 600;
+const BF_EVERY_MS = 30_000, BF_RETRY_MS = 3000;
 /** @type {ColorOptions} */ const QS_DARK = { lower: [0, 0, 0], upper: [180, 255, 34], method: 40 };
 const RS_WINDOW_MS = 3000, RS_COST_MS = 900, PF_WINDOW_MS = 3000, PF_COST_MS = 900, PF_RETRY_MS = 350, PF_TRIES = 3, QS_LIT_PX = 30;
 /** @type {Point} */ const QISHU = [881, 525];
@@ -492,7 +507,8 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   staggerByDrop?: number[][], hitEscape?: string, hitEscapeMaxDrop?: number, parryRelockMs?: number,
  *   earlyRepress?: boolean, earlyRepressF?: number, earlyRepressTh?: number, curtainParryPlan?: boolean,
  *   offQishu?: boolean, qishuWhere?: string[], qishuNoCancelMs?: number, qishuTh?: number, ranshiStrikeMs?: number,
- *   farSkill?: boolean, parryFollow?: boolean, followTap?: string, followTh?: number, followNoCancelMs?: number, followDelayMs?: number, followStay?: boolean}} [args]
+ *   farSkill?: boolean, parryFollow?: boolean, followTap?: string, followTh?: number, followNoCancelMs?: number, followDelayMs?: number, followStay?: boolean,
+ *   offBuff?: boolean, buffWhere?: string[], buffNoCancelMs?: number, buffTh?: number, buffM40?: number, buffEveryMs?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
@@ -704,11 +720,17 @@ export default function (args = {}) {
     const followNoCancelMs = args.followNoCancelMs ?? 600;
     const followStay = (args.followStay ?? false) && parryFollow && offOkGate; // stay on 横刀 (hot 蓄力 only on 陌刀)
     const followDelayMs = args.followDelayMs ?? 400; // a tap right after the ok is swallowed (pf1: sok 60-140 ms)
+    const offBuff = args.offBuff ?? false; // 唤千军 where safe (buffWhere; @see BF_LIT_TH)
+    const buffWhere = args.buffWhere ?? ["open", "qi", "ok", "quiet"];
+    const buffNoCancelMs = args.buffNoCancelMs ?? OFF_NO_CANCEL_MS.buff; // the summon swallows 卸势 this long
+    const buffTh = args.buffTh ?? 0.1; // fut1 mass before it can be cut
+    const buffM40 = args.buffM40 ?? 0.2; // "ok" / "quiet": m40 below this
+    const buffEveryMs = args.buffEveryMs ?? BF_EVERY_MS; // 安西军 rides >= ~30 s: no recast sooner
     offNoCancel.qishu ??= qishuNoCancelMs;
     offNoCancel.follow ??= followNoCancelMs;
     const offActOn = offPoke || offSkill || offCharge;
     const offGate = offShadow || offActOn; // the quietGate is judged
-    const offP6 = offQishu || ranshiStrikeMs > 0 || parryFollow;
+    const offP6 = offQishu || ranshiStrikeMs > 0 || parryFollow || offBuff;
     const offIconsOn = offSkill || offCharge || (qiPlan && qiSkill) || offOkGate || oldWindow || offP6;
     const offDistOn = offApproach || (qiPlan && qiApproach);
     const offOn = offShadow || qiPlan || untilCleared || offActOn || offOkGate || oldWindow || offP6;
@@ -3165,7 +3187,7 @@ export default function (args = {}) {
             return;
         }
         if (pend) return;
-        if (w === "modao" && offBuffSeen && so <= OFF_FRESH_OK_MS && okCan("buff", now)) {
+        if (!offBuff && w === "modao" && offBuffSeen && so <= OFF_FRESH_OK_MS && okCan("buff", now)) { // offBuff: part 6
             offAct("buff", "ok", BUFF);
             offBusyUntil = now + OFF_COST_MS.buff;
             offBuffSeen = false;
@@ -3227,7 +3249,15 @@ export default function (args = {}) {
         /** @type {Record<string, number>} */ qishuOut: {}, qishuRetry: 0, qishuUnknown: 0,
         ranshi2: 0, ranshi2Lost: 0, follow: 0, followNotOut: 0, /** @type {Record<string, number>} */ followSkip: {}, followOks: 0,
         followHolds: 0, followHoldNoDisc: 0, followHoldFrames: 0,
+        ...(offBuff ? {
+            /** @type {Record<string, number>} */ buff: {}, /** @type {Record<string, number>} */ buffOut: {},
+            /** @type {Record<string, number>} */ buffPutOff: {}, buffNotOut: 0, buffCut: 0, buffRetry: 0, buffDim: 0,
+        } : {}),
     };
+    /** @type {{buff: Record<string, number>, buffOut: Record<string, number>, buffPutOff: Record<string, number>, buffNotOut: number, buffCut: number, buffRetry: number, buffDim: number}} */
+    const bfS = /** @type {any} */ (p6S);
+    let bfTapAt = 0, bfWhereTap = "", bfOutN = 0, bfOutSeq = -1, bfLastOut = 0, bfRetryAt = 0, bfSoon = true;
+    let bfBusyTo = 0, bfBossAt = 0, bfOpenOk = true, bfPutOffAt = 0, bfParry0 = 0, bfDimSeen = false;
     /** combat.js qishuLit (4 Hz): the template and the white strokes in the middle. @param {number} now */
     function qsLitRead(now) {
         if (now - qsLitAt < OFF_ICON_EVERY) return qsLit;
@@ -3420,11 +3450,96 @@ export default function (args = {}) {
         p6S.followHoldFrames++;
         return true;
     }
+    /** 唤千军's button now (per frame): "lit", "cd" (the ~1 s countdown / the tap's flash), "dim" (刀势 < 2) or "". */
+    function bfState() {
+        return perFrame("buffState", (im) => {
+            /** @param {number} n */
+            const white = (n) => color({ ...ICON_WHITE, image: im, roi: [BUFF[0] - 22, BUFF[1] - 22, 44, 44], count: n }).hit;
+            if (match(OFF_T.buff[0], { image: im, roi: OFF_T.buff[1], threshold: BF_LIT_TH }).hit) return white(BF_LIT_PX) ? "lit" : "";
+            if (white(BF_CD_WHITE)) return "cd";
+            if (!white(BF_DIM_WHITE + 1) && match(OFF_T.buff[0], { image: im, roi: OFF_T.buff[1], threshold: BF_CD_TH }).hit) return "dim";
+            return "";
+        });
+    }
+    /** Where 唤千军 may go now ("" = nowhere). @param {number} now */
+    function bfWhere(now) {
+        if (!bfBossAt && bossNow > 50) bfBossAt = now;
+        if (qp.shown) return buffWhere.includes("qi") && qp.tapAt && now - qp.tapAt >= QP_EXEC_SCENE_MS ? "qi" : "";
+        if (bfOpenOk && buffWhere.includes("open")) {
+            if (lastHitAt || lastOkAt || (bfBossAt && now - bfBossAt > QS_OPEN_MS)) bfOpenOk = false;
+            else if (bfBossAt) return "open";
+        }
+        if (buffWhere.includes("ok") && sinceOk(now) <= QS_OK_MS) return "ok"; // m40 judged with the rest (put off)
+        if (buffWhere.includes("quiet") && offM40 < buffM40 && offHorizon(Infinity) < buffTh) return "quiet"; // fut1: no contact within ~2.2 s
+        return "";
+    }
+    /** @param {number} now @param {string} how "out" | "dim" | "lit" | "none" | "cut" */
+    function bfDone(now, how) {
+        const ms = now - bfTapAt;
+        if (how === "out" || how === "dim") {
+            inc(bfS.buffOut, bfWhereTap);
+            if (how === "dim") bfS.buffDim++;
+            bfLastOut = bfTapAt;
+            bfSoon = true;
+            offBusyUntil = Math.max(offBusyUntil, bfTapAt + buffNoCancelMs + OFF_COST_MS.buff);
+            mark("off", `唤千军 out (${how === "dim" ? "刀势 spent" : "countdown"}, ${ms} ms)`);
+        } else {
+            if (how === "cut") bfS.buffCut++;
+            else bfS.buffNotOut++;
+            if (offBusyUntil === bfBusyTo) offBusyUntil = now;
+            bfRetryAt = now + (bfSoon || how === "cut" ? QS_RETRY_SOON_MS : BF_RETRY_MS);
+            if (bfSoon) bfS.buffRetry++;
+            mark("off", `唤千军 not out (${how === "cut" ? "cut by a 卸势" : how === "lit" ? "still lit" : "no countdown seen"}, ${ms} ms)`);
+            if (how !== "cut") bfSoon = !bfSoon;
+        }
+        bfTapAt = 0;
+    }
+    /** offBuff: 唤千军 on 陌刀 where safe (@see BF_LIT_TH). @param {number} now */
+    function bfTick(now) {
+        if (bfTapAt) { // out once the countdown (or the dim icon) shows on 2 frames; a 卸势 inside BF_CUT_MS cut it
+            if (lastParryAt > bfParry0 && lastParryAt - bfTapAt < BF_CUT_MS) return bfDone(now, "cut");
+            const st = bfState();
+            const ms = now - bfTapAt;
+            if ((st === "cd" || st === "dim") && img.seq !== bfOutSeq) {
+                bfOutSeq = img.seq;
+                bfOutN++;
+                if (st === "dim") bfDimSeen = true;
+            }
+            if (bfOutN >= 2) { // a cut one counts down too: decided once BF_CUT_MS is past
+                if (ms >= BF_CUT_MS) bfDone(now, bfDimSeen ? "dim" : "out");
+            } else if (st === "lit" && ms >= QS_LIT_AGAIN_MS) bfDone(now, "lit");
+            else if (ms > QS_CONFIRM_MS) bfDone(now, "none");
+            return;
+        }
+        if (now < bfRetryAt || bossNow <= 50 || offW !== "modao") return;
+        if (bfLastOut && now - bfLastOut < buffEveryMs) return;
+        if (!bfSoon && now - bfRetryAt > BF_RETRY_MS) bfSoon = true;
+        const where = bfWhere(now);
+        if (!where || bfState() !== "lit") return;
+        const why = p6Busy(now) || p6Clear(now, buffNoCancelMs, buffTh, where === "qi") || (where === "ok" && offM40 >= buffM40 ? "m40" : "");
+        if (why) {
+            inc(bfS.buffPutOff, `${where}:${why}`);
+            if (now - bfPutOffAt > 1000) mark("off", `唤千军 put off (${where}: ${why}) ${offState()}`);
+            bfPutOffAt = now;
+            return;
+        }
+        offAct("buff", where, BUFF);
+        inc(bfS.buff, where);
+        bfTapAt = now;
+        bfWhereTap = where;
+        bfOutN = 0;
+        bfOutSeq = -1;
+        bfDimSeen = false;
+        bfParry0 = lastParryAt;
+        bfBusyTo = Math.max(offBusyUntil, now + QS_CONFIRM_MS); // nothing of ours until it is known
+        offBusyUntil = bfBusyTo;
+    }
     /** Per frame (part 6 on): before the near gate, so a follow-up goes ahead of its switch. @param {number} now */
     function p6Tick(now) {
         if (ranshiStrikeMs > 0) rsTick(now);
         if (parryFollow) pfTick(now);
         if (offQishu) qsTick(now);
+        if (offBuff) bfTick(now);
     }
     /** oldWindow: the committed 横刀 set is over (burst out: the window goes on). @param {number} now @param {string} why */
     function owSetOver(now, why) {
