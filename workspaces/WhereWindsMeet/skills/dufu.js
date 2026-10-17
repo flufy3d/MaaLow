@@ -263,7 +263,8 @@ const RELOCK_SAME_F = 8, RELOCK_MIN_LEAD_F = 2, EARLY_REPRESS_F = 12, EARLY_SPAN
 //   fut items are dropped every frame of the window (tell / combo / insure items stay). Taps go on contact
 //   offContact with a self-managed lift (never tap()'s contact 1 / upDue). Skills / 蓄力 in the window: qiSkill (part 2).
 // untilCleared: combat.js deadCheck's phase-one-cleared rule (阶段二 in the quest line twice in a row, or the boss
-//   bar full again after CLR_LOW_READS reads in its last 10%) ends the run with reason "cleared".
+//   bar full again after CLR_LOW_READS reads in its last 10%) ends the run with reason "cleared". Since 2.3 phase one
+//   ends on the 成功 page instead (@see WON_T): deadCheck ends the run there as "cleared" whatever untilCleared says.
 const OFF_QUIET_TH = 0.10, OFF_QUIET_BINS = 8, OFF_QUIET_FRAMES = 3, OFF_STRONG_TH = 0.05, OFF_STRONG_BINS = 9;
 const OFF_GUARD_MS = 600, OFF_ABORT_MS = 150, OFF_AFTER_HIT_MS = 1500, OFF_AFTER_DODGE_MS = 300, OFF_AFTER_TELL_MS = 1500;
 const OFF_HP_MIN = 0.35, OFF_OK_FAST_MS = 1000, OFF_CONTACT = 3, OFF_TAP_MS = 40;
@@ -459,6 +460,14 @@ const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
 /** @type {Box} */ const RETRY_ROI = [945, 668, 95, 24];
 const RETRY_WHITE = { lower: [0, 0, 170], upper: [180, 60, 255], method: 40 };
 const DEAD_MS = 500;
+// phase one cleared (2.3): the 成功 page (dark, 「成功」 + 「独夫·绝境·浴血.阶段一」, 退出 / 再次演练 (868,679) /
+// 演练下一阶段 (993,679)). 演练下一阶段 is a white button inside RETRY_ROI and the page is grey enough for GREY: before
+// this, deadCheck read it as 重伤 (rounds 508 / 516, 20261017-201832 f8325, -213317 f8160). Both templates (cut from
+// 20261017-201832 f8325) score >= 0.997 on the page, <= 0.30 on the 重伤 page (再次训练 text, no button) and <= 0.70 /
+// 0.50 elsewhere in 26 recordings (0.69: 镇守's 再次挑战; data/tmp/dufu_success/sweep.py): both must match, on two checks
+// in a row. The buttons show ~6 frames before 「成功」 fades in (>= 0.8): 再次演练 (drill) alone already holds off 重伤.
+/** @type {[string, Box][]} */ const WON_T = [["result_drill_again.png", [800, 650, 140, 60]], ["result_success.png", [440, 110, 200, 100]]];
+const WON_TH = 0.8;
 // lock-on (combat.js): the arena auto-locks at the fight start, the game drops the lock at the phase change
 // (~80-90 s in) and the camera then stops tracking — the boss flanks and hits from the camera's side. combat.js
 // re-taps the lock button whenever the gold icon is gone; dufu.js never did (round 233: lock lost at ~87 s).
@@ -1978,11 +1987,27 @@ export default function (args = {}) {
     }
 
     // --- the round is over (重伤): the 再次训练 panel, or a long all-grey screen (@see combat.js)
-    let deadAt = 0, deadSeen = 0, greySeen = 0;
-    /** @param {number} now */
+    let deadAt = 0, deadSeen = 0, greySeen = 0, wonSeen = 0;
+    /** @type {number | null} ms since start when phase one was seen cleared (reason "cleared") */
+    let clearedAtMs = null;
+    /** @param {number} now @returns {"dead" | "cleared" | null} */
     function deadCheck(now) {
-        if (now - deadAt < DEAD_MS) return false;
+        if (now - deadAt < DEAD_MS) return null;
         deadAt = now;
+        // the 成功 page first (@see WON_T): it would pass both 重伤 tests below
+        const [drill, text] = WON_T.map(([t, roi]) => match(t, { image: img, roi, threshold: WON_TH }).hit);
+        const won = drill && text;
+        wonSeen = won ? wonSeen + 1 : 0;
+        if (wonSeen >= 2) {
+            mark("cleared", "the 成功 page (phase one cleared)");
+            clearedAtMs = now - start;
+            return "cleared";
+        }
+        if (drill) {
+            deadSeen = 0;
+            greySeen = 0;
+            return null;
+        }
         // The button is unmistakable (1980 px on the death panel). But white effect bursts also cross this ROI in
         // fights (270p proxy >= 40 px, verified 1250-1430 px full-res: replay/deadcheck_sweep.py), so two checks in
         // a row must ALSO see the boss bar gone, unless the count is death-panel-sized (>= 1600) — the count is
@@ -1994,9 +2019,9 @@ export default function (args = {}) {
         deadSeen = again ? deadSeen + 1 : 0;
         if (deadSeen >= 2) {
             mark("dead", `the round is over (reset button${bossNow > 50 ? ", strong" : ""})`);
-            return true;
+            return "dead";
         }
-        if (!deadGrey) return false;
+        if (!deadGrey) return null;
         // a curtain blackout lasts ~1 s: only a grey screen of ~2.5 s counts (painting the death screen before its
         // button). 8/8 terminal recordings fire here, 75-89 frames after the screen appears, with zero battle-period
         // triggers in 74 rounds x 187 check alignments (replay/deadcheck_sweep.py).
@@ -2004,9 +2029,9 @@ export default function (args = {}) {
         greySeen = grey ? greySeen + 1 : 0;
         if (greySeen >= 6) {
             mark("dead", "the round is over (grey screen)");
-            return true;
+            return "dead";
         }
-        return false;
+        return null;
     }
 
     // --- lock-on: tap the lock button back on while the gold icon is gone (combat.js rule; no touches in observe)
@@ -3935,12 +3960,14 @@ export default function (args = {}) {
             releaseDue();
             timed("reads", feedback);
             const now = Date.now();
-            if (deadCheck(now)) {
-                reason = "dead";
+            const over = deadCheck(now);
+            if (over) {
+                reason = over;
                 break;
             }
             if (untilCleared && clearedCheck(now)) { // v8 offense
                 reason = "cleared";
+                clearedAtMs = now - start;
                 break;
             }
             approach(now);
@@ -4040,7 +4067,7 @@ export default function (args = {}) {
         ...(v8 ? { v8 } : {}),
         ...(off ? { off } : {}),
         ...(potion ? { potion } : {}),
-        reason, observe, looks, ready, headCalls, readyPct,
+        reason, ...(reason === "cleared" ? { clearedAtMs } : {}), observe, looks, ready, headCalls, readyPct,
         presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, holds, holdPresses, insurePresses,
         rerepresses, weakWindows, weakLights, weakExecs,
         ms: { back: backS, head: headS, reads: readS, loop: loopS },
