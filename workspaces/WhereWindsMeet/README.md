@@ -1023,6 +1023,10 @@ v7 按老师对 252「独夫指导局」的 36 条逐帧标注修防守时机，
   晚到。受击链开关 staggerByDrop/hitEscape/parryRelockMs/curtainParryPlan 单独开无收益（幕布/出招中挨打增多抵消）。
 * **实机 428–472**：X2（链开关+奇术+追击）交换比 9.08 vs 同批 B 7.36（p 0.195）、vs 24 轮基线 6.45（p 0.030）；X3（奇术+追击
   0.5）6.14 vs 同批 B 5.18（p 0.24），金光挨打 −0.94/min、存活 +0.46 min 显著。批次间漂移（同臂 B 5.2–7.4）大于臂间差。
+* **首次打完阶段一**（第十八批，report18）：SC（offQishu+parryFollow followTh 0.3+受击链开关，v8，1 瓶药）508/516 两轮打完
+  （271–277 s、挨打 21–27）。成功页之前被死亡检测误判（「演练下一阶段」白底按钮落在「再次训练」判定区），已加
+  `result_success.png`/`result_drill_again.png` 模板，dufu.js 记 reason "cleared"；脚本在成功页点「再次演练」(868,679)。
+  SC9（v9 模型 trigTh 0.45）普通挨打 −0.58/min；去掉 curtainParryPlan 幕布挨打 1.09→0.75。
 
 ## 调时辰
 
