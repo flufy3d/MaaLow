@@ -28,7 +28,7 @@ const TAB_GOLD = { lower: [180, 130, 60], upper: [255, 215, 160] };
 /** @type {Box} */ const MARK_ROI = [100, 100, 880, 500]; // the chest mark on screen (a white chest, 26米 under it)
 /** @type {Box} */ const OFFER_ROI = [690, 360, 130, 220]; // the interaction list (route.js LIST_ROI)
 /** @type {Box} */ const REWARD_ROI = [790, 470, 280, 190]; // 镇守奖励: 领取三份, (剩余避战符, 扫荡次数,) 消耗心力
-/** @type {Box} */ const EXIT_ROI = [660, 0, 70, 50];
+/** @type {Box} */ const EXIT_ROI = [560, 0, 240, 50]; // 2.3: more icons on the top bar, the exit one moved left to x 631 (explore 0515)
 const LESS_X = 815; // 镇守奖励: the ◀ left of 领取三份 (fewer shares)
 const MORE_X = 1040; // and the ▶ right of it
 /** @type {Point} */ const PANEL_CLOSE = [1035, 38];
@@ -63,6 +63,9 @@ const CHEST_MS = 60_000;
 /** @type {Point} */ const REGIONS = [63, 633]; // big map: 切换区域
 /** @type {Box} */ const REGION_ROI = [800, 70, 260, 570];
 const REGION_PIC_X = 980; // a region's picture, right of its name: a tap there opens it
+/** @type {Box} */ const JIANGHU_TITLE_ROI = [60, 140, 180, 70]; // 江湖行 page: its big title
+/** @type {Box} */ const JIANGHU_CHALLENGE_ROI = [60, 490, 150, 80]; // and the 挑战 card's label
+/** @type {Point} */ const JIANGHU_CHALLENGE = [262, 410];
 /** @type {Box} */ const MAP_ROI = [0, 60, 770, 580];
 const STONE = { lower: [190, 160, 110], upper: [245, 225, 190] }; // RGB: the beige of a stone icon (the map is gray)
 /** @type {Box} */ const POTION_NUM_ROI = [688, 680, 28, 20];
@@ -132,6 +135,12 @@ function teleport(card) {
             continue;
         }
         if (recognize("Teleport_Challenge", { image }).hit) runNode("Teleport_Challenge", { once: true, override: { next: [] } });
+        else if (ocrIn(image, JIANGHU_TITLE_ROI).includes("江湖行") && ocrIn(image, JIANGHU_CHALLENGE_ROI).includes("挑战")) {
+            // 2.3: the 挑战 card's art changed and jianghu_challenge.png no longer matches (0.47, explore 0508)
+            log("江湖行: 挑战 (OCR)");
+            click(JIANGHU_CHALLENGE[0], JIANGHU_CHALLENGE[1]);
+            sleep(2000);
+        }
         else if (recognize("Teleport_Jianghu", { image }).hit) runNode("Teleport_Jianghu", { once: true, override: { next: [] } });
         else if (recognize("Teleport_OpenMenu", { image }).hit) runNode("Teleport_OpenMenu", { once: true, override: { next: [] } });
         else {
@@ -193,11 +202,16 @@ function openMap() {
     sleep(800);
 }
 
-/** Stones on the big map: beige upright blobs (the icon's body), [x, y], away from the left panels. */
+/**
+ * Stones on the big map: beige upright blobs (the icon's body), [x, y], away from the left panels. Zoomed out the
+ * icon is 8–10 × 10–12 and ~65 px (2026-10-17, explore 0503: none passed the old ≥95 px); a stone fills over half its
+ * box, the beige bits of the light terrain about a third.
+ */
 function stones() {
-    const hit = color({ ...STONE, image: screenshot(), roi: MAP_ROI, count: 95, connected: true });
+    const hit = color({ ...STONE, image: screenshot(), roi: MAP_ROI, count: 40, connected: true });
     return hit.results
-        .filter(({ box: [x, y, w, h], count }) => w >= 10 && w <= 16 && h >= 12 && h <= 19 && (count ?? 0) <= 170 && !(x < 260 && y > 460))
+        .filter(({ box: [x, y, w, h], count }) => w >= 8 && w <= 16 && h >= 9 && h <= 19 && (count ?? 0) <= 170
+            && (count ?? 0) >= 0.5 * w * h && !(x < 260 && y > 460))
         .map(({ box: [x, y, w, h] }) => /** @type {Point} */ ([x + w / 2, y + h / 2]));
 }
 
