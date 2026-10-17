@@ -1015,6 +1015,14 @@ v7 按老师对 252「独夫指导局」的 36 条逐帧标注修防守时机，
 * **模型 v8**（`unified_{back8,head8}.onnx`，18d8fab，`data/tmp/dufu_ml/unified/model_head8_report.md`）：滚动入库到 364、
   新增 ours/cont/fut1f 头与 land 探针，输出 133 维（前 77 维同 v6，dufu.js 直接换 args）。实机 380–395 A/B：卸势 ok/min
   10.8→13.8（p 0.038），px/挨打 5.67→6.72（p 0.083），存活 2.82→3.26 min，开局 2 分钟挨打没降。v8 替换 v6。
+* **真气机制**（`data/tmp/dufu_breakthrough/qi_mech.md`）：boss 真气不自然回复，只在气竭后回满；满→空约 385–399 px。每次
+  削：卸势成功 12.3、热/冷蓄打中 15/14、横刀一套 ~12、爆发 7.5、轻击 0.6。首次气竭中位 ~115 s，75% 靠卸势。
+* **老师补充的技能**（README 第 256–279、765–768 行早有木桩数据，不用重测）：`offQishu`（奇术，按冷却数字确认放出，
+  qishuWhere open/ok，放出后 1 s 挨打 0）、`parryFollow`（横刀卸势成功后重击按钮变蓝色爆发盘约 3 s，点出追击；followTh 0.3
+  时 1 s 挨打 0，0.3–0.5 段 19% 挨打）、`ranshiStrikeMs`（燃此魂第二下挥刀，6 次 1 中，收益差）。`qiExecFix`（默认开）修处决
+  晚到。受击链开关 staggerByDrop/hitEscape/parryRelockMs/curtainParryPlan 单独开无收益（幕布/出招中挨打增多抵消）。
+* **实机 428–472**：X2（链开关+奇术+追击）交换比 9.08 vs 同批 B 7.36（p 0.195）、vs 24 轮基线 6.45（p 0.030）；X3（奇术+追击
+  0.5）6.14 vs 同批 B 5.18（p 0.24），金光挨打 −0.94/min、存活 +0.46 min 显著。批次间漂移（同臂 B 5.2–7.4）大于臂间差。
 
 ## 调时辰
 
