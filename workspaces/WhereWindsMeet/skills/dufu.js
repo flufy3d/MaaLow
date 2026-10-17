@@ -382,6 +382,12 @@ const LAND_TH = 0, OURS_TELL_MS = 500;
 //   after the 处决 scene or with qishuNoCancelMs left before it), "open" (boss bar up, no contact yet), "ok"
 //   (within QS_OK_MS of an ok); always no plan item within qishuNoCancelMs + offAbortMs and the fut1 mass before
 //   it can be cut below qishuTh, else "奇术 put off". Then nothing of ours for qishuNoCancelMs.
+//   Out only once the cooldown shows (428: the tap's white flash breaks the template ~0.2 s, and 2 of 3 taps in the
+//   气竭 window flashed and stayed lit): the template gone, cooldown digits (white >= QS_COOL_WHITE in the middle) on
+//   the dark disc (V < 35 >= QS_COOL_DARK), on 2 frames within QS_CONFIRM_MS; lit again QS_LIT_AGAIN_MS on or
+//   nothing by QS_CONFIRM_MS = not out: the hold ends, one retry QS_RETRY_SOON_MS on where still safe, then
+//   QS_RETRY_MS. qishuWhere defaults to ["open", "ok"] (the 气竭 window is the 处决's); "qi" casts only after the
+//   处决 scene.
 // ranshiStrikeMs: 燃此魂 starts a run (the body glows white) and turns 突进's button into 伤害
 //   (modao_ranshi_strike) for up to ~3 s (410-418: to +90 f unless a dodge ends it); only the second tap swings
 //   (荡八荒 ~13.8K; README: the opening's second tap 0.5 s after); without it the run ends at the boss (410-418:
@@ -392,8 +398,13 @@ const LAND_TH = 0, OURS_TELL_MS = 500;
 //   okHeavy, ~0 px) followDelayMs after the ok (live pf1/pf2: taps 60-140 ms after the ok are swallowed, ~0.4-1 s
 //   ones slash: boss 7-16 px and a 真气 step ~10 in 6 of 22, 1 hit within 1.5 s), horizon clear (followTh,
 //   followNoCancelMs), within PF_WINDOW_MS; also in the qiPlan window on 横刀. followStay: on 陌刀 outside 热血难凉
-//   the near gate switches back to 横刀 instead of a cold 蓄力.
+//   the near gate switches back to 横刀 instead of a cold 蓄力. After a 横刀 ok the other offense (near gate, gate,
+//   offFar, committed set) waits for it up to followDelayMs + PF_HOLD_EXTRA_MS (428: the near gate tapped 25-120
+//   ms after the ok, 108 follow-ups skipped busy); no disc by PF_DISC_WAIT_MS lets go.
 const QS_OK_MS = 1500, QS_OPEN_MS = 15_000, QS_RETRY_MS = 3000, QS_EVAL_MS = 7000;
+const QS_CONFIRM_MS = 1000, QS_LIT_AGAIN_MS = 350, QS_RETRY_SOON_MS = 300, QS_COOL_WHITE = 70, QS_COOL_DARK = 600;
+const PF_HOLD_EXTRA_MS = 400, PF_DISC_WAIT_MS = 400;
+/** @type {ColorOptions} */ const QS_DARK = { lower: [0, 0, 0], upper: [180, 255, 34], method: 40 };
 const RS_WINDOW_MS = 3000, RS_COST_MS = 900, PF_WINDOW_MS = 3000, PF_COST_MS = 900, PF_RETRY_MS = 350, PF_TRIES = 3, QS_LIT_PX = 30;
 /** @type {Point} */ const QISHU = [881, 525];
 /** @type {Point} */ const PF_DIAMOND = [860, 430];
@@ -674,7 +685,7 @@ export default function (args = {}) {
     const oursTellMs = args.oursTellMs ?? OURS_TELL_MS;
     // v8 offense part 6 (@see QS_OK_MS): all default off
     const offQishu = args.offQishu ?? false; // 奇术 where safe (qishuWhere)
-    const qishuWhere = args.qishuWhere ?? ["qi", "open", "ok"];
+    const qishuWhere = args.qishuWhere ?? ["open", "ok"]; // "qi": after the 处决 scene only
     const qishuNoCancelMs = args.qishuNoCancelMs ?? 2000; // a 卸势 sooner than this after the tap is swallowed
     const qishuTh = args.qishuTh ?? 0.1; // fut1 mass before it can be cut
     const ranshiStrikeMs = args.ranshiStrikeMs ?? 0; // 燃此魂's second tap this long after the first (0 = off)
@@ -2895,6 +2906,7 @@ export default function (args = {}) {
     function offActTick(now) {
         if (hd) hdTick(now);
         if (offHold || offWalking || hd || now < offBusyUntil || !offOpenAt) return;
+        if (parryFollow && pfHold(now)) return; // part 6: the follow-up first
         const hot = burstAt > 0 && now - burstAt < HOT_MS;
         const w = offW;
         /** @type {{a: string, p: Point, strong: boolean, melee: boolean} | null} */
@@ -3186,6 +3198,7 @@ export default function (args = {}) {
             okOpenAt = 0;
         }
         if (hd || offHold || offWalking || now < offBusyUntil) return;
+        if (parryFollow && pfHold(now)) return; // part 6: the follow-up first
         if (offFar && far && okFarSince && now - okFarSince >= offFarMs && farCloseIn(now)) return;
         if (okOpenAt && !far) okAct(now, false);
         else if (okSwitchPend && now < okSwitchPend && offM30 <= offVetoTh && !inCurtain && !inDodge) okAct(now, true);
@@ -3193,10 +3206,13 @@ export default function (args = {}) {
     // --- part 6: 奇术 (offQishu), 燃此魂's second tap (ranshiStrikeMs), the 横刀 ok follow-up (parryFollow)
     /** @type {{at: number, until: number, src: string, seen: number} | null} */ let rsPend = null;
     let qsLitAt = 0, qsLit = false, qsRetryAt = 0, qsTapAt = 0, qsOpenOk = true, qsBossAt = 0, qsPutOffAt = 0;
-    let pfOkAt = 0, pfTapAt = 0, pfTries = 0;
+    let qsCoolN = 0, qsCoolSeq = -1, qsBusyTo = 0, qsSoon = true, qsWhereTap = "";
+    let pfOkAt = 0, pfTapAt = 0, pfTries = 0, pfHeng = false, pfDiscAt = 0, pfHoldN = 0, pfHoldMarked = false;
     const p6S = {
         /** @type {Record<string, number>} */ qishu: {}, qishuNotOut: 0, /** @type {Record<string, number>} */ qishuPutOff: {},
+        /** @type {Record<string, number>} */ qishuOut: {}, qishuRetry: 0, qishuUnknown: 0,
         ranshi2: 0, ranshi2Lost: 0, follow: 0, followNotOut: 0, /** @type {Record<string, number>} */ followSkip: {}, followOks: 0,
+        followHolds: 0, followHoldNoDisc: 0, followHoldFrames: 0,
     };
     /** combat.js qishuLit (4 Hz): the template and the white strokes in the middle. @param {number} now */
     function qsLitRead(now) {
@@ -3210,6 +3226,20 @@ export default function (args = {}) {
             return color({ ...ICON_WHITE, image: im, roi: [cx - 18, cy - 18, 36, 36], count: QS_LIT_PX }).hit;
         });
         return qsLit;
+    }
+    /** The 奇术 button now (per frame): "lit", "cool" (template gone, cooldown digits on the dark disc) or "". */
+    function qsState() {
+        return perFrame("qishuState", (im) => {
+            const hit = match(OFF_T.qishu[0], { image: im, roi: OFF_T.qishu[1], threshold: OFF_ICON_TH });
+            if (hit.hit && hit.box) {
+                const [x, y, w, h] = hit.box;
+                const cx = Math.round(x + w / 2), cy = Math.round(y + h / 2);
+                return color({ ...ICON_WHITE, image: im, roi: [cx - 18, cy - 18, 36, 36], count: QS_LIT_PX }).hit ? "lit" : "";
+            }
+            const [cx, cy] = QISHU;
+            const digits = color({ ...ICON_WHITE, image: im, roi: [cx - 18, cy - 18, 36, 36], count: QS_COOL_WHITE }).hit;
+            return digits && color({ ...QS_DARK, image: im, roi: [cx - 22, cy - 22, 44, 44], count: QS_COOL_DARK }).hit ? "cool" : "";
+        });
     }
     /** The defense's own states and our busy ones ("" = free). @param {number} now */
     function p6Busy(now) {
@@ -3237,8 +3267,7 @@ export default function (args = {}) {
         if (!qsBossAt && bossNow > 50) qsBossAt = now;
         if (qp.shown) {
             if (!qishuWhere.includes("qi")) return "";
-            if (qp.tapAt && now - qp.tapAt >= QP_EXEC_SCENE_MS) return "qi"; // after the 处决 scene
-            if (!qp.tapAt && qiExecAfter - (now - qp.shown) >= qishuNoCancelMs + 300) return "qi"; // before it, if it fits
+            if (qp.tapAt && now - qp.tapAt >= QP_EXEC_SCENE_MS) return "qi"; // after the 处决 scene (the 处决 first)
             return "";
         }
         if (qsOpenOk && qishuWhere.includes("open")) { // the opening: the bar up, no contact yet
@@ -3248,20 +3277,39 @@ export default function (args = {}) {
         if (qishuWhere.includes("ok") && sinceOk(now) <= QS_OK_MS) return "ok";
         return "";
     }
+    /** The tap's end: out (the hold to qishuNoCancelMs) or not (the hold off, a retry). @param {number} now @param {string} how */
+    function qsDone(now, how) {
+        const ms = now - qsTapAt;
+        if (how === "cool") {
+            inc(p6S.qishuOut, qsWhereTap);
+            offBusyUntil = Math.max(offBusyUntil, qsTapAt + qishuNoCancelMs);
+            qsSoon = true;
+            mark("off", `奇术 out (cooldown, ${ms} ms)`);
+        } else {
+            if (how === "lit") p6S.qishuNotOut++;
+            else p6S.qishuUnknown++;
+            if (offBusyUntil === qsBusyTo) offBusyUntil = now; // the hold was ours: off
+            qsRetryAt = now + (qsSoon ? QS_RETRY_SOON_MS : QS_RETRY_MS);
+            if (qsSoon) p6S.qishuRetry++;
+            mark("off", `奇术 not out (${how === "lit" ? "still lit" : "no cooldown seen"}, ${ms} ms), again in ${qsSoon ? QS_RETRY_SOON_MS : QS_RETRY_MS} ms`);
+            qsSoon = !qsSoon;
+        }
+        qsTapAt = 0;
+    }
     /** @param {number} now */
     function qsTick(now) {
-        if (qsTapAt) { // out once the icon goes (cooling); still lit 500 ms on: again after QS_RETRY_MS
-            const lit = qsLitRead(now);
-            if (lit && now - qsTapAt <= 500) return;
-            if (lit) {
-                p6S.qishuNotOut++;
-                qsRetryAt = now + QS_RETRY_MS;
-                mark("off", "奇术 not out (still lit)");
-            } else mark("off", `奇术 out (${now - qsTapAt} ms)`);
-            qsTapAt = 0;
+        if (qsTapAt) { // out once the cooldown shows on 2 frames; lit after the tap's flash, or nothing: not out
+            const st = qsState();
+            const ms = now - qsTapAt;
+            if (st === "cool" && img.seq !== qsCoolSeq) {
+                qsCoolSeq = img.seq;
+                if (++qsCoolN >= 2) qsDone(now, "cool");
+            } else if (st === "lit" && ms >= QS_LIT_AGAIN_MS) qsDone(now, "lit");
+            else if (ms > QS_CONFIRM_MS) qsDone(now, "none");
             return;
         }
         if (now < qsRetryAt || bossNow <= 50) return;
+        if (!qsSoon && now - qsRetryAt > QS_RETRY_MS) qsSoon = true; // a long while on: a retry again
         const where = qsWhere(now);
         if (!where || !qsLitRead(now)) return;
         const why = p6Busy(now) || p6Clear(now, qishuNoCancelMs, qishuTh, where === "qi");
@@ -3274,7 +3322,12 @@ export default function (args = {}) {
         offAct("qishu", where, QISHU);
         inc(p6S.qishu, where);
         qsTapAt = now;
-        offBusyUntil = Math.max(offBusyUntil, now + qishuNoCancelMs);
+        qsWhereTap = where;
+        qsCoolN = 0;
+        qsCoolSeq = -1;
+        qsLitAt = 0; // the 4 Hz read again after it
+        qsBusyTo = Math.max(offBusyUntil, now + QS_CONFIRM_MS); // nothing of ours until it is known
+        offBusyUntil = qsBusyTo;
     }
     /** 燃此魂's second tap (伤害, 荡八荒) ranshiStrikeMs after the first, while its icon shows. @param {number} now */
     function rsTick(now) {
@@ -3301,7 +3354,11 @@ export default function (args = {}) {
             pfOkAt = lastOkAt;
             pfTapAt = 0;
             pfTries = 0;
-            if (offW === "hengdao") p6S.followOks++;
+            pfHeng = offW === "hengdao";
+            pfDiscAt = 0;
+            pfHoldN = 0;
+            pfHoldMarked = false;
+            if (pfHeng) p6S.followOks++;
         }
         if (!pfOkAt || now - pfOkAt > PF_WINDOW_MS || now - pfOkAt < followDelayMs || pfTries >= PF_TRIES) return;
         if (pfTapAt && now - pfTapAt < PF_RETRY_MS) return;
@@ -3326,6 +3383,28 @@ export default function (args = {}) {
         pfTapAt = now;
         pfTries++;
         offBusyUntil = Math.max(offBusyUntil, now + PF_RETRY_MS);
+    }
+    /**
+     * parryFollow: the rest of the offense waits for the follow-up after a 横刀 ok (to followDelayMs +
+     * PF_HOLD_EXTRA_MS, while the disc shows; no disc by PF_DISC_WAIT_MS lets go). @param {number} now
+     */
+    function pfHold(now) {
+        if (!parryFollow || !pfOkAt || pfTries > 0 || qp.shown) return false;
+        const s = now - pfOkAt;
+        if (s >= followDelayMs + PF_HOLD_EXTRA_MS) return false;
+        const disc = offSeen("swirl");
+        if (disc && !pfDiscAt) pfDiscAt = now;
+        if (!disc && (pfDiscAt || s >= PF_DISC_WAIT_MS || !pfHeng)) {
+            if (!pfHoldMarked && pfHoldN) {
+                pfHoldMarked = true;
+                p6S.followHoldNoDisc++;
+                mark("off", `follow hold off (${pfDiscAt ? "disc gone" : "no disc"}, sok ${s})`);
+            }
+            return false;
+        }
+        if (!pfHoldN++) p6S.followHolds++;
+        p6S.followHoldFrames++;
+        return true;
     }
     /** Per frame (part 6 on): before the near gate, so a follow-up goes ahead of its switch. @param {number} now */
     function p6Tick(now) {
