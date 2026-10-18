@@ -1,0 +1,422 @@
+{
+ "model": "unified v9: backbone unified_back9.onnx = MobileNetV3-Small (v6 trunk -> v8 -> rolled on 150-472 minus val/test/HOLD/HOLD9, end-to-end [features[10],[11]]: + the 365-472 live rounds (1 potion, v8 deploy, 奇术/追击/燃此魂 arms) with sweep-miss and own-action contact weighting), 192-d per frame; head unified_head9s.onnx = 2-layer causal GRU (hidden 128) over 30 steps of [feat 192 | aux 15] (inputs unchanged from v6). Output 133 = the v6 77 (same offsets/labels, combo = v6 gap bins) + fut1f 46 (1..45 f + none, 1-frame next-contact distribution) + ours 6 + cont 2 + land 2. IMPORTANT: head9 requires back9; switch both together (comboV6:true). v9 = runs/v9c ep2 (sweep-miss/own-action weighted, sww 0.5 oww 0.25, sampling x2/x0.5); suggested trigTh 0.45 RE-EXPORT v9s: unified_head9s.onnx holds the same weights/architecture as unified_head9.onnx with the deterministically-unused image input `img` [1,3,96,96] removed, so the head is driven by `seq` alone (no screenshot / ROI crop / resize per head call) and the 133-d logits stay identical (checked against unified_head9.onnx). paired with the same unified_back9.onnx; switch back+head together (comboV6:true).",
+ "io": {
+  "inputs": [
+   {
+    "name": "seq",
+    "shape": [
+     1,
+     30,
+     207
+    ],
+    "dtype": "float32",
+    "note": "the ONLY input: 30 steps oldest..current, each [192 backbone features | 15 aux], unchanged from v6. unified_head9s takes no image - the runtime must not capture / ROI-crop / resize a frame for the head any more (that was a deterministic no-op in unified_head9.onnx and cost ~15 ms per call)."
+   }
+  ],
+  "output": {
+   "name": "out",
+   "shape": [
+    1,
+    133
+   ],
+   "dtype": "float32",
+   "note": "v6 77 first (dufu.js reads offsets 0..76 unchanged), then the v8 slices; softmax per slice. Byte-identical to unified_head9.onnx's output for the same seq (the dropped image input provably never influenced it)."
+  }
+ },
+ "slices": [
+  {
+   "name": "combo",
+   "start": 0,
+   "len": 16,
+   "labels": [
+    "bg",
+    "single",
+    "g8-13",
+    "g14-19",
+    "g20-23",
+    "g24-27",
+    "g28-33",
+    "g34-40",
+    "end",
+    "x9",
+    "x10",
+    "x11",
+    "x12",
+    "x13",
+    "x14",
+    "x15"
+   ]
+  },
+  {
+   "name": "stage",
+   "start": 16,
+   "len": 6,
+   "labels": [
+    "bg",
+    "pre",
+    "next2",
+    "next3",
+    "next4+",
+    "done"
+   ]
+  },
+  {
+   "name": "fut1",
+   "start": 22,
+   "len": 11,
+   "labels": [
+    "1-3",
+    "4-6",
+    "7-9",
+    "10-12",
+    "13-15",
+    "16-19",
+    "20-24",
+    "25-30",
+    "31-40",
+    "41-60",
+    "none"
+   ]
+  },
+  {
+   "name": "fut2",
+   "start": 33,
+   "len": 11,
+   "labels": [
+    "1-3",
+    "4-6",
+    "7-9",
+    "10-12",
+    "13-15",
+    "16-19",
+    "20-24",
+    "25-30",
+    "31-40",
+    "41-60",
+    "none"
+   ]
+  },
+  {
+   "name": "fut3",
+   "start": 44,
+   "len": 11,
+   "labels": [
+    "1-3",
+    "4-6",
+    "7-9",
+    "10-12",
+    "13-15",
+    "16-19",
+    "20-24",
+    "25-30",
+    "31-40",
+    "41-60",
+    "none"
+   ]
+  },
+  {
+   "name": "def1",
+   "start": 55,
+   "len": 5,
+   "labels": [
+    "none",
+    "parry",
+    "dodge",
+    "curtain",
+    "unknown"
+   ]
+  },
+  {
+   "name": "def2",
+   "start": 60,
+   "len": 5,
+   "labels": [
+    "none",
+    "parry",
+    "dodge",
+    "curtain",
+    "unknown"
+   ]
+  },
+  {
+   "name": "def3",
+   "start": 65,
+   "len": 5,
+   "labels": [
+    "none",
+    "parry",
+    "dodge",
+    "curtain",
+    "unknown"
+   ]
+  },
+  {
+   "name": "tell",
+   "start": 70,
+   "len": 7,
+   "labels": [
+    "none",
+    "flare_other",
+    "flare_grab",
+    "flare_slam",
+    "sweep",
+    "curtain",
+    "dark"
+   ]
+  },
+  {
+   "name": "fut1f",
+   "start": 77,
+   "len": 46,
+   "labels": [
+    "1f",
+    "2f",
+    "3f",
+    "4f",
+    "5f",
+    "6f",
+    "7f",
+    "8f",
+    "9f",
+    "10f",
+    "11f",
+    "12f",
+    "13f",
+    "14f",
+    "15f",
+    "16f",
+    "17f",
+    "18f",
+    "19f",
+    "20f",
+    "21f",
+    "22f",
+    "23f",
+    "24f",
+    "25f",
+    "26f",
+    "27f",
+    "28f",
+    "29f",
+    "30f",
+    "31f",
+    "32f",
+    "33f",
+    "34f",
+    "35f",
+    "36f",
+    "37f",
+    "38f",
+    "39f",
+    "40f",
+    "41f",
+    "42f",
+    "43f",
+    "44f",
+    "45f",
+    "none"
+   ]
+  },
+  {
+   "name": "ours",
+   "start": 123,
+   "len": 6,
+   "labels": [
+    "none",
+    "light",
+    "skill",
+    "burst",
+    "charge",
+    "execute"
+   ]
+  },
+  {
+   "name": "cont",
+   "start": 129,
+   "len": 2,
+   "labels": [
+    "no",
+    "yes"
+   ]
+  },
+  {
+   "name": "land",
+   "start": 131,
+   "len": 2,
+   "labels": [
+    "no",
+    "yes"
+   ]
+  }
+ ],
+ "v8_slices_note": {
+  "fut1f": "next contact (any type) in j+1 frames (j=0..44), 45 none (> 45 f or none). c_hat = t + sum_j p_j (j+1) / sum_{j<45} p_j; trained with Gaussian soft targets sigma 1 f",
+  "ours": "our own action on screen now (aux target; diagnostics only)",
+  "cont": "another boss contact within 30 f (offense gate's veto: use on the 0..12 f after a 卸势 ok)",
+  "land": "probability that an action pressed now takes boss px within 1.2 s (probe on the frozen GRU state + current aux; offense rounds' result lines)"
+ },
+ "aux": {
+  "order": [
+   "dt33",
+   "since_parry",
+   "since_dodge",
+   "since_potion",
+   "since_walk",
+   "press_last3",
+   "since_ok",
+   "hp",
+   "qi",
+   "boss_ratio",
+   "lit",
+   "mean",
+   "dark3",
+   "flare",
+   "boss_bar"
+  ],
+  "normalization": {
+   "dt33": "realized dt between consecutive kept frames / 33.33, clip 0.5..3; first step = 1.0",
+   "since_parry": "frames since last parry press / 3.0, cap 10 (0.1s units), 10 when none yet",
+   "since_dodge": "same, dodge press",
+   "since_potion": "same, potion press",
+   "since_walk": "same, walk press",
+   "press_last3": "1 if any of the last 3 frames (t-2..t) had a press from any of the 4 buttons, else 0",
+   "since_ok": "frames since last successful parry (ok contact) / 3.0, cap 10",
+   "hp": "clip(hp, 0, 1)",
+   "qi": "clip(qi / 385, 0, 1)",
+   "boss_ratio": "clip(boss_cur / 386, 0, 1) (boss current, fallback boss max)",
+   "lit": "clip(glow / 500, 0, 1)",
+   "mean": "clip(frame mean / 255, 0, 1)",
+   "dark3": "1 if min(mean[t-2..t]) < 20 else 0",
+   "flare": "1 if raw flare flag of the current frame",
+   "boss_bar": "1 if boss bar present (boss > 50)"
+  },
+  "note": "unchanged from v6"
+ },
+ "window": {
+  "T": 30,
+  "note": "runtime keeps the last 30 captured frames 1:1 (irregular ~35ms); feed oldest..current."
+ },
+ "device_calls": [
+  {
+   "name": "backbone",
+   "call": "infer(\"dufu/unified_back9.onnx\", {roi:[120,30,840,530],size:96,resize:\"area\",color:\"rgb\",mean:0,std:1,frames:[0],post:\"none\"})"
+  },
+  {
+   "name": "head",
+   "call": "infer(\"dufu/unified_head9s.onnx\", {seq:<current 30x207 window>, extra:[{name:\"seq\",dim:[1,30,207],data_b64:\"<base64>\"}]})",
+   "out": "out: 133-d (see slices)",
+   "note": "seq-only, no image/roi: do not feed the head a screenshot any more. The window travels as the compact `data_b64` - RFC 4648 standard base64, padding included, of the little-endian packed float32 array (24840 B -> 33120 chars; the same bytes as the old `data` JSON float array, ~33 kB instead of ~62 kB of text per call). Row-major, oldest frame first, each step = [192 backbone features | 15 aux, order below]."
+  }
+ ],
+ "provenance": {
+  "kind": "e2e",
+  "ckpt": "runs/v9c/ep2_land.pt",
+  "epoch": 2,
+  "step": 4686,
+  "hidden": 128,
+  "layers": 2,
+  "config": {
+   "out": "runs/v9c",
+   "init_ckpt": "D:\\Projects\\MaaLow\\data\\tmp\\dufu_ml\\unified\\runs\\v8b\\best_land.pt",
+   "sww": 0.5,
+   "oww": 0.25,
+   "samp_sw": 2.0,
+   "samp_ow": 0.5,
+   "epochs": 3,
+   "samples": 200000,
+   "bs": 128,
+   "lr": 4e-05,
+   "lr_new": 0.001,
+   "unfreeze": 2,
+   "hidden": 128,
+   "layers": 2,
+   "workers": 8,
+   "max_min": 300.0,
+   "w_fine": 0.5,
+   "fine_sigma": 1.0,
+   "w_ours": 0.2,
+   "w_cont": 0.3,
+   "w_combo": 0.1,
+   "hitw": 0.0,
+   "tellw": 0,
+   "freeze_base": false,
+   "resume": false
+  },
+  "back_md5": "bf2ec96cfb2d0af37f3a5336989ceb56",
+  "head_md5": "051f08e566f5e7e03c8d3fcfd4969102",
+  "val_trigger": {
+   "S1": {
+    "40": {
+     "cov": 0.7134723441449844,
+     "cov8": 0.4707908602300206,
+     "early": 0.3688018417920298
+    },
+    "55": {
+     "cov": 0.8671435863483892,
+     "cov8": 0.5849730352510518,
+     "early": 0.30771551580359435
+    },
+    "score_sel": 0.43111527734925464
+   },
+   "S2": {
+    "40": {
+     "cov": 0.5236695312380476,
+     "cov8": 0.4365911267880883,
+     "early": 0.3769674815587538
+    },
+    "55": {
+     "cov": 0.7018121788026137,
+     "cov8": 0.5496442208530545,
+     "early": 0.30921255784227064
+    },
+    "score_sel": 0.3950379419319192
+   },
+   "S3": {
+    "40": {
+     "cov": 0.7248087069997458,
+     "cov8": 0.44467585423864875,
+     "early": 0.33832655804622946
+    },
+    "55": {
+     "cov": 0.868325137636029,
+     "cov8": 0.4746095426338911,
+     "early": 0.2999275013957504
+    },
+    "score_sel": 0.3246457919360159
+   }
+  },
+  "val_metrics": {
+   "fut_within1": 0.6791250748570581,
+   "fut_acc": 0.5174635109131513,
+   "fut_nll": 1.437836691737175,
+   "combo_acc": 0.794869791702234,
+   "stage_acc": 0.6700066144025953,
+   "def_acc": 0.6452709040267802,
+   "tell_f1": 0.5159142666278911
+  },
+  "land_probe": {
+   "n_train": 6130,
+   "n_hold": 979,
+   "land_rate_hold": 0.5137895812053116,
+   "auc_probe_hold": 0.7708747514910537,
+   "auc_probe_train": 0.7737164520215034,
+   "auc_negm30log_hold": 0.648144744975525,
+   "auc_negm30head_hold": 0.6167699684247456,
+   "hit1s_auc_m30head_hold": 0.8457001383528726,
+   "hit1s_auc_probe_hold": 0.5721012645938008,
+   "keep70_land_probe": 0.6335766423357664,
+   "keep70_land_m30": 0.5357664233576642,
+   "keep50_land_probe": 0.7142857142857143,
+   "keep50_land_m30": 0.5775510204081633
+  }
+ },
+ "reexport": {
+  "kind": "head-only",
+  "source": "unified_head9.onnx + unified_head9.json (same ckpt, same head weights)",
+  "source_head_md5": "051f08e566f5e7e03c8d3fcfd4969102",
+  "source_head_json": "unified_head9.json",
+  "head_md5": "3c98c1d33b39ef2afade1e2fb9fc7b09",
+  "script": "v9/export9s.py",
+  "note": "io/device_calls rewritten to seq-only; slices/aux/window/provenance/training metadata inherited verbatim from unified_head9.json (same checkpoint)."
+ }
+}

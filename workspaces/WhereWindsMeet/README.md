@@ -1036,6 +1036,25 @@ v7 按老师对 252「独夫指导局」的 36 条逐帧标注修防守时机，
   ~19K；冢上霜后约 1.5 s 重击变蓝盘才能接拨雪寻春（整套 45–51K）。实战 59 次中位 0 px、只接上 7 次拨雪寻春；出招中挨打
   0.55→0.26/min（p 0.021），但伤害与打完率没涨，保持默认关。D 累计 4/20 打完（264–292 s）。
 
+### 独夫 v9 推理管道：head9s + App 侧特征环（2026-10-18）
+
+模型不变（与 back9/head9 输出逐位一致），只换 head 的输入与传输：`unified_head9s.onnx` 去掉 head 从不使用的
+`img` 输入（`v9/export9s.py` 重导出，133 维切片不变）；App 的 `infer` 支持无图像模型（`nn_jni.cpp` 的 `nnRunExtra`
+frames 为空 + `Nn.kt` 跳过全部截图预处理）与**每 run 的特征环**（`history` 把 backbone 输出 + aux 追加进环，
+`extra.ring` 拼 30 步，返回 `ring:{len,sum}` 供对账；`data_b64` 是后备）；调度器新 args **`seqRing`（默认关）**，
+开时 head 调用不带 image/BACK、`model` 用 `dufu/unified_head9s.onnx`。
+
+* **设备实测**：head p50 16→**1 ms**（预处理 5.8 消失、桥 9.7→0.4、run 1.0→0.4）、主循环 38.1→**30.4 ms**（−7.7，−20%）、
+  fps 19.5→20.7（截图流 ~20–21 fps 是硬上限，收益落在决策延迟与 CPU 余量）；新旧输出 max|d| = **0**。
+* **实机 A/B**（第二十二批 583–602，D vs DP ABBA 各 10 轮，`live/report22_dp.md`）：10/10 DP 轮 `seqRing` 生效、
+  **ringBad 全 0**、43959 次 head 调用 100% ready；交换比 −0.67 [−4.20,+2.51] p=1.0、打完 0/10 vs 1/10（Fisher p=1.0）
+  ——**不退化**，DP 作为后续批的新基线（批 23 起 `sched23.py` 的 `B23_BASE=DP`）。
+* 坑：重跑同一轮号时 `round_stats.py` 会把旧录像的逐帧特征移到 `data/tmp/dufu/r<k>.json.stale-<rec>` 再重抽
+  （此前只打印提示；583–588 曾因此留下一版作废特征）。
+* 复现：`v9/export9s.py --ckpt runs/v9c/ep2_land.pt --suffix 9s`；`cd android && ./gradlew assembleDebug && bash android/scripts/install.sh`；
+  `uv run maalow sync WhereWindsMeet --push …`；验收 `uv run maalow do skill nn_bench --args '{"ring":true,…}'`；
+  mock `node data/tmp/dufu_breakthrough/ring22/ring_smoke.mjs`。
+
 ## 调时辰
 
 `set_time.js`（老师 2026-10-03 教的）：大世界 → 右上角菜单 (1039,22) → 菜单右栏的时钟图标 (1046,182) → 「时辰」页。右边是十二时辰的滚轮，框里是选中的（OCR 只识别那一小块），每格 62 px，往上滑是往后调；**只能往后**，往下滑不会早于现在，过了亥时接着是次日（框左边的标签「今日」变「次日」）。技能每次最多滑三格、滑完读一次，滑过头就往回一格；点「确认更改」(997,678)（老师让点的）后等表盘转完、框里变成「今日 <时辰>」，再点页面的返回 (1032,33)、菜单的 « (1043,33) 回大世界（看画面一步步退，最多 4 轮：返回点了没反应时停在过菜单上），约 15 秒。参数 `{to: "午"}` 或 `{hour: 12}`；`{read: true}` 只读不改（页面留着）。OCR 会把形近字读错（「卯」读成过「卵」），技能里有一张形近字表；读不出来就报错停下，页面留着，再跑一次会从那一页接着做。游戏时间走得快，调到午时后几分钟就是未时，白天的测试要在跑之前现调

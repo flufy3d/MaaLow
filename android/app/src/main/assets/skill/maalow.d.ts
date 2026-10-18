@@ -163,9 +163,22 @@ interface InferOptions {
      * The model's inputs after the image, one tensor each in that order (up to 4), e.g. a feature history and a
      * state / timing vector for a head model. float32 only; dims must equal the model input's (a batch dimension of
      * 1 or dynamic takes dim[0] 1), and `name`, when given, must be that model input's name. A model with no input
-     * beyond the image takes no `extra`.
+     * beyond the image takes no `extra`. A model with no image input at all (a head driven by its tensors alone, e.g.
+     * a GRU over a feature window) takes all its inputs here - one tensor per input, in order - and no image is
+     * looked at: no roi / size / color / frames work is done for it.
+     *
+     * A tensor's values come from `data` (a JSON float array), from `data_b64` instead (standard base64, padding
+     * included, of the little-endian packed float32 bytes; dim product * 4 of them), or from the run's feature ring
+     * `name` with `ring: true` (@see history): the ring's last 30 steps, oldest first, front-padded with the oldest
+     * when short, as [1, 30, feature + aux] - `dim` must say exactly that shape.
      */
-    extra?: { name?: string; dim: number[]; data: number[] }[];
+    extra?: { name?: string; dim: number[]; data?: number[]; data_b64?: string; ring?: boolean }[];
+    /**
+     * After this call succeeds, append its first output (a vector, e.g. the backbone's features: [N] or [1, N]) and
+     * each entry's `aux` to the run's feature ring `name` (up to 30 entries, the oldest dropped; `reset: true` clears
+     * the ring first), for a later `extra` with `ring: true` to assemble. The rings live in the run, gone with it.
+     */
+    history?: { name: string; aux: number[]; reset?: boolean }[];
     /** onnxruntime intra-op threads (default 1), busy-wait between ops (default false), provider (default "cpu").
      * A model is opened once per set of these and kept (reopened when its file changes). */
     threads?: number;
@@ -193,6 +206,9 @@ interface Inference {
     /** The frames used, per offset: stream frame number and capture time relative to the image (ms); null: missing. */
     frames: ({ seq: number; ms: number } | null)[];
     input?: number[][];
+    /** An `extra` tensor with `ring: true` was assembled: its entry count and the sum (double, oldest first) of the
+     * assembled floats, for the caller to check against its own ring. */
+    ring?: { len: number; sum: number };
     /** prep: preprocessing (with history), run: onnxruntime, total. */
     ms: { prep: number; run?: number; total: number };
 }

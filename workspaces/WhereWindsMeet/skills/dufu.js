@@ -501,7 +501,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 /** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, noCd?: boolean, relocked?: boolean}} PlanItem */
 
 /**
- * @param {{observe?: boolean, ms?: number, potions?: number, model?: string, backModel?: string, parry?: Point,
+ * @param {{observe?: boolean, ms?: number, potions?: number, model?: string, backModel?: string, seqRing?: boolean, parry?: Point,
  *   dodgePoint?: Point, potionPoint?: Point, dodgeDir?: string, targetGlowLead?: number, latencyFrames?: number,
  *   issueLeadMs?: number, commitMs?: number, parryCd?: number, dodgeCd?: number, staggerMs?: number,
  *   dodgeLead?: Record<string, number>, nextMs?: number, predMs?: number, missGraceMs?: number, tellTh?: number,
@@ -541,6 +541,9 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
  *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
  *   latencyFrames: the press lead; dodgeLead: tell dodge lead in frames per kind (grab/slam/other/sweep);
+ *   seqRing: the no-image head pipeline (default off): every backbone call appends its 192-d feature + aux to the run's
+ *   ring and the head (args model, e.g. dufu/unified_head9s.onnx) is called without an image on the ring's own seq; the
+ *   device's ring numbers are checked against ours (soft: a mismatch logs + counts ringBad, never throws);
  *   staggerHold / presched: the v5 scheduler switches (@see HOLD_MIN_LEAD / COMBO_GAPS; both default off);
  *   comboV6: the v6 pair's combo slot is the gap-to-next-segment bins (presched/preschedN switch semantics);
  *   keepPlanOnHit / posthit / posthitNarrow: the v6 second-segment lifecycle switches (all default off).
@@ -566,6 +569,7 @@ export default function (args = {}) {
     const untilMs = args.ms ?? 300_000;
     const model = args.model ?? "dufu/unified_head2.onnx";
     const backModel = args.backModel ?? "dufu/unified_back2.onnx";
+    const seqRing = args.seqRing ?? false; // the no-image head pipeline (@see the run loop and checkRing)
     const maxPotions = args.potions ?? 0;
     const parryP = args.parry ?? PARRY;
     const dodgeP = args.dodgePoint ?? DODGE;
@@ -1152,6 +1156,31 @@ export default function (args = {}) {
         }
         return data;
     };
+    // seqRing: the device assembles the head's seq from its own feature ring; check its numbers against ours. The app
+    // stores and feeds float32, so our values are rounded the same way before summing (same order, oldest first).
+    // Soft check only: a mismatch logs (first 10, then every 100th) and counts, it never throws.
+    let ringBad = 0, ringChecks = 0;
+    /** @param {Inference} h */
+    function checkRing(h) {
+        ringChecks++;
+        const len = h.ring ? h.ring.len : -1;
+        let bad = len !== ring.length;
+        // the full sum costs a seqData() build, so it runs on a schedule (the first calls, then sparsely): the length
+        // check above stays every call
+        if (!bad && (ringChecks <= 3 || ringChecks % 60 === 0)) {
+            const data = seqData();
+            let sum = 0;
+            for (const v of data) sum += Math.fround(v);
+            const dev = h.ring ? h.ring.sum : NaN;
+            bad = !(Math.abs(dev - sum) <= 1e-6 + 1e-9 * Math.abs(sum));
+        }
+        if (bad) {
+            ringBad++;
+            if (ringBad <= 10 || ringBad % 100 === 0) {
+                log(`ring mismatch #${ringBad}: len device/own ${len}/${ring.length}`);
+            }
+        }
+    }
 
     // --- the 15 aux columns (unified_head2.json), frozen with each frame
     /** @param {number} dtMs @returns {number[]} */
@@ -4106,7 +4135,7 @@ export default function (args = {}) {
             lockCheck(now);
             const dtMs = lastEntryT ? Math.min(300, Math.max(10, now - lastEntryT)) : FRAME_MS;
             const aux = buildAux(dtMs);
-            const b = timed("back", () => infer(backModel, { ...BACK, image: img }));
+            const b = timed("back", () => infer(backModel, seqRing ? { ...BACK, image: img, history: [{ name: "seq", aux }] } : { ...BACK, image: img }));
             if (b.ready && b.output) {
                 ring.push({ f: b.output, aux, t: now });
                 if (ring.length > T) ring.shift();
@@ -4114,9 +4143,12 @@ export default function (args = {}) {
                 frameIdx++;
                 if (ring.length >= MIN_RING) {
                     headCalls++;
-                    const h = timed("head", () => infer(model, { ...BACK, image: img, extra: [{ name: "seq", dim: [1, T, D], data: seqData() }] }));
+                    const h = timed("head", () => seqRing
+                        ? infer(model, { post: "none", extra: [{ name: "seq", dim: [1, T, D], ring: true }] })
+                        : infer(model, { ...BACK, image: img, extra: [{ name: "seq", dim: [1, T, D], data: seqData() }] }));
                     if (h.ready && h.output) {
                         ready++;
+                        if (seqRing) checkRing(h);
                         decode(h.output);
                     }
                 }
@@ -4174,6 +4206,7 @@ export default function (args = {}) {
     log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, halt ${halts} (${haltDowns} downs held back, ${pageHeld} on the page), ` +
         `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, weak ${weakWindows} (${weakLights} light, ${weakExecs} exec), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
+    if (seqRing) log(`seqRing: ${headCalls} head calls, ringBad ${ringBad} (device ring vs own ${ringBad ? "MISMATCH" : "ok"})`);
     const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn || flareSplit;
     if (flareHoldFut) foEnd("run over");
     const v8 = v8On ? { flareMode, tellParries, flare2s, timedSweeps, failEscapes, ...(flareHoldFut ? { holdFut: foS } : {}), ...(chainOn ? { chain: hcS } : {}),
@@ -4196,6 +4229,7 @@ export default function (args = {}) {
     const potion = v9On ? { taps: presses.potion, healed: potionsUsed, ...potS } : undefined;
     if (potion) log(`potion: ${JSON.stringify(potion)}`);
     return {
+        ...(seqRing ? { seqRing: true, ringBad } : {}),
         ...(v8 ? { v8 } : {}),
         ...(off ? { off } : {}),
         ...(potion ? { potion } : {}),

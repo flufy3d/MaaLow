@@ -621,16 +621,19 @@ FN(jfloatArray, nnRun)(JNIEnv* env, jobject, jlong h, jobjectArray frames, jfloa
 // Run like nnRun, with the model's inputs[1..] from extras, in order: [n, then per tensor: rank, dims..., count,
 // data...], all float (float32 tensors), n equal to the model's inputs beyond the image. Names are matched by Nn.kt,
 // so the mapping here is positional; Run uses m->in_names as is. Returns the same encoding as nnRun, or throws.
+// A model with no image input (a head that takes only its extra tensors) is run with `frames` empty: no image is
+// built (params / the frames are ignored), the extras are its inputs[0..] instead and n is its whole input count.
 FN(jfloatArray, nnRunExtra)(JNIEnv* env, jobject, jlong h, jobjectArray frames, jfloatArray params, jfloatArray extras)
 {
     auto* m = reinterpret_cast<Model*>(h);
+    const bool no_image = env->GetArrayLength(frames) == 0;
     std::vector<float> p(env->GetArrayLength(params));
     env->GetFloatArrayRegion(params, 0, jsize(p.size()), p.data());
     std::vector<float> e(env->GetArrayLength(extras));
     env->GetFloatArrayRegion(extras, 0, jsize(e.size()), e.data());
     size_t at = 0;
     const int n = e.empty() ? 0 : int(e[at++]);
-    if (n <= 0 || m->inputs.empty() || size_t(n) != m->inputs.size() - 1) {
+    if (n <= 0 || m->inputs.empty() || size_t(n) != m->inputs.size() - (no_image ? 0 : 1)) {
         throw_java(env, "infer: bad extra inputs");
         return nullptr;
     }
@@ -658,9 +661,12 @@ FN(jfloatArray, nnRunExtra)(JNIEnv* env, jobject, jlong h, jobjectArray frames, 
     }
     std::vector<float> xf;
     std::vector<uint8_t> xu;
-    OrtValue* x = image_input(env, m, frames, p, xf, xu);
-    if (!x) return nullptr;
-    std::vector<OrtValue*> vals { x };
+    std::vector<OrtValue*> vals;
+    if (!no_image) {
+        OrtValue* x = image_input(env, m, frames, p, xf, xu);
+        if (!x) return nullptr;
+        vals.push_back(x);
+    }
     OrtStatus* st = nullptr;
     for (int i = 0; !st && i < n; ++i) {
         OrtValue* v = nullptr;

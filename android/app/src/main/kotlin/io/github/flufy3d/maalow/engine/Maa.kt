@@ -81,7 +81,8 @@ object Maa {
      *  -> [n outputs, per output: rank, dims..., then all data]. Throws. */
     external fun nnRun(h: Long, frames: Array<ByteArray>, params: FloatArray): FloatArray
     /** [nnRun] plus the model's other inputs: extras [n, then per tensor: rank, dims..., count, data...] (float32, one
-     *  per model input after the image, in order) -> the same encoding as [nnRun]. Throws. */
+     *  per model input after the image, in order) -> the same encoding as [nnRun]. Throws. A model with no image input
+     *  is run with [frames] empty: the extras are its inputs[0..] instead (n = its whole input count), no image is built. */
     external fun nnRunExtra(h: Long, frames: Array<ByteArray>, params: FloatArray, extras: FloatArray): FloatArray
 
     // Inside a custom action / recognition (on the tasker's thread):

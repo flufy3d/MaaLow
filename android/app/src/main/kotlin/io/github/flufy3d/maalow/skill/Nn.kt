@@ -38,7 +38,10 @@ import kotlin.math.roundToInt
  * (`frames`: offsets from the frame looked at, in capture stream frames or in units of `frame_ms`) are stacked as
  * channels in the order given; earlier frames come from the run's history: the preprocessed regions of its own
  * screenshots (each preprocessed once, kept small and bounded: [History]). Models with more inputs after the image
- * take them from `extra` (float32, one per input, in order).
+ * take them from `extra` (float32, one per input, in order; `data`, packed little-endian float32 `data_b64`, or a
+ * feature ring). A model with no image input (its input count equals the extra count) skips the screenshot work
+ * entirely; `history` appends a call's first output + aux to a per-run ring ([RING] steps), which a `ring: true`
+ * extra tensor assembles as [1, RING, step] (front-padded with the oldest), its len / sum returned under `ring`.
  *
  * Output: the raw tensors, and per `post`: softmax / sigmoid of a vector (index / score / label of its largest),
  * or yolo: YOLOv8 / YOLO11 detection ([1, 4 + classes, n] or transposed) decoded, thresholded and NMS'd, boxes in
@@ -66,6 +69,9 @@ internal class Nn(private val app: App) {
 
     private class Out(val shape: IntArray, val data: FloatArray)
 
+    /** The model's other inputs, encoded for Maa.nnRunExtra (@see extraInputs), and a ring assembly's stats. */
+    private class Extras(val flat: FloatArray, val ring: JsonObject?)
+
     private val cache = object : LinkedHashMap<String, Model>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Model>): Boolean {
             if (size <= KEEP) return false
@@ -80,7 +86,8 @@ internal class Nn(private val app: App) {
     /**
      * Preprocessed regions of a run's screenshots, per preprocessing: the earlier frames of multi-frame inputs. Up to
      * [HISTORY] frames and [HISTORY_BYTES] per preprocessing, [SPECS] preprocessings; plain JVM arrays, gone with
-     * the run.
+     * the run. Its rings are the other way round (infer()'s `history` option): the run's last [RING] feature vectors
+     * with their aux columns, for a head model that takes no image.
      */
     class History {
         /** id: the run's image id (0: an image it did not take). */
@@ -89,6 +96,17 @@ internal class Nn(private val app: App) {
         val specs = object : LinkedHashMap<String, ArrayDeque<Entry>>(4, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ArrayDeque<Entry>>) = size > SPECS
         }
+
+        /** One appended step: a call's first output vector (the backbone's features) and its aux columns. */
+        class Ring {
+            class Entry(val f: FloatArray, val aux: FloatArray)
+
+            val entries = ArrayDeque<Entry>()
+            var step = 0 // f.size + aux.size of the entries
+        }
+
+        /** infer()'s feature rings, per name, oldest first (@see Ring). */
+        val rings = HashMap<String, Ring>()
 
         fun add(spec: String, e: Entry) {
             val q = specs.getOrPut(spec) { ArrayDeque() }
@@ -150,7 +168,22 @@ internal class Nn(private val app: App) {
             },
         )
         val m = model(ws, a.str("model"), opts)
-        val extras = extraInputs(m, a["extra"])
+        // A model with no image input (a head driven by `extra` alone) takes all its inputs as extras and no
+        // screenshot work: extra tensor count == the model's input count. One fewer: the usual image + extras.
+        val extraEl = a["extra"]
+        val extraArr = extraEl as? JsonArray
+        val noImage = extraArr != null && extraArr.isNotEmpty() && extraArr.size == m.inputs.size
+        val ex = if (extraEl == null || extraEl is JsonNull) null else extraInputs(m, extraEl, noImage, history)
+        if (noImage) {
+            require((a.optStr("post") ?: "none") != "yolo") { "infer: yolo needs an image input" }
+            val prepMs = (System.nanoTime() - t0) / 1e6
+            val t1 = System.nanoTime()
+            val outs = run(m, emptyArray(), FloatArray(0), ex!!.flat)
+            val runMs = (System.nanoTime() - t1) / 1e6
+            appendHistory(history, a["history"], outs)
+            return response(m, a, outs, buildJsonArray { }, emptyList(), prepMs, runMs, t0, ex.ring, 0, 0, listOf(0, 0, 0, 0))
+        }
+        val extras = ex?.flat
         val input = m.inputs.firstOrNull() ?: error("infer: the model has no input")
         val offsets = (a["frames"] as? JsonArray)?.map { it.jsonPrimitive.doubleOrNull ?: error("infer: frames must be numbers") } ?: listOf(0.0)
         require(offsets.isNotEmpty()) { "infer: frames is empty" }
@@ -252,7 +285,13 @@ internal class Nn(private val app: App) {
         val t1 = System.nanoTime()
         val outs = run(m, used.map { it!!.px }.toTypedArray(), params, extras)
         val runMs = (System.nanoTime() - t1) / 1e6
+        appendHistory(history, a["history"], outs)
+        return response(m, a, outs, framesJson, used, prepMs, runMs, t0, ex?.ring, ow, oh, roi)
+    }
 
+    /** The ready response of an infer() call: the outputs, `post` of the first one, the frames used and the timings. */
+    private fun response(m: Model, a: JsonObject, outs: List<Out>, framesJson: JsonArray, used: List<History.Entry?>,
+                         prepMs: Double, runMs: Double, t0: Long, ring: JsonObject?, ow: Int, oh: Int, roi: List<Int>): JsonObject {
         val raw = a.optBool("raw") == true
         val first = outs.first()
         val labels = (a["labels"] as? JsonArray)?.map { it.jsonPrimitive.content }
@@ -299,6 +338,7 @@ internal class Nn(private val app: App) {
             if (a.optBool("input") == true) put("input", buildJsonArray {
                 used.forEach { e -> add(buildJsonArray { e!!.px.forEach { add(JsonPrimitive(it.toInt() and 0xff)) } }) }
             })
+            ring?.let { put("ring", it) } // a ring assembly's device-side numbers (@see extraInputs), for the caller's check
             put("ms", buildJsonObject {
                 put("prep", round2(prepMs))
                 put("run", round2(runMs))
@@ -355,6 +395,7 @@ internal class Nn(private val app: App) {
         const val SPECS = 4
         const val MAX_OUTPUT = 4096 // first output values returned without raw
         const val MAX_EXTRA = 4 // tensors beyond the image a model may take (InferOptions.extra)
+        const val RING = 30 // entries of a feature ring (InferOptions.history / extra with ring)
         val COLORS = mapOf("gray" to 0, "rgb" to 1, "bgr" to 2)
         val INTERPS = mapOf("area" to 0, "linear" to 1, "nearest" to 2)
         val TYPES = mapOf(1 to "float32", 2 to "uint8", 3 to "int8", 6 to "int32", 7 to "int64", 10 to "float16")
@@ -372,22 +413,30 @@ internal class Nn(private val app: App) {
         }
 
         /**
-         * `extra`: the model's inputs after the image, one tensor each in that order (up to [MAX_EXTRA]), as the flat
-         * float encoding of Maa.nnRunExtra: [n, then per tensor: rank, dims..., count, data...]; null when absent.
-         * Each input must be float32 with the given dims, and the given `name` (if any) must be its name; the model's
-         * batch dimension (1 or dynamic) takes 1.
+         * `extra`: the model's inputs after the image (or all of them, for a model with no image input: [noImage]), one
+         * tensor each in that order (up to [MAX_EXTRA]), as the flat float encoding of Maa.nnRunExtra: [n, then per
+         * tensor: rank, dims..., count, data...]. Each input must be float32 with the given dims, and the given `name`
+         * (if any) must be its name; the model's batch dimension (1 or dynamic) takes 1.
+         *
+         * A tensor's values come from `data` (a JSON float array) or `data_b64` (standard base64, padding included, of
+         * the little-endian packed float32 bytes, dim product * 4 of them), or - with `ring: true` - from the run's
+         * feature ring of that `name` ([History.Ring]): the last [RING] (feature, aux) entries, oldest first, front-
+         * padded with the oldest when short, as [1, RING, step]; `dim` must say exactly that shape. [Extras.ring] is
+         * that assembly's len / sum (the RING * step floats, double, oldest first) for the caller to check its own.
          */
-        private fun extraInputs(m: Model, e: JsonElement?): FloatArray? {
-            if (e == null || e is JsonNull) return null
+        private fun extraInputs(m: Model, e: JsonElement?, noImage: Boolean, history: History): Extras {
             val arr = e as? JsonArray ?: throw IllegalArgumentException("infer: extra must be an array of tensors")
             require(arr.isNotEmpty()) { "infer: extra is empty" }
             require(arr.size <= MAX_EXTRA) { "infer: extra takes at most $MAX_EXTRA tensors, not ${arr.size}" }
-            require(arr.size == m.inputs.size - 1) {
-                "infer: extra has ${arr.size} tensor(s), the model takes ${m.inputs.size - 1} besides the image"
+            require(arr.size == m.inputs.size - (if (noImage) 0 else 1)) {
+                "infer: extra has ${arr.size} tensor(s), the model takes ${m.inputs.size - 1} besides the image (all of them with no image)"
             }
-            val dims = arr.mapIndexed { i, el ->
+            var ring: JsonObject? = null
+            val dims = ArrayList<List<Int>>(arr.size)
+            val data = ArrayList<FloatArray>(arr.size)
+            arr.forEachIndexed { i, el ->
                 val o = el as? JsonObject ?: throw IllegalArgumentException("infer: extra[$i] must be {name?, dim, data}")
-                val input = m.inputs[i + 1]
+                val input = m.inputs[i + (if (noImage) 0 else 1)]
                 o.optStr("name")?.let { require(it == input.name) { "infer: extra[$i] is named '$it', not '${input.name}'" } }
                 require(input.type == 1) { "infer: input ${input.name} must be float32, not ${TYPES[input.type] ?: "type ${input.type}"}" }
                 val d = ((o["dim"] as? JsonArray) ?: throw IllegalArgumentException("infer: extra[$i].dim is missing"))
@@ -395,14 +444,50 @@ internal class Nn(private val app: App) {
                 require(d.size == input.shape.size && d.withIndex().all { (k, v) ->
                     v >= 1 && (v.toLong() == input.shape[k] || (k == 0 && v == 1 && input.shape[k] <= 1))
                 }) { "infer: input ${input.name} takes ${input.shape}, extra[$i] is $d" }
-                d
-            }
-            val data = arr.mapIndexed { i, el ->
-                val d = ((el as JsonObject)["data"] as? JsonArray) ?: throw IllegalArgumentException("infer: extra[$i].data is missing")
-                val v = d.map { it.jsonPrimitive.doubleOrNull?.toFloat() ?: throw IllegalArgumentException("infer: extra[$i].data must be numbers") }
-                val count = dims[i].fold(1L) { a, x -> a * x }
-                require(v.size.toLong() == count) { "infer: extra[$i] has ${v.size} values, its dim ${dims[i]} takes $count" }
-                v
+                if (o.optBool("ring") == true) {
+                    val name = o.optStr("name") ?: throw IllegalArgumentException("infer: extra[$i] with ring must name it")
+                    val r = history.rings[name]
+                    require(r != null && r.entries.isNotEmpty()) { "ring: empty ('$name' has no entries yet)" }
+                    require(d == listOf(1, RING, r.step)) { "infer: ring '$name' assembles [1, $RING, ${r.step}], extra[$i] is $d" }
+                    val v = FloatArray(RING * r.step)
+                    var at = 0
+                    val pad = RING - r.entries.size
+                    for (k in 0 until RING) {
+                        val en = if (k < pad) r.entries.first() else r.entries[k - pad]
+                        en.f.forEach { v[at++] = it }
+                        en.aux.forEach { v[at++] = it }
+                    }
+                    dims += d
+                    data += v
+                    if (ring == null) {
+                        var sum = 0.0
+                        for (x in v) sum += x.toDouble()
+                        ring = buildJsonObject { put("len", r.entries.size); put("sum", sum) }
+                    }
+                } else {
+                    val count = d.fold(1L) { a, x -> a * x }
+                    val b64 = o.optStr("data_b64")
+                    val v: FloatArray = if (b64 != null) {
+                        require(o["data"] == null) { "infer: extra[$i] has both data and data_b64" }
+                        val bytes = try {
+                            java.util.Base64.getDecoder().decode(b64)
+                        } catch (x: IllegalArgumentException) {
+                            throw IllegalArgumentException("infer: extra[$i].data_b64 is not base64")
+                        }
+                        require(bytes.size.toLong() == count * 4) {
+                            "infer: extra[$i].data_b64 has ${bytes.size} bytes, its dim $d takes ${count * 4}"
+                        }
+                        val f = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+                        FloatArray(count.toInt()) { f.get(it) }
+                    } else {
+                        val dd = (o["data"] as? JsonArray) ?: throw IllegalArgumentException("infer: extra[$i].data is missing")
+                        val f = dd.map { it.jsonPrimitive.doubleOrNull?.toFloat() ?: throw IllegalArgumentException("infer: extra[$i].data must be numbers") }
+                        require(f.size.toLong() == count) { "infer: extra[$i] has ${f.size} values, its dim $d takes $count" }
+                        f.toFloatArray()
+                    }
+                    dims += d
+                    data += v
+                }
             }
             val flat = FloatArray(1 + dims.indices.sumOf { 1 + dims[it].size + 1 + data[it].size })
             var at = 0
@@ -413,7 +498,41 @@ internal class Nn(private val app: App) {
                 flat[at++] = data[i].size.toFloat()
                 data[i].forEach { flat[at++] = it }
             }
-            return flat
+            return Extras(flat, ring)
+        }
+
+        /**
+         * infer()'s `history` option, after a successful call: its first output (a vector: [N] or [1, N]) and each
+         * entry's `aux` are appended to the run's ring `name` ([History.Ring], the last [RING] entries; `reset: true`
+         * clears it first), to be assembled into an extra tensor later (@see extraInputs).
+         */
+        private fun appendHistory(history: History, e: JsonElement?, outs: List<Out>) {
+            val arr = (e as? JsonArray) ?: return
+            require(arr.isNotEmpty()) { "infer: history is empty" }
+            val first = outs.firstOrNull() ?: error("infer: the model has no output")
+            // a vector: [N], or a [1, N] batch of one (the backbones export [1, 192])
+            require(first.shape.size == 1 || (first.shape.size == 2 && first.shape[0] == 1)) {
+                "infer: history takes a vector first output ([N] or [1, N]), not ${first.shape.toList()}"
+            }
+            require(first.data.isNotEmpty()) { "infer: history takes a non-empty first output" }
+            arr.forEachIndexed { i, el ->
+                val o = el as? JsonObject ?: throw IllegalArgumentException("infer: history[$i] must be {name, aux}")
+                val name = o.str("name")
+                require(name.isNotEmpty()) { "infer: history[$i].name is empty" }
+                val aux = ((o["aux"] as? JsonArray) ?: throw IllegalArgumentException("infer: history[$i].aux is missing"))
+                    .map { it.jsonPrimitive.doubleOrNull?.toFloat() ?: throw IllegalArgumentException("infer: history[$i].aux must be numbers") }
+                    .toFloatArray()
+                require(aux.isNotEmpty()) { "infer: history[$i].aux is empty" }
+                val r = history.rings.getOrPut(name) { History.Ring() }
+                if (o.optBool("reset") == true) r.entries.clear()
+                val step = first.data.size + aux.size
+                require(r.entries.isEmpty() || r.step == step) {
+                    "infer: ring '$name' holds $r.step-wide steps, this call's output + aux is $step"
+                }
+                r.step = step
+                r.entries.addLast(History.Ring.Entry(first.data, aux))
+                while (r.entries.size > RING) r.entries.removeFirst()
+            }
         }
 
         private fun softmax(v: FloatArray): FloatArray {
