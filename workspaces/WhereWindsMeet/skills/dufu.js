@@ -262,9 +262,10 @@ const RELOCK_SAME_F = 8, RELOCK_MIN_LEAD_F = 2, EARLY_REPRESS_F = 12, EARLY_SPAN
 //   (late mark past qiExecMax), its scene QP_EXEC_SCENE_MS, 轻击 until 真气 is back (qiPostMs at most). Unpressed
 //   fut items are dropped every frame of the window (tell / combo / insure items stay). Taps go on contact
 //   offContact with a self-managed lift (never tap()'s contact 1 / upDue). Skills / 蓄力 in the window: qiSkill (part 2).
-// untilCleared: combat.js deadCheck's phase-one-cleared rule (阶段二 in the quest line twice in a row, or the boss
-//   bar full again after CLR_LOW_READS reads in its last 10%) ends the run with reason "cleared". Since 2.3 phase one
-//   ends on the 成功 page instead (@see WON_T): deadCheck ends the run there as "cleared" whatever untilCleared says.
+// untilCleared: combat.js deadCheck's phase-one-cleared rule (阶段二 in the quest line twice in a row) ends the run
+//   with reason "cleared". Since 2.3 phase one ends on the 成功 page instead (@see WON_T): deadCheck ends the run there
+//   as "cleared" whatever untilCleared says. The boss bar reads only log (mark "clrlow"): in round 566 they jumped
+//   between 281 / 371 / 214 and 0-15 px with the bar over half full (the old "last 10%" / "full again" rules).
 const OFF_QUIET_TH = 0.10, OFF_QUIET_BINS = 8, OFF_QUIET_FRAMES = 3, OFF_STRONG_TH = 0.05, OFF_STRONG_BINS = 9;
 const OFF_GUARD_MS = 600, OFF_ABORT_MS = 150, OFF_AFTER_HIT_MS = 1500, OFF_AFTER_DODGE_MS = 300, OFF_AFTER_TELL_MS = 1500;
 const OFF_HP_MIN = 0.35, OFF_OK_FAST_MS = 1000, OFF_CONTACT = 3, OFF_TAP_MS = 40;
@@ -483,6 +484,8 @@ const DEAD_MS = 500;
 // in a row. The buttons show ~6 frames before 「成功」 fades in (>= 0.8): 再次演练 (drill) alone already holds off 重伤.
 /** @type {[string, Box][]} */ const WON_T = [["result_drill_again.png", [800, 650, 140, 60]], ["result_success.png", [440, 110, 200, 100]]];
 const WON_TH = 0.8;
+const HALT_ON_FRAMES = 2, HALT_OFF_FRAMES = 3; // @see haltCheck
+/** @type {Box} */ const PAGE_BTNS = [868, 640, 212, 60]; // 再次演练 / 演练下一阶段 (and LOCK, DODGE under them)
 // lock-on (combat.js): the arena auto-locks at the fight start, the game drops the lock at the phase change
 // (~80-90 s in) and the camera then stops tracking — the boss flanks and hits from the camera's side. combat.js
 // re-taps the lock button whenever the gold icon is gone; dufu.js never did (round 233: lock lost at ~87 s).
@@ -806,21 +809,24 @@ export default function (args = {}) {
     const releaseFor = (c) => {
         if (upDue && upDue.c === (c ?? 0)) releaseDue(true);
     };
-    // halt (@see haltCheck): the boss bar used up / gone near empty, or a 成功 page template on screen — no finger
-    // goes down (lock-on, defense, offense, walking) until the fight is back or deadCheck ends the run. Ups still go.
-    let halt = false, haltDowns = 0;
+    // halt (@see haltCheck): a 成功 page template on screen — no finger goes down (lock-on, defense, offense, walking)
+    // until the templates are gone again or deadCheck ends the run. Ups still go. Apart from that, no down / move
+    // lands on the page's buttons (PAGE_BTNS: 再次演练 / 演练下一阶段) while either template hits this frame.
+    let halt = false, haltDowns = 0, pageHeld = 0;
+    /** @param {Target} p */
+    const onPage = (p) => Array.isArray(p) && p[0] >= PAGE_BTNS[0] && p[0] <= PAGE_BTNS[0] + PAGE_BTNS[2] &&
+        p[1] >= PAGE_BTNS[1] && p[1] <= PAGE_BTNS[1] + PAGE_BTNS[3] && wonAny();
+    /** @param {Target} p */
+    const heldBack = (p) => (halt ? (haltDowns++, true) : onPage(p) ? (pageHeld++, true) : false);
     /** @param {Target} p @param {number | undefined} c */
-    const tdown = (p, c) => (halt ? void haltDowns++ : (releaseFor(c), touch.down(p, c)));
+    const tdown = (p, c) => (heldBack(p) ? undefined : (releaseFor(c), touch.down(p, c)));
     /** @param {Target} p @param {number | undefined} c */
-    const tmove = (p, c) => (halt ? undefined : (releaseFor(c), touch.move(p, c)));
+    const tmove = (p, c) => (halt || onPage(p) ? undefined : (releaseFor(c), touch.move(p, c)));
     /** @param {number | undefined} c */
     const tup = (c) => (releaseFor(c), touch.up(c));
     /** Tap p (contact 1) for ms; the lift is deferred (fastTap). @param {Point} p @param {number} [ms] */
     function tap(p, ms = 50) {
-        if (halt) {
-            haltDowns++;
-            return;
-        }
+        if (heldBack(p)) return;
         offYield("tap");
         tdown(p, 1);
         upDue = { c: 1, at: Date.now() + ms };
@@ -2063,22 +2069,19 @@ export default function (args = {}) {
         return null;
     }
 
-    // --- halt: phase one over (or about to be). The 成功 page's 演练下一阶段 (993,679) covers LOCK, and its buttons
-    // show ~6 frames before 「成功」 and ~1 s before deadCheck's two reads: round 543's re-lock tap landed there and
-    // started phase two (20261018-012011 f8600-8640). Per frame: the bar read from its left end (clrBoss); while it
-    // shows red the fight is on, else halt when it reads used up (0), when it went unread with its last read in the
-    // last 10% (CLR_LOW_PX), or when either WON_T template hits (checked only on frames without red).
-    let haltLastB = /** @type {number | null} */ (null), halts = 0;
+    // --- halt: phase one over. The 成功 page's 演练下一阶段 (993,679) covers LOCK, and its buttons show ~6 frames before
+    // 「成功」 and ~1 s before deadCheck's two reads: round 543's re-lock tap landed there and started phase two
+    // (20261018-012011 f8600-8640). Halt on HALT_ON_FRAMES frames in a row with either WON_T template (same threshold
+    // as deadCheck), lifted after HALT_OFF_FRAMES frames without. The boss bar plays no part: in round 566 it read
+    // 0-15 px over half full and the old bar rules (used up / gone in its last 10%) halted the defense into a death.
+    let wonRun = 0, wonMiss = 0, halts = 0;
     /** @param {number} now */
     function haltCheck(now) {
         if (observe) return;
-        const b = perFrame("clr", clrBoss);
-        let why = "";
-        if (b != null && b > 0) haltLastB = b;
-        else if (b === 0) why = "boss bar used up";
-        else if (haltLastB != null && haltLastB <= CLR_LOW_PX) why = `boss bar gone at ${haltLastB} px`;
-        if (!why && !(b != null && b > 0) && wonAny()) why = "成功 page template";
-        const on = why !== "";
+        const hit = wonAny();
+        wonRun = hit ? wonRun + 1 : 0;
+        wonMiss = hit ? 0 : wonMiss + 1;
+        const on = halt ? wonMiss < HALT_OFF_FRAMES : wonRun >= HALT_ON_FRAMES;
         if (on === halt) return;
         if (on) {
             releaseDue(true);
@@ -2089,10 +2092,12 @@ export default function (args = {}) {
             halts++;
         }
         halt = on;
-        mark("halt", on ? `no touches (${why})` : `fight back (boss ${b} px), ${haltDowns} downs held back`);
+        mark("halt", on ? `no touches (成功 page template, ${wonRun} frames)` : `fight back (no 成功 template for ${wonMiss} frames), ${haltDowns} downs held back`);
     }
-    /** Either 成功 page template on screen (@see WON_T). */
-    const wonAny = () => perFrame("won", () => WON_T.some(([t, roi]) => match(t, { image: img, roi, threshold: WON_TH }).hit));
+    /** Either 成功 page template on screen (@see WON_T), once per frame. */
+    function wonAny() {
+        return perFrame("won", () => WON_T.some(([t, roi]) => match(t, { image: img, roi, threshold: WON_TH }).hit));
+    }
 
     // --- lock-on: tap the lock button back on while the gold icon is gone (combat.js rule; no touches in observe)
     let lockWas = false, lockTaps = 0, lastLockTap = 0;
@@ -2525,10 +2530,7 @@ export default function (args = {}) {
     /** Put the offense finger down on p for ms (the lift comes from offUp, every loop turn). @param {Point} p @param {number} ms */
     function offDown(p, ms) {
         if (observe) return;
-        if (halt) {
-            haltDowns++;
-            return;
-        }
+        if (heldBack(p)) return;
         if (offUpAt) touch.up(offContact);
         touch.down(p, offContact);
         lastOffDownAt = Date.now();
@@ -4033,15 +4035,12 @@ export default function (args = {}) {
         if (b == null) return false;
         clrBossPx = b;
         clrLow = b <= CLR_LOW_PX ? clrLow + 1 : 0;
-        if (clrLow >= CLR_LOW_READS && !clrLast) {
+        if (clrLow >= CLR_LOW_READS && !clrLast) { // log only (@see untilCleared): bar reads jump (round 566)
             clrLast = true;
-            mark("cleared", `boss bar in its last 10% (${b} px)`);
+            mark("clrlow", `boss bar read in its last 10% (${b} px)`);
         }
         clrFull = b >= CLR_FULL_PX ? clrFull + 1 : 0;
-        if (clrFull >= CLR_FULL_READS && clrLast) {
-            mark("cleared", "the boss bar full again after its last 10%");
-            return true;
-        }
+        if (clrFull >= CLR_FULL_READS && clrLast && clrFull === CLR_FULL_READS) mark("clrlow", "boss bar read full after its last 10%");
         return false;
     }
     // ================================================================================================= end v8 offense
@@ -4172,7 +4171,7 @@ export default function (args = {}) {
     }
     const backS = stats(tMs.back), headS = stats(tMs.head), readS = stats(tMs.reads), loopS = stats(tMs.loop);
     const readyPct = headCalls ? Math.round((ready / headCalls) * 1000) / 10 : 0;
-    log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, halt ${halts} (${haltDowns} downs held back), ` +
+    log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, halt ${halts} (${haltDowns} downs held back, ${pageHeld} on the page), ` +
         `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, weak ${weakWindows} (${weakLights} light, ${weakExecs} exec), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
     const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn || flareSplit;
