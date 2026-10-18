@@ -421,7 +421,7 @@ const PF_HOLD_EXTRA_MS = 400, PF_DISC_WAIT_MS = 400;
 //   ~7K / 8-17K / full at 0 / 200 / 400 / 700 / 1000 ms after the release, 拨雪寻春 lost when cut <= 500 ms after
 //   its tap, kept at 900. So the defense is never held up (offHoldAbort / offYield let the hold go, a defense 卸势
 //   cuts the slashes); the start wants tangMinLeftMs of near time and a clear horizon of offNoCancelMs.tang
-//   (tangNoCancelMs: most of 冢上霜 in). Not while 轻蓄力 shows 反击 (combat/counter.png, after a 横刀 ok: parryFollow's
+//   (tangNoCancelMs, 0 like 轻击 / 蓄力: round 561 with 1000 never started one, 66 vetoes). Not while 轻蓄力 shows 反击 (combat/counter.png, after a 横刀 ok: parryFollow's
 //   disc tap goes first). tangSwitch: on 陌刀 outside 热血难凉 the near gate switches to 横刀 instead of a cold 蓄力.
 const TG_DISC_WAIT_MS = 1600, TG_HEAVY_BUSY_MS = 900;
 // offBuff (teacher 2026-10-17: "why no 增益?"; data/tmp/dufu_breakthrough/buff19/an_buff.py; default OFF): 唤千军 (陌刀
@@ -754,7 +754,7 @@ export default function (args = {}) {
     const offTang = (args.offTang ?? false) && offOkGate; // 冢上霜 -> 拨雪寻春 on 横刀 in the near gate (@see TG_DISC_WAIT_MS)
     const tangHoldMs = args.tangHoldMs ?? 700;
     const tangMinLeftMs = args.tangMinLeftMs ?? 1200; // near time left at the press
-    const tangNoCancelMs = args.tangNoCancelMs ?? 1000; // horizon wanted clear (most of 冢上霜 in by then)
+    const tangNoCancelMs = args.tangNoCancelMs ?? 0; // horizon wanted clear (561: 1000 vetoed all 66 tries: the gate itself lets m30 up to 0.45)
     const tangSwitch = (args.tangSwitch ?? false) && offTang; // 陌刀, not hot: switch to 横刀 instead of a cold 蓄力
     offNoCancel.tang ??= tangNoCancelMs;
     offNoCancel.qishu ??= qishuNoCancelMs;
