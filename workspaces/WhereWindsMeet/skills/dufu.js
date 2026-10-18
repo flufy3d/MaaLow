@@ -786,14 +786,21 @@ export default function (args = {}) {
     const releaseFor = (c) => {
         if (upDue && upDue.c === (c ?? 0)) releaseDue(true);
     };
+    // halt (@see haltCheck): the boss bar used up / gone near empty, or a 成功 page template on screen — no finger
+    // goes down (lock-on, defense, offense, walking) until the fight is back or deadCheck ends the run. Ups still go.
+    let halt = false, haltDowns = 0;
     /** @param {Target} p @param {number | undefined} c */
-    const tdown = (p, c) => (releaseFor(c), touch.down(p, c));
+    const tdown = (p, c) => (halt ? void haltDowns++ : (releaseFor(c), touch.down(p, c)));
     /** @param {Target} p @param {number | undefined} c */
-    const tmove = (p, c) => (releaseFor(c), touch.move(p, c));
+    const tmove = (p, c) => (halt ? undefined : (releaseFor(c), touch.move(p, c)));
     /** @param {number | undefined} c */
     const tup = (c) => (releaseFor(c), touch.up(c));
     /** Tap p (contact 1) for ms; the lift is deferred (fastTap). @param {Point} p @param {number} [ms] */
     function tap(p, ms = 50) {
+        if (halt) {
+            haltDowns++;
+            return;
+        }
         offYield("tap");
         tdown(p, 1);
         upDue = { c: 1, at: Date.now() + ms };
@@ -2036,11 +2043,42 @@ export default function (args = {}) {
         return null;
     }
 
+    // --- halt: phase one over (or about to be). The 成功 page's 演练下一阶段 (993,679) covers LOCK, and its buttons
+    // show ~6 frames before 「成功」 and ~1 s before deadCheck's two reads: round 543's re-lock tap landed there and
+    // started phase two (20261018-012011 f8600-8640). Per frame: the bar read from its left end (clrBoss); while it
+    // shows red the fight is on, else halt when it reads used up (0), when it went unread with its last read in the
+    // last 10% (CLR_LOW_PX), or when either WON_T template hits (checked only on frames without red).
+    let haltLastB = /** @type {number | null} */ (null), halts = 0;
+    /** @param {number} now */
+    function haltCheck(now) {
+        if (observe) return;
+        const b = perFrame("clr", clrBoss);
+        let why = "";
+        if (b != null && b > 0) haltLastB = b;
+        else if (b === 0) why = "boss bar used up";
+        else if (haltLastB != null && haltLastB <= CLR_LOW_PX) why = `boss bar gone at ${haltLastB} px`;
+        if (!why && !(b != null && b > 0) && wonAny()) why = "成功 page template";
+        const on = why !== "";
+        if (on === halt) return;
+        if (on) {
+            releaseDue(true);
+            if (offHold) offRelease(now, "halt", true);
+            offUp(true);
+            if (offWalking) offWalkStop("halt");
+            walkOff();
+            halts++;
+        }
+        halt = on;
+        mark("halt", on ? `no touches (${why})` : `fight back (boss ${b} px), ${haltDowns} downs held back`);
+    }
+    /** Either 成功 page template on screen (@see WON_T). */
+    const wonAny = () => perFrame("won", () => WON_T.some(([t, roi]) => match(t, { image: img, roi, threshold: WON_TH }).hit));
+
     // --- lock-on: tap the lock button back on while the gold icon is gone (combat.js rule; no touches in observe)
     let lockWas = false, lockTaps = 0, lastLockTap = 0;
     /** @param {number} now */
     function lockCheck(now) {
-        if (observe || !lockOn) return;
+        if (observe || !lockOn || halt) return;
         const locked = color({ ...GOLD, image: img, roi: LOCK_ROI, count: 150 }).hit;
         if (locked !== lockWas) {
             lockWas = locked;
@@ -2048,6 +2086,10 @@ export default function (args = {}) {
         }
         if (!locked && !upDue && now - lastLockTap >= LOCK_MS) {
             lastLockTap = now;
+            if (wonAny()) { // LOCK is on 演练下一阶段 there
+                mark("lock", "re-lock held back (成功 page)");
+                return;
+            }
             lockTaps++;
             tap(LOCK);
             mark("lock", `re-lock tap ${lockTaps}`);
@@ -2074,7 +2116,7 @@ export default function (args = {}) {
     let stickF = 0; // the forward push (walking in); setSide is the horizontal one
     /** Push the joystick forward, 0/1 (@see setSide). @param {number} v */
     function strideF(v) {
-        if (observe || v === stickF) return;
+        if (observe || v === stickF || (halt && v !== 0)) return;
         if (v === 0) {
             tup(0);
             stickF = 0;
@@ -2095,7 +2137,7 @@ export default function (args = {}) {
     /** @param {number} v */
     function setSide(v) {
         if (observe) return;
-        if (v === stickSide) return;
+        if (v === stickSide || (halt && v !== 0)) return;
         if (v === 0) tup(0);
         else {
             if (stickF) strideF(0);
@@ -2463,6 +2505,10 @@ export default function (args = {}) {
     /** Put the offense finger down on p for ms (the lift comes from offUp, every loop turn). @param {Point} p @param {number} ms */
     function offDown(p, ms) {
         if (observe) return;
+        if (halt) {
+            haltDowns++;
+            return;
+        }
         if (offUpAt) touch.up(offContact);
         touch.down(p, offContact);
         lastOffDownAt = Date.now();
@@ -3963,6 +4009,7 @@ export default function (args = {}) {
             releaseDue();
             timed("reads", feedback);
             const now = Date.now();
+            haltCheck(now);
             const over = deadCheck(now);
             if (over) {
                 reason = over;
@@ -4042,7 +4089,7 @@ export default function (args = {}) {
     }
     const backS = stats(tMs.back), headS = stats(tMs.head), readS = stats(tMs.reads), loopS = stats(tMs.loop);
     const readyPct = headCalls ? Math.round((ready / headCalls) * 1000) / 10 : 0;
-    log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, ` +
+    log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, halt ${halts} (${haltDowns} downs held back), ` +
         `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, weak ${weakWindows} (${weakLights} light, ${weakExecs} exec), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
     const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn || flareSplit;
