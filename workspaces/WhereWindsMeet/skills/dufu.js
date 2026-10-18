@@ -412,6 +412,18 @@ const LAND_TH = 0, OURS_TELL_MS = 500;
 const QS_OK_MS = 1500, QS_OPEN_MS = 15_000, QS_RETRY_MS = 3000, QS_EVAL_MS = 7000;
 const QS_CONFIRM_MS = 1000, QS_LIT_AGAIN_MS = 350, QS_RETRY_SOON_MS = 300, QS_COOL_WHITE = 70, QS_COOL_DARK = 600;
 const PF_HOLD_EXTRA_MS = 400, PF_DISC_WAIT_MS = 400;
+// offTang (2026-10-18, data/tmp/dufu_breakthrough/live/report21.md, dummy e1; default OFF; needs offOkGate): in the
+//   near gate on 横刀 outside 热血难凉, 冢上霜 (LIGHT held tangHoldMs, let go: four slashes forward) then, once 重击
+//   turns into the blue 爆发 disc (hengdao_swirl, ~0.85 s after the release, ~1.5 s after the press for holds
+//   300-700 ms, ~1.7 s if unused), 重击 = 拨雪寻春; replaces the switch to 陌刀 for a cold 蓄力 there. Dummy (100级):
+//   冢上霜 ~19K, + 拨雪寻春 45-50K in ~2.4 s from the press; a 重击 tap before the disc shows is swallowed (not
+//   buffered). 卸势 cuts both at any time (stance 3-4 frames after the press; the hold too): 冢上霜 kept 0 / ~3K /
+//   ~7K / 8-17K / full at 0 / 200 / 400 / 700 / 1000 ms after the release, 拨雪寻春 lost when cut <= 500 ms after
+//   its tap, kept at 900. So the defense is never held up (offHoldAbort / offYield let the hold go, a defense 卸势
+//   cuts the slashes); the start wants tangMinLeftMs of near time and a clear horizon of offNoCancelMs.tang
+//   (tangNoCancelMs: most of 冢上霜 in). Not while 轻蓄力 shows 反击 (combat/counter.png, after a 横刀 ok: parryFollow's
+//   disc tap goes first). tangSwitch: on 陌刀 outside 热血难凉 the near gate switches to 横刀 instead of a cold 蓄力.
+const TG_DISC_WAIT_MS = 1600, TG_HEAVY_BUSY_MS = 900;
 // offBuff (teacher 2026-10-17: "why no 增益?"; data/tmp/dufu_breakthrough/buff19/an_buff.py; default OFF): 唤千军 (陌刀
 //   BUFF) was never cast in 380-496 (the near gate's buff branch sits behind its 蓄力 and needs fut1 2 s < 0.3).
 //   Dummy: the cast itself does 0, then 安西军 strikes ride on our hits (陌刀安西军 ~1 per 焚此心 hit, 横刀安西军 1 per
@@ -454,6 +466,7 @@ const OFF_T = {
     buff: ["combat/modao_buff.png", [793, 635, 64, 64]],
     mstrike: ["combat/modao_ranshi_strike.png", [801, 561, 64, 64]], // 燃此魂's second tap (dummy.js)
     qishu: ["combat/qishu_ready.png", [848, 493, 64, 64]],
+    counter: ["combat/counter.png", [913, 560, 64, 64]], // 横刀 轻蓄力 shown as 反击 (after an ok; combat.js)
 };
 
 // 重伤 (dead): the grey screen with both bars gone, or the 再次训练 panel (combat.js)
@@ -519,6 +532,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   earlyRepress?: boolean, earlyRepressF?: number, earlyRepressTh?: number, curtainParryPlan?: boolean,
  *   offQishu?: boolean, qishuWhere?: string[], qishuNoCancelMs?: number, qishuTh?: number, ranshiStrikeMs?: number,
  *   farSkill?: boolean, parryFollow?: boolean, followTap?: string, followTh?: number, followNoCancelMs?: number, followDelayMs?: number, followStay?: boolean,
+ *   offTang?: boolean, tangHoldMs?: number, tangMinLeftMs?: number, tangNoCancelMs?: number, tangSwitch?: boolean,
  *   offBuff?: boolean, buffWhere?: string[], buffNoCancelMs?: number, buffTh?: number, buffM40?: number, buffEveryMs?: number}} [args]
  *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
  *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
@@ -737,6 +751,12 @@ export default function (args = {}) {
     const buffTh = args.buffTh ?? 0.1; // fut1 mass before it can be cut
     const buffM40 = args.buffM40 ?? 0.2; // "ok" / "quiet": m40 below this
     const buffEveryMs = args.buffEveryMs ?? BF_EVERY_MS; // 安西军 rides >= ~30 s: no recast sooner
+    const offTang = (args.offTang ?? false) && offOkGate; // 冢上霜 -> 拨雪寻春 on 横刀 in the near gate (@see TG_DISC_WAIT_MS)
+    const tangHoldMs = args.tangHoldMs ?? 700;
+    const tangMinLeftMs = args.tangMinLeftMs ?? 1200; // near time left at the press
+    const tangNoCancelMs = args.tangNoCancelMs ?? 1000; // horizon wanted clear (most of 冢上霜 in by then)
+    const tangSwitch = (args.tangSwitch ?? false) && offTang; // 陌刀, not hot: switch to 横刀 instead of a cold 蓄力
+    offNoCancel.tang ??= tangNoCancelMs;
     offNoCancel.qishu ??= qishuNoCancelMs;
     offNoCancel.follow ??= followNoCancelMs;
     const offActOn = offPoke || offSkill || offCharge;
@@ -2788,17 +2808,17 @@ export default function (args = {}) {
         inc(offActS.n, a);
         const t = Date.now();
         const sok = lastOkAt ? t - lastOkAt : -1, sdrop = lastDropAt ? t - lastDropAt : -1;
-        const evalAt = a === "charge" || a === "coldCharge" ? Infinity : t + (a === "qishu" ? QS_EVAL_MS : OFF_EVAL_MS);
+        const evalAt = a === "charge" || a === "coldCharge" || a === "tang" ? Infinity : t + (a === "qishu" ? QS_EVAL_MS : OFF_EVAL_MS);
         offRecs.push({ a, src, t, b0: bossNow, done: false, evalAt, sok, sdrop });
         mark("off", `act ${a} ${src}${observe ? " sim" : ""} ${offState()} boss ${bossNow} sok ${sok} sdrop ${sdrop}${offDistOn ? ` h ${offH}` : ""}`);
         if (ranshiStrikeMs > 0 && (a === "ranshi" || a === "farRanshi")) rsPend = { at: t + ranshiStrikeMs, until: t + RS_WINDOW_MS, src, seen: 0 };
     }
-    /** @param {string} a @param {string} src @param {number} ms */
-    function offStartCharge(a, src, ms) {
-        offAct(a, src, CHARGE, ms);
+    /** A held press (蓄力 on CHARGE; offTang: 冢上霜 on LIGHT). @param {string} a @param {string} src @param {number} ms @param {Point} [p] */
+    function offStartCharge(a, src, ms, p = CHARGE) {
+        offAct(a, src, p, ms);
         const now = Date.now();
         offHold = { a, src, startAt: now, until: now + ms };
-        offHoldS.n++;
+        if (a !== "tang") offHoldS.n++;
     }
     /** The guard's rules for a held 蓄力 ("" = hold on). @param {number} now */
     function offHoldAbort(now) {
@@ -2820,8 +2840,11 @@ export default function (args = {}) {
         if (!offHold) return;
         offUp(true);
         const held = now - offHold.startAt;
-        offHoldS.heldMs.push(held);
-        if (early) {
+        if (offHold.a === "tang") tangReleased(now, why, early, held);
+        else offHoldS.heldMs.push(held);
+        if (offHold.a === "tang") {
+            if (early) inc(offStopWhy, `tang:${why.replace(/\(.*$/, "")}`);
+        } else if (early) {
             offHoldS.early++;
             inc(offStopWhy, `${offHold.a}:${why.replace(/\(.*$/, "")}`);
         } else offHoldS.full++;
@@ -3074,7 +3097,7 @@ export default function (args = {}) {
     /** @type {{t: number, b: number}[]} */ const bossRing = [];
     let lastDropAt = 0, okOpenAt = 0, okTickAt = 0, okWhiff = 0, okFarByWhiff = false, okWhiffAt = 0, okFarSince = 0;
     let okSwitchPend = 0, okSwitchAt = 0, okLastLight = 0;
-    const DMG_ACTS = new Set(["light", "charge", "coldCharge", "dash", "strike", "burst", "ranshi", "farRanshi", "farDash", "ranshi2", "qishu", "follow"]);
+    const DMG_ACTS = new Set(["light", "charge", "coldCharge", "dash", "strike", "burst", "ranshi", "farRanshi", "farDash", "ranshi2", "qishu", "follow", "tang", "tangHeavy"]);
     /** @typedef {{n: number, hit: number, px: number}} OkRes */
     const okS = {
         evalMs: 0, openMs: 0, farMs: 0, opens: 0, farByWhiff: 0, switchPend: 0, chargeDefers: 0, landSkips: 0,
@@ -3213,6 +3236,54 @@ export default function (args = {}) {
         okSwitchPend = 0;
         offStartCharge(a, "ok", ms);
     }
+    // offTang (@see TG_DISC_WAIT_MS): 冢上霜 held on LIGHT, then 拨雪寻春 (重击) once the disc shows
+    let tgRelAt = 0, tgCounterAt = 0;
+    const tgS = { n: 0, early: 0, heldMs: /** @type {number[]} */ ([]), heavy: 0, heavyDelay: /** @type {number[]} */ ([]), noDisc: 0,
+        disc: 0, counterWaits: 0, switches: 0, /** @type {Record<string, number>} */ skip: {} };
+    /** offRelease of a 冢上霜 hold: now wait for the disc. @param {number} now @param {string} why @param {boolean} early @param {number} held */
+    function tangReleased(now, why, early, held) {
+        tgS.heldMs.push(held);
+        if (early) tgS.early++;
+        tgRelAt = now;
+    }
+    /** Can 冢上霜 start now (near gate open, on 横刀, not hot)? Counts why not (once a second). @param {number} now @param {number} left */
+    function tangCan(now, left) {
+        let why = "";
+        if (left < tangMinLeftMs) why = "left";
+        else if (offSeen("counter")) why = "counter";
+        else if (!okCan("tang", now)) why = "horizon";
+        if (!why) return true;
+        if (why === "counter" && now - tgCounterAt > 1000) {
+            tgS.counterWaits++;
+            tgCounterAt = now;
+        }
+        inc(tgS.skip, why);
+        return false;
+    }
+    /** @param {number} now */
+    function tangStart(now) {
+        okSwitchPend = 0;
+        tgS.n++;
+        offStartCharge("tang", "ok", tangHoldMs, LIGHT);
+    }
+    /** After a 冢上霜 release: 重击 (拨雪寻春) once the disc shows, up to TG_DISC_WAIT_MS ("true" = still waiting). @param {number} now */
+    function tangTick(now) {
+        if (!tgRelAt) return false;
+        if (now - tgRelAt > TG_DISC_WAIT_MS) {
+            tgS.noDisc++;
+            mark("off", `冢上霜: no disc ${now - tgRelAt} ms after the release`);
+            tgRelAt = 0;
+            return false;
+        }
+        if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || bossNow <= 50 || potionDue()) return true;
+        if (!offSeen("swirl")) return true;
+        tgS.heavy++;
+        tgS.heavyDelay.push(now - tgRelAt);
+        offAct("tangHeavy", "tang", CHARGE);
+        offBusyUntil = now + TG_HEAVY_BUSY_MS;
+        tgRelAt = 0;
+        return true;
+    }
     /** The near gate's action pick. @param {number} now @param {boolean} pend only the 蓄力 a switch was for */
     function okAct(now, pend) {
         const hot = burstAt > 0 && now - burstAt < HOT_MS;
@@ -3236,7 +3307,17 @@ export default function (args = {}) {
             hdTick(now);
             return;
         }
-        if (followStay && w === "modao" && !hot && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && okCan("switch", now)) {
+        if (offTang && w === "hengdao" && !hot && !pend) { // offTang: 冢上霜 -> 拨雪寻春 instead of the switch for a cold 蓄力
+            if (offSeen("swirl") && okCan("follow", now)) { // a disc already up (an ok, parryFollow off / given up)
+                tgS.disc++;
+                offAct("tangHeavy", "disc", CHARGE);
+                offBusyUntil = now + TG_HEAVY_BUSY_MS;
+                return;
+            }
+            if (tangCan(now, left)) return tangStart(now);
+        }
+        if ((followStay || tangSwitch) && w === "modao" && !hot && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && okCan("switch", now)) {
+            if (tangSwitch) tgS.switches++;
             offAct("switch", "stay", SWITCH); // part 6: back to 横刀 for the follow-ups instead of a cold 蓄力
             okSwitchAt = now;
             offBusyUntil = now + SWITCH_WAIT_MS;
@@ -3250,7 +3331,7 @@ export default function (args = {}) {
                 const hold = Math.min(qiColdHoldMs, left);
                 if (hold >= offColdMinMs && can && okChargeFree(now, "coldCharge")) return okCharge("coldCharge", Math.round(hold));
             }
-        } else if (w === "hengdao" && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && (hot || (!followStay && left >= OFF_COST_MS.switch + offColdMinMs))
+        } else if (w === "hengdao" && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && (hot || (!followStay && !offTang && left >= OFF_COST_MS.switch + offColdMinMs))
             && okCan("switch", now)) {
             offAct("switch", "ok", SWITCH); // only for the 蓄力 right after it
             okSwitchAt = now;
@@ -3308,6 +3389,7 @@ export default function (args = {}) {
         }
         if (hd || offHold || offWalking || now < offBusyUntil) return;
         if (parryFollow && pfHold(now)) return; // part 6: the follow-up first
+        if (offTang && tangTick(now)) return; // after 冢上霜: 拨雪寻春 first
         if (offFar && far && okFarSince && now - okFarSince >= offFarMs && farCloseIn(now)) return;
         if (okOpenAt && !far) okAct(now, false);
         else if (okSwitchPend && now < okSwitchPend && offM30 <= offVetoTh && !inCurtain && !inDodge) okAct(now, true);
@@ -3741,6 +3823,7 @@ export default function (args = {}) {
                     qiFrac: okS.evalMs ? r(okS.qiMs / okS.evalMs) : 0, landSkips: okS.landSkips } : {}) } : {}),
             ...(oursTellTh ? { oursTellWaits: okS.oursTellWaits } : {}),
             res: okS.res, byAct: okS.byAct, ...(oldWindow ? { window: owS } : {}),
+            ...(offTang ? { tang: tgS } : {}),
         };
     }
 
