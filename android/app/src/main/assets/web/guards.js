@@ -138,5 +138,5 @@ window.guardsUi = (() => {
     });
   }
 
-  return { names, rows, handle, reorder, edit };
+  return { names, handle, reorder, edit };
 })();

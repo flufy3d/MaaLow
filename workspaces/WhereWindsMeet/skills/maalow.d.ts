@@ -88,6 +88,7 @@ interface ColorOptions extends RecoOptions {
     count?: number;
     connected?: boolean;
     method?: number;
+    order_by?: string;
 }
 
 interface OcrOptions extends RecoOptions {
@@ -95,6 +96,7 @@ interface OcrOptions extends RecoOptions {
     expected?: string | string[];
     threshold?: number;
     only_rec?: boolean;
+    order_by?: string;
 }
 
 interface DetectOptions extends RecoOptions {
@@ -103,6 +105,7 @@ interface DetectOptions extends RecoOptions {
     expected?: number | number[];
     labels?: string[];
     threshold?: number | number[];
+    order_by?: string;
 }
 
 interface ClassifyOptions extends RecoOptions {
@@ -110,6 +113,7 @@ interface ClassifyOptions extends RecoOptions {
     model: string;
     expected?: number | number[];
     labels?: string[];
+    order_by?: string;
 }
 
 /**

@@ -1,4 +1,5 @@
-// Shared by every page: API access, icons, theme, dialogs and toasts, and the screen annotations (drawing and shapes).
+// Shared by every page: API calls and the token, icons, theme, dialogs and toasts, sortable lists, the workspace store,
+// formatting helpers, the screen annotations (drawing, shapes, SVG) and recording thumbnails.
 "use strict";
 
 const TOKEN = new URLSearchParams(location.search).get("token") || localStorage.getItem("maalow-token") || "";
@@ -49,7 +50,6 @@ const ICONS = {
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h9"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   upload: '<path d="M12 16V5M7 10l5-5 5 5M5 20h14"/>',
-  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   play: '<path d="M7 4v16l13-8z" fill="currentColor"/>',
   pause: '<path d="M8 5v14M16 5v14" stroke-width="3"/>',
   first: '<path d="M6 5v14M18 5l-9 7 9 7z"/>',
@@ -290,7 +290,8 @@ function canvasPos(cv, e) {
   return [Math.max(0, Math.min(cv.width - 1, x)), Math.max(0, Math.min(cv.height - 1, y))];
 }
 
-// coords follow maalow.teaching.Annotation: rect/region/circle [x,y,w,h], arrow [x1,y1,x2,y2], click [x,y]
+// Annotation coordinates are in the 1080x720 frame space (see toMark / marksSvg below):
+// rect/region/circle [x,y,w,h], arrow [x1,y1,x2,y2], click [x,y]
 function toMark(kind, a, b) {
   if (kind === "click") return { kind, coords: b };
   if (kind === "arrow") return { kind, coords: [a[0], a[1], b[0], b[1]] };

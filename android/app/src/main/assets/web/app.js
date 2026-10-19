@@ -34,6 +34,7 @@ function renderSwitcher() {
 async function useWorkspace(name) {
   if (name === wsStore.current) return true;
   try {
+    await live.flush(); // unsaved marks belong to the old workspace
     await replay.flush(); // unsaved labels belong to the old workspace
     await post(`/workspaces/${enc(name)}/use`);
     await wsStore.refresh();
@@ -80,8 +81,8 @@ window.addEventListener("resize", closeMenu);
 
 wsStore.on(changed => {
   renderSwitcher();
-  if (changed) { replay.setWorkspace(wsStore.current); overview.refresh(); }
-  if (mode === "overview") overview.refresh();
+  if (changed) replay.setWorkspace(wsStore.current);
+  if (changed || mode === "overview") overview.refresh();
 });
 
 // the current workspace may change elsewhere (another browser, the AI switching tasks): follow it

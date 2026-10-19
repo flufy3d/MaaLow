@@ -93,7 +93,7 @@ window.live = (() => {
     refresh();
   }
   function reset() {
-    editing = null; marks = []; text = ""; dirty = false; clearTimeout(saveTimer);
+    editing = null; marks = []; text = ""; dirty = false; error = ""; clearTimeout(saveTimer);
     undoStack = []; redoStack = [];
     $("lv-text").value = "";
     if (active) stage.reset();

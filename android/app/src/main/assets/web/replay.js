@@ -16,13 +16,13 @@ window.replay = (() => {
   const bitmaps = new Map(); // "id:n" -> Promise<ImageBitmap>, most recent last
   let labels = { version: 0, frames: {} };
   const dirty = new Set();
-  let saving = false, saveTimer = 0, saveError = "";
+  let saving = null, saveTimer = 0, saveError = ""; // saving: the promise of the save in progress
   let undoStack = [], redoStack = [];
   let recState = { recording: false }, recPolled = 0;
   /** The app's recording limit in minutes (GET /record limit_ms). */
   const limitMin = () => Math.round((recState.limit_ms || 20 * 60000) / 60000);
   let playing = false, videoFrame = 0, hideVideoOnLoad = false;
-  let drag = null, hover = null, hold = null, editing = null;
+  let drag = null, hover = null, hold = null, renamingId = null, editWait = 0;
   let inPt = -1, outPt = -1; // the range sent as the attachment's focus (-1: open end)
   let trayItem = null; // the tray item this recording is (edits go back into it)
 
@@ -30,7 +30,6 @@ window.replay = (() => {
   const entry = n => labels.frames[n];
   const marksOf = n => entry(n)?.annotations || [];
   const labeledFrames = () => Object.keys(labels.frames).map(Number).filter(n => entry(n)?.annotations?.length || entry(n)?.note).sort((a, b) => a - b);
-  const localSheet = (r, k) => sheetUrl(ws, r, k);
   const here = () => want >= 0 ? want : cur;
 
   // ---- frames
@@ -253,10 +252,17 @@ window.replay = (() => {
 
   async function flush() {
     clearTimeout(saveTimer); saveTimer = 0;
-    if (saving) { saveTimer = setTimeout(flush, 300); return; }
+    while (saving) await saving; // a save under way first: its frames must not be lost
     if (!dirty.size || !rec) { saveStatus(); return; }
-    saving = true; saveStatus();
     const id = rec.id, w = ws;
+    saving = save(w, id);
+    saveStatus();
+    await saving;
+    saving = null;
+    saveStatus();
+  }
+
+  async function save(w, id) {
     try {
       for (const n of [...dirty]) {
         dirty.delete(n);
@@ -277,9 +283,6 @@ window.replay = (() => {
     } catch (err) {
       saveError = err.message;
       if (rec && rec.id === id) saveTimer = setTimeout(flush, 3000);
-    } finally {
-      saving = false;
-      saveStatus();
     }
   }
 
@@ -447,14 +450,17 @@ window.replay = (() => {
 
   /** A recording's edit button in the tray: once it is open here, the range and text are that item's. */
   function editItem(item) {
+    const until = Date.now() + 5000;
+    clearTimeout(editWait);
     const wait = () => {
+      editWait = 0;
       if (rec && rec.id === item.rec) {
         trayItem = item;
         inPt = item.focus ? item.focus.from : -1;
         outPt = item.focus ? item.focus.to : -1;
         rpText.value = item.text || "";
         rangeUi(); drawScrub(); sendUi(); teach.renderTray();
-      } else if (active) setTimeout(wait, 100);
+      } else if (active && Date.now() < until) editWait = setTimeout(wait, 100);
     };
     wait();
   }
@@ -527,7 +533,7 @@ window.replay = (() => {
     img.style.width = w + "px"; img.style.height = h + "px";
     if (t && t.count) {
       const i = clamp(Math.round(n / t.every), 0, t.count - 1), per = t.cols * t.rows, slot = i % per;
-      img.style.backgroundImage = `url("${localSheet(rec, Math.floor(i / per))}")`;
+      img.style.backgroundImage = `url("${sheetUrl(ws, rec, Math.floor(i / per))}")`;
       img.style.backgroundSize = `${t.cols * w}px ${t.rows * h}px`;
       img.style.backgroundPosition = `-${(slot % t.cols) * w}px -${Math.floor(slot / t.cols) * h}px`;
     } else img.style.backgroundImage = "none";
@@ -614,6 +620,8 @@ window.replay = (() => {
   // ---- recording
 
   async function pollRecord() {
+    // the recording state matters here, and while a recording runs anywhere (the clock and the end of it)
+    if (document.hidden || (!active && !recState.recording && !recState.saving)) return;
     try {
       const prev = recState;
       recState = await json("/record");
@@ -710,14 +718,14 @@ window.replay = (() => {
       const live = r.state === "recording" || r.state === "saving";
       const sub = live ? (r.state === "recording" ? `● 录制中 ${fmtClock(r.duration_ms || 0)}` : "保存中…")
         : `${fmtClock(r.duration_ms || 0)} · ${r.frames} 帧 · ${(r.started_at || "").slice(5, 16)}${r.stopped_by === "recovered" ? " · 已修复" : ""}${r.stopped_by === "limit" ? " · 到达上限" : ""}`;
-      const body = editing === r.id
+      const body = renamingId === r.id
         ? `<input data-f="name" value="${esc(r.name)}" placeholder="名称"><textarea data-f="note" placeholder="备注">${esc(r.note)}</textarea>
            <button class="btn sm primary" data-act="save">保存</button> <button class="btn sm" data-act="cancel">取消</button>`
         : `<div class="nm">${esc(r.name)}</div><div class="sub">${sub}</div>${r.note ? `<div class="nt" title="${esc(r.note)}">${esc(r.note)}</div>` : ""}`;
       return `<div class="rec${rec && rec.id === r.id ? " cur" : ""}${live ? " live" : ""}" data-id="${esc(r.id)}">
         <div class="th" style="${thumbStyle(ws, r, 96)}"></div>
         <div class="bd">${body}</div>
-        ${editing === r.id || live ? "" : `<div class="acts"><button class="btn sm" data-act="edit">改名</button><button class="btn sm danger" data-act="del">删除</button></div>`}
+        ${renamingId === r.id || live ? "" : `<div class="acts"><button class="btn sm" data-act="edit">改名</button><button class="btn sm danger" data-act="del">删除</button></div>`}
       </div>`;
     }).join("");
     recmenu.querySelector(".list").innerHTML = rows || `<div class="none" style="padding:6px 10px">${recs.length ? "没有匹配的录像" : "还没有录像。点“开始录制”，然后在平板上正常操作。"}</div>`;
@@ -739,15 +747,15 @@ window.replay = (() => {
     const item = e.target.closest(".rec");
     if (!item) return;
     const id = item.dataset.id, r = recs.find(x => x.id === id);
-    if (act === "edit") { editing = id; renderList(); recmenu.querySelector(`[data-id="${id}"] input`)?.focus(); return; }
-    if (act === "cancel") { editing = null; renderList(); return; }
+    if (act === "edit") { renamingId = id; renderList(); recmenu.querySelector(`[data-id="${id}"] input`)?.focus(); return; }
+    if (act === "cancel") { renamingId = null; renderList(); return; }
     if (act === "save") {
       const name = item.querySelector('[data-f="name"]').value.trim(), noteText = item.querySelector('[data-f="note"]').value;
       try {
         const m = await json(`/recordings/${enc(ws)}/${enc(id)}`, { method: "PATCH", body: JSON.stringify({ name: name || r.name, note: noteText }) });
         Object.assign(r, m);
         if (rec && rec.id === id) Object.assign(rec, m);
-        editing = null; renderList(); pickLabel(); teach.setRecs(recs, ws);
+        renamingId = null; renderList(); pickLabel(); teach.setRecs(recs, ws);
       } catch (err) { toast("保存失败：" + err.message); }
       return;
     }
@@ -761,13 +769,13 @@ window.replay = (() => {
       } catch (err) { toast("删除失败：" + err.message); }
       return;
     }
-    if (editing === id || e.target.closest("input, textarea")) return;
+    if (renamingId === id || e.target.closest("input, textarea")) return;
     if (r && r.state === "ready") { recmenu.classList.remove("on"); if (!rec || rec.id !== id) open(id, 0); }
     else if (r) toast("这段录像还在录制或保存中");
   };
   recmenu.onkeydown = e => {
     if (e.key === "Enter" && e.target.tagName === "INPUT" && !e.target.classList.contains("search")) e.target.closest(".rec").querySelector('[data-act="save"]').click();
-    if (e.key === "Escape") { e.stopPropagation(); if (editing) { editing = null; renderList(); } else recmenu.classList.remove("on"); }
+    if (e.key === "Escape") { e.stopPropagation(); if (renamingId) { renamingId = null; renderList(); } else recmenu.classList.remove("on"); }
   };
   document.addEventListener("pointerdown", e => {
     if (!recmenu.contains(e.target) && !$("rp-pick").contains(e.target)) recmenu.classList.remove("on");
@@ -786,7 +794,7 @@ window.replay = (() => {
     inPt = -1; outPt = -1; trayItem = null; rpText.value = "";
     video.removeAttribute("src"); delete video.dataset.src; video.load();
     try { labels = await json(`${base()}/labels`); } catch (e) { labels = { version: 0, frames: {} }; toast("读取标注失败：" + e.message); }
-    for (let k = 0; k < (meta.thumbs?.sheets || 0); k++) new Image().src = localSheet(meta, k); // warm the scrubbing previews
+    for (let k = 0; k < (meta.thumbs?.sheets || 0); k++) new Image().src = sheetUrl(ws, meta, k); // warm the scrubbing previews
     pickLabel(); saveStatus(); sizeScrub(); refreshFrame(); placeholder(); sendUi(); rangeUi();
     if (active) { stage.reset(); stage.buttons(); }
     teach.renderTray();
@@ -796,6 +804,8 @@ window.replay = (() => {
   function close() {
     rec = null; total = 0; cur = -1; want = -1; image = null; labels = { version: 0, frames: {} };
     dirty.clear(); undoStack = []; redoStack = []; inPt = -1; outPt = -1; trayItem = null;
+    clearTimeout(editWait); editWait = 0;
+    rpText.value = "";
     if (active) { history.replaceState(null, "", "#teach/replay"); stage.show(null); stage.reset(); }
     updatePos(); saveStatus(); refreshFrame(); placeholder(); drawScrub(); pickLabel(); sendUi();
   }
@@ -866,6 +876,7 @@ window.replay = (() => {
   /** The stage is shown; to: "replay/<id>/<frame>" opens that recording at that frame. */
   async function enter(to = "") {
     active = true;
+    pollRecord(); // the recording state (polled only here, or while a recording runs)
     stage.use(doc);
     stage.onMove = null;
     stage.show(image);
@@ -891,6 +902,7 @@ window.replay = (() => {
   function leave() {
     active = false;
     stopHold();
+    clearTimeout(editWait); editWait = 0;
     if (playing) stopVideo(false);
     screen.classList.remove("playing");
     stage.busy(false);

@@ -1,8 +1,9 @@
 // The remote stage: the tablet's screen live and, after taking control, the mouse or a finger on it acting as touches
 // on the tablet. Not teaching: nothing of it goes into the chat. Video is H.264 over the WebSocket /api/v1/remote,
-// decoded with WebCodecs, which browsers only offer on HTTPS pages (see README: TailSocks). The connection is open only
-// while this stage is shown and the tab is visible; closing it gives control back at once. The lock screen's password
-// pad is black in the stream (a secure window): the app sends its controls instead, drawn over the picture.
+// decoded with WebCodecs, which browsers offer only in a secure context (HTTPS / localhost; see README: TailSocks).
+// The connection is open only while this stage is shown and the tab is visible; closing it gives control back at once.
+// The lock screen's password pad is black in the stream (a secure window): the app sends its controls instead, drawn
+// over the picture.
 "use strict";
 window.remote = (() => {
   const W = 1080, H = 720, HEADER = 10, MOVE_MS = 16, PING_MS = 2000, WHEEL_ID = 9;
@@ -224,7 +225,7 @@ window.remote = (() => {
   cv.addEventListener("contextmenu", e => { if (active) e.preventDefault(); });
 
   // the wheel: one short swipe per notch (wheel down = content moves up, like a finger pushing it)
-  let wheeling = false;
+  let wheeling = false, wheelTimer = 0;
   cv.addEventListener("wheel", e => {
     if (!active || !controlling()) return;
     e.preventDefault();
@@ -233,11 +234,11 @@ window.remote = (() => {
     const [x, y] = canvasPos(cv, e), dy = (e.deltaY > 0 ? -1 : 1) * 160, steps = 6;
     let i = 0;
     touch("down", WHEEL_ID, [x, y]);
-    const iv = setInterval(() => {
+    wheelTimer = setInterval(() => {
       const p = [x, Math.max(0, Math.min(H - 1, Math.round(y + dy * ++i / steps)))];
       if (i < steps) return touch("move", WHEEL_ID, p);
       touch("up", WHEEL_ID, p);
-      clearInterval(iv);
+      clearInterval(wheelTimer); wheelTimer = 0;
       setTimeout(() => { wheeling = false; }, 120);
     }, MOVE_MS);
   }, { passive: false });
@@ -381,6 +382,7 @@ window.remote = (() => {
     active = false;
     disconnect();
     clearInterval(statsTimer);
+    clearInterval(wheelTimer); wheelTimer = 0; wheeling = false;
     stage.screen.classList.remove("ctl");
     stage.over("");
     stage.badge("");

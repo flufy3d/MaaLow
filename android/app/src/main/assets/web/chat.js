@@ -4,7 +4,7 @@
 "use strict";
 window.teach = (() => {
   let workspace = "", task = "", session = -1, steps = 0, talk = 0, seen = 0, trayRev = -1;
-  let st = {}, polledAt = 0, waitingSince = 0, stage = "live", active = false;
+  let st = {}, polledAt = 0, waitingSince = 0, stageName = "live", active = false;
   let tray = [], recs = null, recsFor = "", sending = false;
   const fileUrl = p => withToken(`${API}/files/${enc(workspace)}/${p.split("/").map(enc).join("/")}`);
 
@@ -13,8 +13,8 @@ window.teach = (() => {
   /** Show a stage in the shared frame (its toolbar group and bottom slot come with it); the frame stays put. */
   function setStage(s, rest = "") {
     if (!["live", "replay", "remote"].includes(s)) s = "live";
-    const was = stage;
-    stage = s;
+    const was = stageName;
+    stageName = s;
     $("teach").dataset.stage = s;
     document.querySelectorAll("#modes [data-stage]").forEach(b => b.classList.toggle("on", b.dataset.stage === s));
     if (!active) return;
@@ -26,20 +26,20 @@ window.teach = (() => {
     else { live.enter(); history.replaceState(null, "", "#teach/live"); }
     renderTray();
   }
-  document.querySelectorAll("#modes [data-stage]").forEach(b => b.onclick = () => { if (!b.disabled && b.dataset.stage !== stage) setStage(b.dataset.stage); });
+  document.querySelectorAll("#modes [data-stage]").forEach(b => b.onclick = () => { if (!b.disabled && b.dataset.stage !== stageName) setStage(b.dataset.stage); });
 
   /** Page entered; rest: "live", "replay/<id>/<frame>" (from the address). */
   function enter(rest = "") {
     active = true;
-    const [s, ...more] = (rest || stage).split("/");
-    stage = "";
+    const [s, ...more] = (rest || stageName).split("/");
+    stageName = "";
     setStage(s, [s, ...more].join("/"));
     const log = $("log");
     log.scrollTop = log.scrollHeight;
   }
   function leave() {
     active = false;
-    if (stage === "replay") replay.leave(); else if (stage === "remote") remote.leave(); else live.leave();
+    if (stageName === "replay") replay.leave(); else if (stageName === "remote") remote.leave(); else live.leave();
   }
 
   // ---- recordings the messages refer to (names, lengths, thumbnails)
@@ -199,7 +199,7 @@ window.teach = (() => {
 
   let polling = false;
   async function poll() {
-    if (polling) return;
+    if (polling || document.hidden) return;
     polling = true;
     try {
       const s = await json("/state");
@@ -242,6 +242,7 @@ window.teach = (() => {
   }
   let stopping = null, stoppingAt = 0; // what the top bar's stop was pressed for, until it is gone
   function renderStatus() {
+    if (document.hidden) return;
     const [ct, cc] = CONTROL[st.control] || CONTROL.idle, pill = $("ctlpill");
     const running = (st.control === "task" || st.control === "ai") && st.running || "";
     if (stopping && running !== stopping) { toast(`已停止 ${stopping}`); stopping = null; }
@@ -415,7 +416,7 @@ window.teach = (() => {
   async function takeShot(open = true) {
     const item = trayGot(await post("/shot", { tray: true }));
     if (!open) { renderTray(); return item; }
-    if (stage !== "live") setStage("live");
+    if (stageName !== "live") setStage("live");
     live.edit(item);
     return item;
   }
@@ -448,7 +449,7 @@ window.teach = (() => {
     if (act === "del") {
       try { await removeFromTray(it.id); } catch (err) { toast("删除失败：" + err.message); }
     } else if (it.type === "shot") {
-      if (stage !== "live") setStage("live");
+      if (stageName !== "live") setStage("live");
       live.edit(it);
     } else {
       openRec(it.rec, it.focus);
@@ -475,7 +476,7 @@ window.teach = (() => {
       await live.flush(); // marks still being saved go with the message
       await post("/teach", { text, attachments: tray });
       $("text").value = "";
-      tray = []; renderTray(); live.trayChanged(tray);
+      tray = []; renderTray(); live.trayChanged(tray); replay.trayChanged(tray);
       waitingSince = Date.now(); st = { ...st, waiting: true };
       poll();
     } catch (e) {
@@ -518,6 +519,6 @@ window.teach = (() => {
 
   return {
     enter, leave, setStage, setRecs, addToTray, updateTray, takeShot, renderTray, fileUrl,
-    get stage() { return stage; }, get workspace() { return workspace; }, get tray() { return tray; },
+    get stage() { return stageName; }, get tray() { return tray; },
   };
 })();

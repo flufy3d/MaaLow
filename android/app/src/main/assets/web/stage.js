@@ -234,7 +234,7 @@ window.stage = (() => {
 
   return {
     register: (name, m) => { modes[name] = m; },
-    use, render, show, load, badge, over, busy, buttons, status, fit,
+    use, render, show, load, badge, over, busy, buttons, status,
     set onMove(f) { onMove = f; },
     get selected() { return selected; },
     reset() { closeLabel(false); selected = -1; start = null; draft = null; render(); },
