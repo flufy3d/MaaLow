@@ -11,9 +11,9 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 
-from maalow.client import HOME, Client, grid_png
-
-NAMES = {"rect": "框选", "circle": "圈", "arrow": "箭头", "click": "点击点", "region": "区域"}
+from maalow.client import Client
+from maalow.imaging import NAMES, grid_png
+from maalow.paths import HOME, local_base
 
 
 def workspace_of(client: Client, workspace: str | None) -> str:
@@ -31,8 +31,7 @@ def base(workspace: str, rid: str) -> str:
 
 def local_dir(root: Path, workspace: str, rid: str) -> Path:
     """recordings/<id> in the local workspace when there is one, else in ~/.maalow/cache."""
-    ws = root / workspace if (root / workspace / "workspace.json").is_file() else HOME / "cache" / workspace
-    return ws / "recordings" / rid
+    return local_base(root, workspace) / "recordings" / rid
 
 
 def resolve(client: Client, workspace: str, rid: str) -> str:

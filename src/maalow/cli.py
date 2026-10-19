@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import time
 import zipfile
 from pathlib import Path
 
-from maalow import __version__
-from maalow import rec, sync
-from maalow.client import HOME, Client, grid_png, local_base
-from maalow.skills import registry
+from maalow import __version__, rec, sync
+from maalow.client import Client
+from maalow.imaging import grid_png
+from maalow.paths import CONFIG_FILE, HOME
+from maalow.skills import names as skill_names
+from maalow.views import local_to_app, with_views
 from maalow.workspace import Workspace
 
 
@@ -167,6 +168,8 @@ def _add_sync_parser(sub) -> None:
 
 def _sync(args, client: Client) -> int:
     exclude = args.exclude + ([] if args.screenshots else [sync.SCREENSHOTS]) + ([] if args.videos else list(sync.VIDEOS))
+    if args.watch and args.dry_run:
+        return _emit({"error": "--watch cannot be combined with --dry-run"})
     if args.watch:
         def emit(out):
             print(json.dumps(out, ensure_ascii=False), flush=True)
@@ -179,9 +182,8 @@ def _sync(args, client: Client) -> int:
     try:
         out = sync.sync(client, args.name, args.root, args.direction, args.prefer, exclude, dry_run=args.dry_run)
     except Exception as e:  # network or app errors, as JSON like everything else
-        out = {"workspace": args.name, "error": f"{type(e).__name__}: {e}"}
-    print(json.dumps(out, ensure_ascii=False))
-    return 1 if "error" in out else 0
+        out = _error(e)
+    return _emit(out)
 
 
 def _attachment(text: str) -> dict:
@@ -192,52 +194,6 @@ def _attachment(text: str) -> dict:
     if not isinstance(a, dict) or a.get("type") not in ("shot", "recording"):
         raise argparse.ArgumentTypeError(f"not a shot or recording attachment: {text}")
     return a
-
-
-def _with_views(client: Client, root: Path, out):
-    """Fetch screenshots the app mentions and add local paths (view: grid image) for the AI to look at. Each of a
-    message's attachments gets its own: a shot its image with grid and annotations, a recording its length, labels
-    digest and focus frame."""
-    if isinstance(out, list):
-        return [_with_views(client, root, m) for m in out]
-    if not isinstance(out, dict) or "error" in out:
-        return out
-    ws = out.get("workspace")
-    if ws is None and (out.get("screenshot") or out.get("attachments")):
-        ws = client.get("/state").get("workspace")
-    if out.get("attachments"):
-        out = {**out, "attachments": [_expand(client, root, ws, a) for a in out["attachments"]]}
-    elif out.get("screenshot"):
-        out = {**out, **client.fetch(ws, out["screenshot"], root)}
-    return out
-
-
-def _expand(client: Client, root: Path, ws: str, a: dict) -> dict:
-    try:
-        if a.get("type") == "shot":
-            got = client.fetch(ws, a["file"], root, annotations=a.get("annotations"))
-            marks = [rec.describe(m, i) for i, m in enumerate(a.get("annotations") or [], 1)]
-            return {**a, "image": got["image"], "view": got["view"], **({"marks": marks} if marks else {})}
-        if a.get("type") == "recording":
-            digest = rec.labels(client, ws, a["rec"])
-            info = digest["recording"]
-            out = {**a, "name": info.get("name", ""), "frames": info.get("frames"), "fps": info.get("fps", 30),
-                   "labels": [{k: f[k] for k in ("frame", "time_ms", "note", "text")} for f in digest["frames"]]}
-            if a.get("focus"):
-                out["view"] = rec.frame(client, ws, a["rec"], a["focus"]["from"])["view"]
-            return out
-    except Exception as e:  # a deleted recording or screenshot: say so, keep the rest of the message
-        return {**a, "error": f"{type(e).__name__}: {e}"}
-    return a
-
-
-def _local_to_app(root: Path, ws: str | None, a: dict) -> dict:
-    """A shot attachment may name a local copy (image or view from listen or shot): turn it into the app's path."""
-    f = a.get("file", "")
-    if a.get("type") != "shot" or not ws or not Path(f).is_absolute():
-        return a
-    rel = Path(f).resolve().relative_to(local_base(root, ws).resolve()).as_posix()
-    return {**a, "file": re.sub(r"\.(grid|marks)\.png$", ".png", rel)}
 
 
 def _do(args, client: Client):
@@ -251,11 +207,12 @@ def _do(args, client: Client):
         grid_png(dest, dest.with_suffix(".grid.png"))
         return {"image": str(dest), "view": str(dest.with_suffix(".grid.png"))}
     if op == "shot":
-        return _with_views(client, args.root, client.post("/shot"))
+        return with_views(client, args.root, client.post("/shot"))
     if op == "say":
         local = any(a.get("type") == "shot" and Path(a.get("file", "")).is_absolute() for a in args.attach)
         ws = client.get("/state").get("workspace") if local else None
-        return client.post("/say", {"text": args.text, "attachments": [_local_to_app(args.root, ws, a) for a in args.attach]})
+        attachments = [local_to_app(args.root, ws, a) for a in args.attach]  # validate before the request
+        return client.post("/say", {"text": args.text, "attachments": attachments})
     if op == "listen":
         # the app answers each poll within 25 s, so it notices soon when nobody is listening any more
         end = time.monotonic() + args.timeout
@@ -263,9 +220,9 @@ def _do(args, client: Client):
             left = end - time.monotonic()
             got = client.get(f"/listen?timeout={max(1, min(25, round(left)))}", timeout=60)
             if got or left <= 25:
-                return _with_views(client, args.root, got)
+                return with_views(client, args.root, got)
     if op == "run":
-        return _with_views(client, args.root, client.post("/run", {"node": args.node, "once": not args.full}, timeout=3600))
+        return with_views(client, args.root, client.post("/run", {"node": args.node, "once": not args.full}, timeout=3600))
     if op == "skill":
         body = {"name": args.name, "args": args.args, "wait": not args.no_wait}
         body |= {k: v for k, v in (("workspace", args.workspace), ("timeout", args.timeout)) if v}
@@ -278,7 +235,7 @@ def _do(args, client: Client):
     if op == "task":
         return client.post("/task", {"name": args.name, **({"workspace": args.workspace} if args.workspace else {})})
     body = {"action": _action(args), "say": args.say, "wait": args.wait}
-    return _with_views(client, args.root, client.post("/act", body))
+    return with_views(client, args.root, client.post("/act", body))
 
 
 def _ws(args, client: Client):
@@ -286,7 +243,7 @@ def _ws(args, client: Client):
         return client.get("/workspaces")
     if args.op == "import":
         src = args.root / args.name
-        if not (src / "workspace.json").is_file():
+        if not (src / CONFIG_FILE).is_file():
             return {"error": f"no local workspace: {src}"}
         return client.import_dir(args.name, src, args.mode, teaching=not args.no_teaching)
     out = args.out or Path(f"{args.name}.zip")
@@ -297,6 +254,15 @@ def _ws(args, client: Client):
             z.extractall(args.extract)
             result |= {"extracted": str(args.extract.resolve()), "files": len(z.namelist())}
     return result
+
+
+def _error(e: Exception) -> dict:
+    return {"error": f"{type(e).__name__}: {e}"}
+
+
+def _emit(out) -> int:
+    print(json.dumps(out, ensure_ascii=False))
+    return 1 if isinstance(out, dict) and ("error" in out or out.get("ok") is False) else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -310,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("--package", default="", help="android package")
 
     sub.add_parser("list", help="list workspaces")
-    sub.add_parser("skills", help="list registered skills")
+    sub.add_parser("skills", help="list legacy built-in skill names")
 
     _add_do_parser(sub)
     _add_ws_parser(sub)
@@ -324,28 +290,24 @@ def main(argv: list[str] | None = None) -> int:
         ws.config.package = args.package
         ws.save()
         print(f"created workspace: {ws.path}")
-    elif args.command == "list":
+        return 0
+    if args.command == "list":
         for name in Workspace.list(args.root):
             print(name)
-    elif args.command == "skills":
-        for name in registry.names():
+        return 0
+    if args.command == "skills":
+        for name in skill_names():
             print(name)
-    elif args.command == "sync":
+        return 0
+    if args.command == "sync":
         return _sync(args, Client(args.server, args.token))
-    elif args.command == "rec":
-        client = Client(args.server, args.token)
-        try:
-            out = _rec(args, client)
-        except Exception as e:  # network or app errors, as JSON like everything else
-            out = {"error": f"{type(e).__name__}: {e}"}
-        print(json.dumps(out, ensure_ascii=False))
-        return 1 if isinstance(out, dict) and "error" in out else 0
-    elif args.command in ("do", "ws"):
-        client = Client(args.server, args.token)
-        out = (_do if args.command == "do" else _ws)(args, client)
-        print(json.dumps(out, ensure_ascii=False))
-        return 1 if isinstance(out, dict) and ("error" in out or out.get("ok") is False) else 0
-    return 0
+
+    handler = {"rec": _rec, "do": _do, "ws": _ws}[args.command]
+    try:
+        out = handler(args, Client(args.server, args.token))
+    except Exception as e:  # network or app errors, as JSON like everything else
+        out = _error(e)
+    return _emit(out)
 
 
 if __name__ == "__main__":

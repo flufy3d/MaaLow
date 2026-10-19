@@ -4,10 +4,9 @@ version = "0.1.0"
 description = "Teachable Low-Code Automation on MaaFramework"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["pillow"]  # coordinate grids and annotations on screenshots
 
 [project.optional-dependencies]
-maa = ["maafw", "pillow"]
 # offline image checks (scripts/, workspaces/*/tools/)
 cv = ["opencv-python-headless", "numpy", "onnxruntime", "scipy"]
 

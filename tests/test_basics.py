@@ -1,47 +1,26 @@
+import json
 from pathlib import Path
 
 from maalow.cli import main
-from maalow.memory import MemoryStore
-from maalow.recorder import Recorder
-from maalow.skills import registry
-from maalow.teaching import Annotation, AnnotationKind, TeachingSession, TeachingStep
+from maalow.skills import names as skill_names
 from maalow.workspace import Workspace
 
 
-def test_workspace_create_and_open(tmp_path):
+def test_workspace_create(tmp_path):
     ws = Workspace.create(tmp_path, "demo")
     assert (ws.path / "pipeline").is_dir()
-    assert Workspace.open(ws.path).config.name == "demo"
+    assert json.loads((ws.path / "workspace.json").read_text())["name"] == "demo"
     assert Workspace.list(tmp_path) == ["demo"]
 
 
-def test_recorder_roundtrip(tmp_path):
-    ws = Workspace.create(tmp_path, "demo")
-    session = TeachingSession(task="daily")
-    session.add(TeachingStep("s1.png", "点击领取", [Annotation(AnnotationKind.RECT, [1, 2, 3, 4])]))
-    rec = Recorder(ws)
-    rec.save(session)
-    assert rec.load("daily") == session
-
-
-def test_memory(tmp_path):
-    ws = Workspace.create(tmp_path, "demo")
-    MemoryStore(ws).set("k", 1)
-    assert MemoryStore(ws).get("k") == 1
-
-
 def test_skills_registered():
-    assert "ClosePopup" in registry.names()
+    assert "ClosePopup" in skill_names()
 
 
 def test_cli(tmp_path, capsys):
     assert main(["--root", str(tmp_path), "init", "demo"]) == 0
     main(["--root", str(tmp_path), "list"])
     assert "demo" in capsys.readouterr().out
-
-
-
-
 
 
 def test_client_config_precedence(tmp_path, monkeypatch):
@@ -57,16 +36,15 @@ def test_client_config_precedence(tmp_path, monkeypatch):
     assert client.Client("http://other:1/", "arg").server == "http://other:1"
 
 
-
-def test_import_zip_skips_grids(tmp_path, monkeypatch):
+def test_import_zip_skips_generated_files(tmp_path, monkeypatch):
     import zipfile
 
     from maalow.client import Client
 
     ws = Workspace.create(tmp_path, "demo")
-    (ws.dir("teaching") / "t").mkdir()
-    for name in ("0001.png", "0001.grid.png"):
-        (ws.dir("teaching") / "t" / name).write_bytes(b"x")
+    (ws.path / "teaching" / "t").mkdir()
+    for name in ("0001.png", "0001.grid.png", "0001.marks.png", "download.part"):
+        (ws.path / "teaching" / "t" / name).write_bytes(b"x")
     sent = {}
 
     def upload(self, method, path, file, ctype="", timeout=0):
@@ -79,19 +57,11 @@ def test_import_zip_skips_grids(tmp_path, monkeypatch):
     assert sent["names"] == ["teaching/t/0001.png", "workspace.json"]
 
 
-def test_workspace_ignores_retired_keys(tmp_path):
-    ws = Workspace.create(tmp_path, "demo")
-    (ws.path / "workspace.json").write_text(
-        '{"name": "demo", "controller": "adb", "target": "1.2.3.4:5555", "package": "p"}', encoding="utf-8"
-    )
-    assert Workspace.open(ws.path).config.package == "p"
-
-
 def test_do_fetches_screenshot_with_grid(tmp_path, monkeypatch):
     from PIL import Image
 
     from maalow import client
-    from maalow.cli import _with_views
+    from maalow.views import with_views
 
     ws = Workspace.create(tmp_path, "demo")
 
@@ -102,15 +72,28 @@ def test_do_fetches_screenshot_with_grid(tmp_path, monkeypatch):
         return dest
 
     monkeypatch.setattr(client.Client, "download", download)
-    out = _with_views(client.Client("http://x", "t"), tmp_path, {"workspace": "demo", "screenshot": "teaching/t/0001.png"})
+    out = with_views(client.Client("http://x", "t"), tmp_path, {"workspace": "demo", "screenshot": "teaching/t/0001.png"})
     assert Path(out["image"]) == (ws.path / "teaching/t/0001.png").resolve()
     grid = Image.open(out["view"])
     assert grid.size == (300, 200) and grid.getpixel((100, 50)) == (255, 0, 255)  # grid line at x=100
 
 
-def test_do_skill_posts_run_and_fails_on_skill_error(tmp_path, monkeypatch, capsys):
-    import json
+def test_cli_do_network_error_is_json(monkeypatch, capsys):
+    from maalow import cli
 
+    class App:
+        def __init__(self, *a):
+            pass
+
+        def get(self, path, timeout=120):
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(cli, "Client", App)
+    assert main(["do", "state"]) == 1
+    assert json.loads(capsys.readouterr().out) == {"error": "OSError: connection refused"}
+
+
+def test_cli_do_skill_posts_run_and_fails_on_skill_error(tmp_path, monkeypatch, capsys):
     from maalow import cli
 
     posts = []
@@ -132,7 +115,8 @@ def test_do_skill_posts_run_and_fails_on_skill_error(tmp_path, monkeypatch, caps
 def test_listen_expands_attachments(tmp_path, monkeypatch):
     from PIL import Image
 
-    from maalow import cli, client, rec
+    from maalow import client, rec
+    from maalow.views import with_views
 
     Workspace.create(tmp_path, "demo")
 
@@ -150,7 +134,7 @@ def test_listen_expands_attachments(tmp_path, monkeypatch):
         {"type": "recording", "rec": "r1", "focus": {"from": 12, "to": 12}},
         {"type": "recording", "rec": "r2"},
     ]}
-    shot, focused, plain = cli._with_views(client.Client("http://x", "t"), tmp_path, [msg])[0]["attachments"]
+    shot, focused, plain = with_views(client.Client("http://x", "t"), tmp_path, [msg])[0]["attachments"]
     view = Image.open(shot["view"])
     assert shot["view"].endswith(".marks.png") and view.getpixel((175, 20)) == (255, 77, 79)  # the box's top edge
     assert shot["marks"] == ["1号框选 x=150 y=20 w=50 h=40"]
@@ -176,3 +160,21 @@ def test_say_posts_attachments(monkeypatch, capsys):
                  "--attach", '{"type":"recording","rec":"r1","focus":{"from":5,"to":5}}']) == 0
     assert posts == [("/say", {"text": "这个？", "attachments": [
         {"type": "shot", "file": "now"}, {"type": "recording", "rec": "r1", "focus": {"from": 5, "to": 5}}]})]
+
+
+def test_say_rejects_a_screenshot_outside_the_workspace(tmp_path, monkeypatch, capsys):
+    from maalow import cli
+
+    class App:
+        def __init__(self, *a):
+            pass
+
+        def get(self, path, timeout=120):
+            return {"workspace": "demo"}
+
+    monkeypatch.setattr(cli, "Client", App)
+    outside = tmp_path / "elsewhere.png"
+    outside.write_bytes(b"x")
+    assert main(["--root", str(tmp_path / "workspaces"), "do", "say", "look",
+                 "--attach", json.dumps({"type": "shot", "file": str(outside)})]) == 1
+    assert "outside workspace" in json.loads(capsys.readouterr().out)["error"]

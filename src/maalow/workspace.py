@@ -1,10 +1,13 @@
+"""Workspace: one isolated project per game or app, stored as a directory on the PC."""
+
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-CONFIG_FILE = "workspace.json"
+from maalow.paths import CONFIG_FILE, is_workspace
+
 SUBDIRS = ("tasks", "templates", "pipeline", "skills", "teaching", "memory")
 
 
@@ -12,7 +15,7 @@ SUBDIRS = ("tasks", "templates", "pipeline", "skills", "teaching", "memory")
 class WorkspaceConfig:
     name: str
     package: str = ""  # android package to launch
-    guards: list[str] = field(default_factory=list)  # pipeline nodes checked on every frame (popups, idle screens)
+    guards: list[str] = field(default_factory=list)  # pipeline nodes the app polls as guards
     extra: dict = field(default_factory=dict)
 
 
@@ -34,26 +37,14 @@ class Workspace:
         ws.save()
         return ws
 
-    @classmethod
-    def open(cls, path: Path) -> Workspace:
-        path = Path(path)
-        data = json.loads((path / CONFIG_FILE).read_text(encoding="utf-8"))
-        known = {f.name for f in fields(WorkspaceConfig)}
-        return cls(path, WorkspaceConfig(**{k: v for k, v in data.items() if k in known}))  # ignore retired keys
-
     @staticmethod
     def list(root: Path) -> list[str]:
         root = Path(root)
         if not root.is_dir():
             return []
-        return sorted(p.name for p in root.iterdir() if (p / CONFIG_FILE).is_file())
+        return sorted(p.name for p in root.iterdir() if is_workspace(p))
 
     def save(self) -> None:
         (self.path / CONFIG_FILE).write_text(
             json.dumps(asdict(self.config), ensure_ascii=False, indent=2), encoding="utf-8"
         )
-
-    def dir(self, name: str) -> Path:
-        if name not in SUBDIRS:
-            raise KeyError(name)
-        return self.path / name

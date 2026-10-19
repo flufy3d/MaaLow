@@ -32,14 +32,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from maalow.client import HOME, Client
+from maalow.paths import CONFIG_FILE
 
 SYNC_HOME = HOME / "sync"
-CONFIG_FILE = "workspace.json"
 BATCH = ".batch.json"  # manifest entry of a batch upload (the app never lists dot files)
 SCREENSHOTS = "teaching/**/*.png"
 VIDEOS = ("recordings/**/*.mp4", "recordings/**/thumbs/**")  # big; meta.json and labels.json sync as usual
 WATCH = ("workspace.json", "pipeline", "templates", "skills")
-STORED = (".png", ".jpg", ".jpeg", ".zip")  # already compressed
+STORED = (".png", ".jpg", ".jpeg", ".zip", ".mp4", ".onnx")  # already compressed
 TYPES = "skills/maalow.d.ts"
 TSCONFIG = "skills/tsconfig.json"
 TSCONFIG_TEXT = """{
@@ -280,8 +280,10 @@ def sync(client: Client, workspace: str, root: Path, direction: str = "both", pr
     has_local = (base_dir / CONFIG_FILE).is_file()
     if remote is None and not has_local:
         return {"error": f"no workspace {workspace} here ({base_dir}) or on the app"}
-    if remote is None and direction == "pull":
-        return {"error": f"no workspace {workspace} on the app"}
+    if remote is None and has_local and state["files"] and direction != "push":
+        # The app lost a workspace we synced before (reinstall, deleted, cleared data). Planning against an empty
+        # tree would look like the app deleted every file and would wipe the local copy; only --push may recreate it.
+        return {"error": f"no workspace {workspace} on the app; local files were kept (rerun with --push to recreate it)"}
     if not has_local and direction == "push":
         return {"error": f"no local workspace: {base_dir}"}
     types = has_local and not dry_run and keep(TYPES) and refresh_types(client, base_dir)
@@ -347,7 +349,14 @@ def watch(client: Client, workspace: str, root: Path, emit, prefer: str | None =
           paths: tuple[str, ...] = WATCH, interval: float = 0.25, settle: float = 0.15) -> None:
     """Push the watched files and directories now and after every change, until interrupted. emit(result) per push."""
     keep = Filter(exclude)
-    emit(sync(client, workspace, root, "push", prefer, exclude, list(paths)))
+
+    def push_once() -> None:
+        try:
+            emit(sync(client, workspace, root, "push", prefer, exclude, list(paths)))
+        except Exception as e:  # the app restarting or the network dropping must not end the watch
+            emit({"workspace": workspace, "error": f"{type(e).__name__}: {e}"})
+
+    push_once()
     last = _snapshot(root / workspace, paths, keep)
     while True:
         time.sleep(interval)
@@ -361,7 +370,4 @@ def watch(client: Client, workspace: str, root: Path, emit, prefer: str | None =
                 break
             snap = again
         last = snap
-        try:
-            emit(sync(client, workspace, root, "push", prefer, exclude, list(paths)))
-        except Exception as e:  # the app restarting or the network dropping must not end the watch
-            emit({"workspace": workspace, "error": f"{type(e).__name__}: {e}"})
+        push_once()

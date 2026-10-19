@@ -227,6 +227,16 @@ def test_sync_writes_skill_types_and_pushes_them(env):
     assert (ws / sync.TSCONFIG).read_text() == "{}"
 
 
+def test_sync_keeps_local_files_when_the_app_lost_the_workspace(env):
+    app, root = env
+    run(app, root)  # establish a baseline with the app
+    app.files.clear()  # reinstall / delete workspace / clear data on the tablet
+    out = run(app, root)
+    assert "no workspace demo on the app" in out["error"]
+    assert (root / "demo" / "workspace.json").is_file()
+    assert (root / "demo" / "pipeline" / "main.json").is_file()
+
+
 def test_cli_sync_parser(env, monkeypatch, capsys):
     from maalow import cli
 
@@ -235,3 +245,12 @@ def test_cli_sync_parser(env, monkeypatch, capsys):
     assert cli.main(["--root", str(root), "sync", "demo", "--push", "--dry-run"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["direction"] == "push" and out["dry_run"]
+
+
+def test_cli_sync_watch_rejects_dry_run(env, monkeypatch, capsys):
+    from maalow import cli
+
+    app, root = env
+    monkeypatch.setattr(cli, "Client", lambda *a: app)
+    assert cli.main(["--root", str(root), "sync", "demo", "--watch", "--dry-run"]) == 1
+    assert "cannot be combined" in json.loads(capsys.readouterr().out)["error"]
