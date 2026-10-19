@@ -846,32 +846,6 @@ def place(root: Path, pos: dict, ref: ml.Ref, zoom: str, radius: float = 15, eve
     return out
 
 
-def scan_k(root: Path, pos: dict, ref: ml.Ref, grid, frames) -> tuple[float, list]:
-    """The k that makes `frames` (another zoom than ref's) match `ref` best: the median score per k, refined between
-    grid steps. Their positions come from a solve at some k: a few px off is fine (radius 15)."""
-    z = wl.frames_of(root / REC)
-    rows = []
-    for kz in grid:
-        R = rescaled(ref, kz)
-        sc = []
-        for n in frames:
-            x, y, _ = pos[n]
-            i = z["idx"][n]
-            r = ml.locate(z["disc"][i], R, MATCH, (x, y), 15, None if np.isnan(z["cam"][i]) else float(z["cam"][i]))
-            if r:
-                sc.append(r["score"])
-        rows.append((float(kz), float(np.median(sc)) if sc else -1.0, len(sc)))
-    s = [r[1] for r in rows]
-    j = int(np.argmax(s))
-    best = rows[j][0]
-    if 0 < j < len(s) - 1:
-        a, b, c = s[j - 1], s[j], s[j + 1]
-        den = a - 2 * b + c
-        if den < 0:
-            best += max(-0.5, min(0.5, 0.5 * (a - c) / den)) * (grid[1] - grid[0])
-    return float(best), rows
-
-
 # ---- k zoomed out: the stronghold icon and the teleport stone, both on the minimap and on the big map
 
 STONE = "minimap_stone.png"  # templates/: the teleport stone on the minimap (a cream pillar; cut from 酒肉山林's
