@@ -1,6 +1,18 @@
 # MaaLow
 
-说明见 README.md。PC 端 `uv run maalow ...`（输出 JSON），App 在 `android/`，网页在 `android/app/src/main/assets/web/`。
+说明见 README.md（有“代码地图”一节）。PC 端 `uv run maalow ...`（输出 JSON），App 在 `android/`，网页在 `android/app/src/main/assets/web/`。
+
+## 项目结构与验证
+
+```text
+src/maalow/                     PC CLI：cli(入口) client(HTTP) views(附件展开) rec(录像) sync(同步) imaging(网格/标注) paths workspace
+android/app/src/main/kotlin/    App：App.kt(组装根) server/*Routes.kt(HTTP) teach/ record/ remote/ skill/ store/ auto/
+android/app/src/main/assets/    web/(无构建 classic script；common.js 基础件，stage.js 画面框，每页一个模块) skill/(QuickJS API)
+workspaces/<名字>/              pipeline/ skills/ templates/ model/ tools/；当前知识在 README，历史实验在 docs/
+tests/                          pytest：PC 单测 + 网页语法/类型声明检查
+```
+
+改动后验证：`uv run pytest -q`；Kotlin 用 `cd android && ./gradlew :app:compileDebugKotlin --offline`（需要 JDK 17 + Android SDK）；网页用 `node --check android/app/src/main/assets/web/*.js`。
 
 ## 网页指导
 
@@ -19,6 +31,6 @@
 4. 操作命令返回 `{"error": "stopped by teacher"}`：老师按了停止（`do run` / `do skill` 跑到一半被停也是这个，不是规则出错，别去调试）。立刻停下，不要再点、不要重试，用 `say` 说明做到哪一步，然后回到第 1 步。只读命令（`shot`、`screen`、`rec`）照常可用。返回 `{"error": "teacher has control"}`（老师在网页上远程接管了设备）也一样：停下并 `say`；老师释放后，等下一条消息再动手。
 5. 回到第 1 步，直到用户叫停。
 
-守护规则（`workspace.json` 的 `guards`）在游戏前台、没有任务运行时按各自频率巡检，只放随时可能冒出来的画面（空闲幻灯片、掉线重连）；只在某个流程里出现的弹窗（登录后商城、领奖）用那个流程节点 `next` 里的 `[JumpBack]` 处理，别加进守护。老师说某个画面随时会出现时，给节点加 `"guard_candidate": true`，它就会出现在网页守护规则的候选里，由老师在网页上启用、排序、设频率（`extra.guard_intervals`，毫秒，最低 500；要每帧反应的是战斗这类场景，写成 Skill，不要做成守护）。
+守护规则（`workspace.json` 的 `guards`）在游戏前台、没有任务运行时按各自频率巡检，只放随时可能冒出来的画面（如燕云现有的 `AutoPickup`、`DismissIdleSlideshow`、`CloseItemTip`）；只在某个流程里出现的弹窗（登录后商城、领奖）用那个流程节点 `next` 里的 `[JumpBack]` 处理，别加进守护。老师说某个画面随时会出现时，给节点加 `"guard_candidate": true`，它就会出现在网页守护规则的候选里，由老师在网页上启用、排序、设频率（`extra.guard_intervals`，毫秒，最低 500；要每帧反应的是战斗这类场景，写成 Skill，不要做成守护）。
 
-`explore` 是草稿任务。老师要求时才把教的内容写成规则（`workspaces/<工作区>/pipeline/`、`templates/`），`maalow sync <工作区> --push` 后用 `maalow do run NODE` 验证。拿不准就问，别乱点付费、确认类按钮。
+`explore` 是草稿任务。老师要求时才把教的内容写成规则（`workspaces/<工作区>/pipeline/`、`templates/`），`maalow sync <工作区> --push` 后用 `maalow do run NODE` 验证（录像默认不同步，需要时再加 `--videos`）。拿不准就问，别乱点付费、确认类按钮。

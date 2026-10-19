@@ -21,17 +21,42 @@ MaaLow 让用户通过**自然语言指导 + 屏幕标注**快速创建游戏或
 
 ```text
 MaaLow
-├─ Workspace
-├─ Teaching（任务 · 对话 · 附件；舞台：实时截图 / 录像回放 / 远程操控）
-├─ Recorder（录像）
-├─ Skills
-├─ Memory
-├─ AI Assistant
-└─ MaaFramework
-   ├─ OCR
-   ├─ Template / Color / CV
-   ├─ Pipeline
-   └─ Click / Swipe / Key
+├─ PC CLI（src/maalow）：指导对话、录像取帧、工作区同步
+├─ 伴生 App（android/）：MaaFramework 引擎、教学会话、录屏、远程操控、网页
+├─ 网页（assets/web）：舞台、对话、守护 / 定时 / 工作区管理
+└─ Workspace（workspaces/<名字>）：Pipeline / 模板 / Skill / 模型 / 教学记录
+```
+
+## 代码地图（开发 / Agent）
+
+| 位置 | 职责 |
+|---|---|
+| `src/maalow/cli.py` | PC 端入口：`maalow do/rec/sync/ws/init/list`，输出 JSON |
+| `src/maalow/client.py` | App HTTP API 客户端（配置、下载、上传、`fetch` 截图） |
+| `src/maalow/views.py` | 把消息里的 shot / recording 展开成本地图片和摘要（`listen`、`say` 用） |
+| `src/maalow/rec.py` | 录像：列表、取帧、标注摘要、拉取 |
+| `src/maalow/sync.py` | 本地工作区与 App 的三方合并同步（基线在 `~/.maalow/sync/`） |
+| `src/maalow/imaging.py` | 截图上的坐标网格与标注绘制（PIL） |
+| `src/maalow/paths.py` | `~/.maalow`、本地工作区与缓存目录判定 |
+| `src/maalow/workspace.py` | 工作区目录与 `workspace.json` |
+| `android/app/src/main/kotlin/io/github/flufy3d/maalow/App.kt` | App 组装根：Engine / Workspaces / Teaching / Remote / … 在这里创建 |
+| `…/MaaLowService.kt` | 前台服务与保活监督 |
+| `…/server/ApiServer.kt` | Ktor HTTP / WebSocket 装配、鉴权、异常映射；路由在各 `server/*Routes.kt` |
+| `…/teach/Teaching.kt` | 教学会话、对话、截图、托盘、任务 |
+| `…/record/`、`…/remote/` | 录屏与取帧；远程画面与网页操控 |
+| `…/skill/` | QuickJS Skill 运行时、ONNX 推理、`locate()` |
+| `…/store/`、`…/auto/` | 工作区 / 文件 / 设置 / 事件；守护规则与定时任务 |
+| `android/app/src/main/assets/web/` | 网页（无构建的 classic script）：`common.js` 基础件、`stage.js` 画面框与标注、每页一个模块，加载顺序见 `index.html` |
+| `android/app/src/main/assets/skill/` | Skill 运行时 API：`prelude.js` 与 `maalow.d.ts` |
+| `workspaces/<名字>/` | 每个游戏的工作区：`pipeline/`、`skills/`、`templates/`、`model/`、`tools/`、README；历史实验记录放 `docs/` |
+| `tests/` | pytest：PC 端单测 + 网页语法 / 类型声明同步检查 |
+
+改完跑：
+
+```sh
+uv run pytest -q                                              # PC 端
+cd android && ./gradlew :app:compileDebugKotlin --offline     # Kotlin（需要 JDK 17 与 Android SDK）
+for f in android/app/src/main/assets/web/*.js; do node --check "$f"; done
 ```
 
 ## Workspace
@@ -383,22 +408,9 @@ AI 主要作为**自动化工程师**，用于：
 
 ## Skills
 
-可复用高级能力例如：
+普通 UI 用 Pipeline，实时复杂行为用 Skill / Custom Action。真正能跑的 Skill 是工作区里的 `skills/<name>.js`：燕云工作区里的 `clear_popups.js`（关弹窗）、`combat.js`（战斗）、`route.js`（据点路线）就是例子；`maalow skills` 列出的 `ClosePopup`、`ClickText` 等只是早期内置技能的名字，没有 Python 实现。`maalow do skills` 才列 App 上实际加载的技能。
 
-```text
-ClosePopup
-ClickText
-ScrollList
-WaitLoading
-Interact
-FollowParty
-Fight
-SearchChest
-```
-
-普通 UI 用 Pipeline，实时复杂行为用 Skill / Custom Action。
-
-Skill 是工作区里的 `skills/<name>.js`（ES 模块），在伴生 App 里由 QuickJS 执行，API 见 `skills/maalow.d.ts`（`maalow sync` 时从 App 取下来）：
+Skill 在伴生 App 里由 QuickJS 执行，API 见 `skills/maalow.d.ts`（`maalow sync` 时从 App 取下来）：
 
 ```js
 export const meta = { description: "关弹窗", timeout: 30_000 };
@@ -412,7 +424,7 @@ export default function (args, ctx) {
 
 * 运行：`maalow do skill <name> --args '{...}'`、定时任务的 `"skill"` 字段，或 Pipeline 节点 `"action": "Custom", "custom_action": "<name>"`（识别用 `"custom_recognition": "<name>.recognize"`）
 * 改完 `maalow sync` 即生效，不用重装 App；报错带文件名和行号
-* 检查：`npx -p typescript tsc -p workspaces/<ws>/skills`
+* 检查：`npx -p typescript tsc -p workspaces/<ws>/skills`（类型声明由 `maalow sync` 从 App 更新；工作区现有脚本还有少量历史类型错误，暂不当门禁）
 * 区域定位 `locate()`：屏幕上的一块区域在一张参考图里的位置，见下一节
 * 模型推理 `infer()`：工作区 `model/` 下任意 ONNX 模型，自定预处理、多帧叠加，见“模型推理 infer()”
 
