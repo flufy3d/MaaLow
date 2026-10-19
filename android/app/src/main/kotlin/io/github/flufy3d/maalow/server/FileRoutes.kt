@@ -106,6 +106,4 @@ fun Route.fileRoutes(app: App) {
     }
 }
 
-private fun RoutingCall.ws(): String = parameters["ws"]!!
-
 private fun RoutingCall.path(): String = parameters.getAll("path").orEmpty().joinToString("/")

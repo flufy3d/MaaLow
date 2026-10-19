@@ -371,11 +371,11 @@ class Teaching(private val app: App) {
         else -> e
     }
 
-    /** Tasks of a workspace: the scratch task first, then the most recently used. name, steps, mtime (ms). */
     private fun talk() = messages.filter { it["auto"] == null }
 
     private data class TaskInfo(val name: String, val steps: Int, val talk: Int, val mtime: Long)
 
+    /** Tasks of a workspace: the scratch task first, then the most recently used. name, steps, mtime (ms). */
     fun tasks(ws: String?): JsonArray {
         val w = ws ?: synchronized(lock) { ensure(); workspace }
         val files = dir(w).listFiles().orEmpty()
@@ -684,10 +684,10 @@ class Teaching(private val app: App) {
         (if (limit != null) range.takeLast(limit) else range).toList()
     }
 
-    /** Wait for teacher messages not yet delivered to the AI. */
     /**
-     * Short polls (at most [POLL_MAX_MS]): a listener that went away without closing its connection would otherwise
-     * keep the web UI showing the AI online until its long timeout ran out.
+     * Wait for teacher messages not yet delivered to the AI. Short polls (at most [POLL_MAX_MS]): a listener that went
+     * away without closing its connection would otherwise keep the web UI showing the AI online until its long timeout
+     * ran out.
      */
     suspend fun listen(timeoutMs: Long): List<JsonObject> {
         synchronized(lock) {

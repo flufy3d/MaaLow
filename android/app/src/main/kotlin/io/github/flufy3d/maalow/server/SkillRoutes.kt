@@ -29,10 +29,8 @@ import kotlinx.serialization.json.put
  * A run holds the device lock (waiting for it) until the skill returns; POST /api/v1/stop ends it early.
  */
 fun Route.skillRoutes(app: App) {
-    fun workspaceOf(w: String?): String = w ?: app.defaultWorkspace() ?: error("no workspace")
-
     get("/api/v1/skills") {
-        val ws = workspaceOf(call.query("workspace"))
+        val ws = app.workspaceOf(call.query("workspace"))
         call.respondJson(withContext(Dispatchers.IO) { app.skills.list(ws) })
     }
 
@@ -43,7 +41,7 @@ fun Route.skillRoutes(app: App) {
     post("/api/v1/skill/run") {
         app.teaching.checkNotStopped()
         val b = call.body()
-        val ws = workspaceOf(b.optStr("workspace"))
+        val ws = app.workspaceOf(b.optStr("workspace"))
         val name = b.str("name")
         val args = b["args"] ?: JsonObject(emptyMap())
         val timeout = b.optLong("timeout")

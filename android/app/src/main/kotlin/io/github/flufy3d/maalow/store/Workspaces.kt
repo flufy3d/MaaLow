@@ -50,7 +50,7 @@ class Workspaces(val root: File) {
         return f
     }
 
-    fun config(ws: String): JsonObject = readJsonObject(File(existing(ws), CONFIG)) ?: JsonObject(emptyMap())
+    private fun config(ws: String): JsonObject = readJsonObject(File(existing(ws), CONFIG)) ?: JsonObject(emptyMap())
 
     fun guards(ws: String): List<String> = config(ws).optArray("guards")?.map { it.jsonPrimitive.content } ?: emptyList()
 

@@ -133,7 +133,6 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        instance = this
         engine = Engine(this)
         workspaces = Workspaces(engine.workspaces)
         events = Events(File(storeDir, "events.jsonl"))
@@ -153,7 +152,5 @@ class App : Application() {
 
     companion object {
         const val PORT = 8765
-        lateinit var instance: App
-            private set
     }
 }

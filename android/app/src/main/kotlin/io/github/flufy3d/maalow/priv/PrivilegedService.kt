@@ -44,8 +44,6 @@ class PrivilegedService(private val context: Context) : IPrivileged.Stub() {
         exitProcess(0)
     }
 
-    override fun pid(): Int = Process.myPid()
-
     override fun mirror(surface: Surface, width: Int, height: Int, name: String): Int {
         // Hidden static API used by shell-uid tools (e.g. scrcpy): a virtual display mirroring an existing one.
         val create = DisplayManager::class.java.getMethod(

@@ -17,13 +17,11 @@ object Maa {
 
     external fun version(): String
     external fun setLogDir(dir: String): Boolean
-    external fun setDebugMode(on: Boolean): Boolean
 
     external fun resourceCreate(): Long
     external fun resourceDestroy(h: Long)
     /** kind: 0 bundle, 1 pipeline, 2 image, 3 ocr model; blocks until loaded. */
     external fun resourceLoad(h: Long, kind: Int, path: String): Boolean
-    external fun resourceNodeList(h: Long): String
     /** Register a skill as custom action "name" and custom recognition "name.recognize", served by [custom]. */
     external fun resourceRegisterCustom(h: Long, name: String): Boolean
     external fun resourceUnregisterCustom(h: Long, name: String)

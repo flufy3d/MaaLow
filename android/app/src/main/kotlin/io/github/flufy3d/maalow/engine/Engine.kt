@@ -235,13 +235,13 @@ class Engine(private val context: Context) {
     // ---- frames
 
     /** JPEG of the latest frame; returns (seq, bytes). Does not wait for the engine thread. */
-    fun snapshotJpeg(quality: Int = 85): Pair<Long, ByteArray> {
+    fun snapshotJpeg(): Pair<Long, ByteArray> {
         requireRunning()
         val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val seq = Bridge.nativeSnapshot(bmp, 2000)
         check(seq > 0) { "no frame available" }
         val out = ByteArrayOutputStream(256 * 1024)
-        bmp.compress(Bitmap.CompressFormat.JPEG, quality, out)
+        bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
         bmp.recycle()
         return seq to out.toByteArray()
     }
@@ -327,18 +327,18 @@ class Engine(private val context: Context) {
         return Loaded(name, stamp, res, tasker).also { loaded = it }
     }
 
-    private fun override(node: String, once: Boolean, stop: Boolean) = buildJsonObject {
+    private fun override(node: String, once: Boolean, stop: Boolean = false) = buildJsonObject {
         put(node, buildJsonObject {
             if (once) put("timeout", 0)
             if (stop) put("next", buildJsonArray { })
         })
     }.toString()
 
-    /** Run a pipeline node on the device. once: check the current screen only; stop: don't follow next. */
-    suspend fun run(workspace: String, node: String, once: Boolean, stop: Boolean = false): JsonObject = onEngine {
+    /** Run a pipeline node on the device. once: check the current screen only. */
+    suspend fun run(workspace: String, node: String, once: Boolean): JsonObject = onEngine {
         requireRunning()
         val l = load(workspace)
-        summarize(Maa.taskerRun(l.tasker, node, override(node, once, stop)))
+        summarize(Maa.taskerRun(l.tasker, node, override(node, once)))
     }
 
     /**

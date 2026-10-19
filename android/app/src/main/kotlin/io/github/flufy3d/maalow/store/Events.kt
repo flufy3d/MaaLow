@@ -50,7 +50,7 @@ class Events(private val file: File) {
         event
     }
 
-    fun since(id: Long, type: String? = null): List<JsonObject> = synchronized(this) {
+    private fun since(id: Long, type: String? = null): List<JsonObject> = synchronized(this) {
         recent.filter { it["id"]!!.jsonPrimitive.long > id && (type == null || it["type"]!!.jsonPrimitive.content == type) }
     }
 

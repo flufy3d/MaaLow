@@ -37,8 +37,6 @@ import kotlinx.serialization.json.put
  *     GET  /api/v1/events?since=ID&timeout=S&type=T   long poll
  */
 fun Route.autoRoutes(app: App) {
-    fun workspaceOf(w: String?): String = w ?: app.defaultWorkspace() ?: error("no workspace")
-
     fun guards(w: String): JsonObject = buildJsonObject {
         val s = app.settings()
         put("workspace", w)
@@ -53,11 +51,11 @@ fun Route.autoRoutes(app: App) {
         put("last", app.guards.last)
     }
 
-    get("/api/v1/guards") { call.respondJson(guards(workspaceOf(call.query("workspace")))) }
+    get("/api/v1/guards") { call.respondJson(guards(app.workspaceOf(call.query("workspace")))) }
 
     put("/api/v1/guards") {
         val b = call.body()
-        val w = workspaceOf(b.optStr("workspace"))
+        val w = app.workspaceOf(b.optStr("workspace"))
         b.optArray("guards")?.let { list -> app.workspaces.setGuards(w, list.map { it.jsonPrimitive.content }) }
         val extra = listOf(Workspaces.GUARDS_OFF to "off", Workspaces.GUARDS_ORDER to "order")
             .mapNotNull { (key, field) -> b.optArray(field)?.let { list -> key to list.map { it.jsonPrimitive.content } } }.toMap()

@@ -42,8 +42,6 @@ object ShizukuLink {
         .debuggable(BuildConfig.DEBUG)
         .version(BuildConfig.VERSION_CODE)
 
-    @Volatile var service: IPrivileged? = null
-        private set
     private var connection: ServiceConnection? = null
 
     /** Bind the UserService (starting it as shell uid if needed). */
@@ -53,14 +51,11 @@ object ShizukuLink {
                 override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                     if (binder == null || !binder.pingBinder()) return
                     val s = IPrivileged.Stub.asInterface(binder)
-                    service = s
-                    binder.linkToDeath({ service = null; onDied() }, 0)
+                    binder.linkToDeath({ onDied() }, 0)
                     if (cont.isActive) cont.resume(s)
                 }
 
-                override fun onServiceDisconnected(name: ComponentName?) {
-                    service = null
-                }
+                override fun onServiceDisconnected(name: ComponentName?) = Unit
             }
             connection = conn
             Shizuku.bindUserService(args, conn)
@@ -70,6 +65,5 @@ object ShizukuLink {
     fun unbind() {
         connection?.let { runCatching { Shizuku.unbindUserService(args, it, true) } } // throws once Shizuku is gone
         connection = null
-        service = null
     }
 }

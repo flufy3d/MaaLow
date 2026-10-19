@@ -35,7 +35,7 @@ import java.io.File
 /**
  * Screen recordings for replay teaching (workspace recordings/<id>/, see Recordings):
  *
- *     POST   /api/v1/record/start {workspace?, name?, note?, bitrate?}   start recording (one at a time, 3 min max)
+ *     POST   /api/v1/record/start {workspace?, name?, note?, bitrate?}   start recording (one at a time, 20 min max)
  *     POST   /api/v1/record/stop                     stop; returns the saved recording's meta
  *     GET    /api/v1/record                          {recording, id, frames, elapsed_ms, remaining_ms, limit_ms, saving?}
  *     GET    /api/v1/recordings?workspace=W          newest first
@@ -52,11 +52,10 @@ import java.io.File
  */
 fun Route.recordRoutes(app: App) {
     val rec = app.recordings
-    fun workspaceOf(w: String?): String = w ?: app.defaultWorkspace() ?: error("no workspace")
 
     post("/api/v1/record/start") {
         val b = call.body()
-        val ws = workspaceOf(b.optStr("workspace"))
+        val ws = app.workspaceOf(b.optStr("workspace"))
         call.respondJson(app.recorder.start(ws, b.optStr("name"), b.optStr("note"), b.optInt("bitrate")))
     }
 
@@ -65,7 +64,7 @@ fun Route.recordRoutes(app: App) {
     get("/api/v1/record") { call.respondJson(app.recorder.state()) }
 
     get("/api/v1/recordings") {
-        val ws = workspaceOf(call.query("workspace"))
+        val ws = app.workspaceOf(call.query("workspace"))
         call.respondJson(withContext(Dispatchers.IO) { rec.list(ws) })
     }
 
@@ -148,7 +147,5 @@ fun Route.recordRoutes(app: App) {
         call.respondJson(saved.body, if (saved.ok) HttpStatusCode.OK else HttpStatusCode.Conflict)
     }
 }
-
-private fun RoutingCall.ws(): String = parameters["ws"]!!
 
 private fun RoutingCall.id(): String = parameters["id"]!!

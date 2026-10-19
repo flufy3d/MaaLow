@@ -13,7 +13,6 @@ import io.ktor.http.ContentType
 import io.ktor.server.response.header
 import io.ktor.server.response.respondBytes
 import io.ktor.server.routing.Route
-import io.ktor.server.routing.RoutingCall
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
@@ -173,5 +172,3 @@ fun Route.workspaceRoutes(app: App) {
 }
 
 private const val ICON_PX = 96
-
-private fun RoutingCall.ws(): String = parameters["ws"]!!

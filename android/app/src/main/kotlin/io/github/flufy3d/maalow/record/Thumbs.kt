@@ -3,7 +3,6 @@ package io.github.flufy3d.maalow.record
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import io.github.flufy3d.maalow.store.writeAtomic
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
@@ -51,8 +50,6 @@ internal class Thumbs(private val dir: File, val every: Int, val width: Int, val
         }
         io?.execute(write) ?: write.run()
     }
-
-    fun json(): JsonObject = layout(every, width, height, count)
 
     companion object {
         const val COLS = 10
