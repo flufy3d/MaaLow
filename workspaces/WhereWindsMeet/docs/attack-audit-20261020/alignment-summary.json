@@ -1,0 +1,62 @@
+{
+  "737": {
+    "method": "existing seff; nearest logged-hit to offline HP drop cross-check",
+    "seff_epoch_ms": 1792461937446.0,
+    "started_epoch_ms": 1792461937346,
+    "seff_minus_started_frames": 3.0,
+    "median_abs_residual_frames": 1.455000000000041,
+    "p90_abs_residual_frames": 29.527000000000037,
+    "max_abs_residual_frames": 59.06999999999971,
+    "absolute_clock_error_bound_frames": null,
+    "contact_latency_error_bound_frames": null,
+    "warning": "Residuals include detector/polling latency and ambiguous nearest matches; not a confidence interval."
+  },
+  "738": {
+    "method": "existing seff; nearest logged-hit to offline HP drop cross-check",
+    "seff_epoch_ms": 1792462860153.0,
+    "started_epoch_ms": 1792462860053,
+    "seff_minus_started_frames": 3.0,
+    "median_abs_residual_frames": 0.7449999999998909,
+    "p90_abs_residual_frames": 2.468999999999869,
+    "max_abs_residual_frames": 13.600000000000364,
+    "absolute_clock_error_bound_frames": null,
+    "contact_latency_error_bound_frames": null,
+    "warning": "Residuals include detector/polling latency and ambiguous nearest matches; not a confidence interval."
+  },
+  "745": {
+    "method": "existing seff; nearest logged-hit to offline HP drop cross-check",
+    "seff_epoch_ms": 1792486894233.6667,
+    "started_epoch_ms": 1792486894067,
+    "seff_minus_started_frames": 5.00000244140625,
+    "median_abs_residual_frames": 0.5700024414063591,
+    "p90_abs_residual_frames": 3.2300024414062136,
+    "max_abs_residual_frames": 13.460002441406687,
+    "absolute_clock_error_bound_frames": null,
+    "contact_latency_error_bound_frames": null,
+    "warning": "Residuals include detector/polling latency and ambiguous nearest matches; not a confidence interval."
+  },
+  "733": {
+    "method": "existing seff; nearest logged-hit to offline HP drop cross-check",
+    "seff_epoch_ms": 1792456135884.3333,
+    "started_epoch_ms": 1792456135751,
+    "seff_minus_started_frames": 3.99999755859375,
+    "median_abs_residual_frames": 0.740002441406233,
+    "p90_abs_residual_frames": 2.2180019531249857,
+    "max_abs_residual_frames": 10.229997558593823,
+    "absolute_clock_error_bound_frames": null,
+    "contact_latency_error_bound_frames": null,
+    "warning": "Residuals include detector/polling latency and ambiguous nearest matches; not a confidence interval."
+  },
+  "734": {
+    "method": "existing seff; nearest logged-hit to offline HP drop cross-check",
+    "seff_epoch_ms": 1792458372495.3333,
+    "started_epoch_ms": 1792458372262,
+    "seff_minus_started_frames": 6.99999755859375,
+    "median_abs_residual_frames": 0.7250024414065592,
+    "p90_abs_residual_frames": 2.2670024414060674,
+    "max_abs_residual_frames": 5.18999755859295,
+    "absolute_clock_error_bound_frames": null,
+    "contact_latency_error_bound_frames": null,
+    "warning": "Residuals include detector/polling latency and ambiguous nearest matches; not a confidence interval."
+  }
+}

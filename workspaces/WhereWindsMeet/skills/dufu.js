@@ -190,10 +190,12 @@ const BRANCH_LATE_MS = 400; // an unreleased branch this stale: drop
 //   curtain; non-null twice in a row -> enter curtain mode (the tell head only caught 1 of 252's 3 episodes).
 // curtainDark: the tell head's dark class fires at the curtain's black cover onset (252: p 0.86-0.95 at frames
 //   2537/4859/6990, the coach's 3 episodes); >= 2 consecutive frames of arg 6 p >= 0.7 -> enter curtain mode.
-// repress: a pressed fut item whose fresh contact estimate moves >= repressGap frames later is re-armed once (the
+// repress: a pressed fut item whose fresh contact estimate moves >= repressGap frames later is re-armed (the
 //   横刀 long wind-ups: c reported ~37 f early -> the i-frame/parry window expired before the real contact), and a
 //   pressed item that is about to expire as a miss is re-armed when the fresh fut still shows a contact within
-//   repressLook frames.
+//   repressLook frames. repressMax bounds the total re-arms per item (the old one-shot `repressed` flag let a stale
+//   pressed k0 occupy the slot for the rest of the swing: 726 t7251 saw S1 .86 / def1 dodge / tell flare_other while
+//   the pressed parry still held k0, expired at t7255 and the replacement dodge went out at t7263, after the hit).
 // closeIn: keep the boss in melee range: forward bursts whenever no press is imminent (never during curtain /
 //   dodge / stagger), plus the hold bundle (keepPlanOnHit + staggerHold + posthit 1 narrow) and the v6 gap-head
 //   pre-schedule, so each chain segment gets its own c-14 press (segment gaps >= 8 f > the 6.6 f parry CD).
@@ -202,6 +204,7 @@ const BRANCH_LATE_MS = 400; // an unreleased branch this stale: drop
 const REPRESS_GAP_FRAMES = 18;
 const REPRESS_DELAY_FRAMES = 12;
 const REPRESS_LOOK_FRAMES = 25;
+const REPRESS_MAX = 2; // total re-arms of one item (each still needs REPRESS_GAP_FRAMES and parryCd)
 const CI_CYCLE_MS = 1600, CI_ON_MS = 500;
 const QI_LIGHT_MS = 420, QI_EXEC_WAIT_MS = 4000, QI_EXEC_EVERY = 3;
 /** @type {Point} */ const LIGHT = [945, 592];
@@ -260,6 +263,17 @@ const FLARE_HOLD_F = 30, FLARE_HOLD_GAP_F = 6;
 //   dodge is off (no in-gap exemption: the timed dodge goes anyway). First curtain hits after the entry: median ~36 f
 //   but IQR -9..+12 around the beat, so the entry phase is coarse: offline only ~0.06/min of 0.39/min unsynced.
 const FLARE_SPLIT_F = 3, FLARE_SPLIT_TH = 0.6, FLARE_FAST_ANCHOR = 6, CURTAIN_BEAT_F = 36;
+// v12 flareThreat (default OFF, 2026-10-19): one request per 金光 threat instead of an onset-anchored press that the
+// dodge / parry CD can swallow. Batch 26 (669-688) showed the anchored dodge pressed at a median 6 f before the
+// contact, and 75/149 flare hits had their correction dropped by "dodge cd"; a dodge press in 0-4 f still hit 92%.
+// Parry presses in the same batch have a clear window (press lead 12-15 f: 95% ok, 8-12 f: 86%) while the dodge has
+// none, so the request defaults to parry for flare_other / slam and keeps the dodge for flare_grab (parry there is
+// ~50%). The request keeps its slot through a script CD until the contact's deadline (noDropUntil), is cancelled on
+// the resolving hit/ok or the episode's end, and is updated (not duplicated) by later tell reports / fut estimates.
+const FLARE_THREAT_PRIOR = { other: 17, grab: 9, slam: 15 }; // contact after the first TELL fire (tell lags onset 3-4 f)
+const FLARE_THREAT_IMG_PRIOR = { other: 20, grab: 13, slam: 19 }; // ... after the image onset (batch 26: other p50 20)
+const FLARE_THREAT_LATE_F = 1; // a request may wait for a CD until this close to the contact
+const FLARE_THREAT_END_F = 4; // ... and is dropped this long after it (a hit / ok cancels it sooner)
 // v8 hit chain (data/tmp/dufu_breakthrough/chain.md §4, chain_new.py; args all default OFF). Lit-axis facts (263-411):
 //   the device sees a blow at H+7 (median) and then pressed nothing for 500 ms (H+22); the real stun is ~H+8 on a
 //   light blow (< 4%), ~H+12-15 on a mid one, ~H+18-20 on a heavy one. A 卸势 after a whiffed (early) one is locked
@@ -549,7 +563,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut, land: number | null}} Pred */
-/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, noCd?: boolean, relocked?: boolean}} PlanItem */
+/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, rearms?: number, noCd?: boolean, relocked?: boolean, threat?: boolean, ep?: number, noDropUntil?: number, waited?: number}} PlanItem */
 
 /**
  * @param {{observe?: boolean, ms?: number, potions?: number, model?: string, backModel?: string, seqRing?: boolean, parry?: Point,
@@ -561,12 +575,13 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   potionHp?: number, potionHoldMs?: number, potionSafeFrames?: number, deadGrey?: boolean, s1Hi?: number,
  *   lockOn?: boolean, staggerHold?: boolean, holdMinLead?: number, presched?: boolean, preschedN?: number,
  *   comboV6?: boolean, keepPlanOnHit?: boolean, posthit?: number, posthitNarrow?: boolean,
- *   tellAnchor?: boolean, curtainImg?: boolean, curtainDark?: boolean, repress?: boolean, repressGap?: number,
+ *   tellAnchor?: boolean, curtainImg?: boolean, curtainDark?: boolean, repress?: boolean, repressGap?: number, repressMax?: number,
  *   closeIn?: boolean, qiAttack?: boolean, qiExecWait?: number, execThreshold?: number,
- *   flareMode?: string, flareAnchor?: Record<string, number>, futDodgeLead?: number, flareGrabDodge?: boolean,
+ *   flareMode?: string, flareAnchor?: Record<string, number>, futDodgeLead?: number, flareGrabDodge?: boolean, grabParry?: boolean,
  *   curtainTimed?: boolean, sweepLead?: number, sweepPeriod?: number, curtainKeepParry?: boolean,
  *   flare2?: boolean, failEscape?: boolean, flareHoldFut?: boolean,
  *   flareSplit?: boolean, flareSplitTh?: number, flareFastAnchor?: number, curtainBeatEntry?: boolean, curtainBeatF?: number,
+ *   flareThreat?: boolean, flareThreatKind?: string, flareThreatGrabDodge?: boolean, flareThreatParryLead?: number, flareThreatDodgeLead?: number,
  *   offShadow?: boolean, offQuietTh?: number, offQuietBins?: number, offQuietFrames?: number, offOkFast?: boolean,
  *   offComboVeto?: boolean, offGuardMs?: number, offAbortMs?: number, offAfterHitMs?: number, offAfterDodgeMs?: number,
  *   offAfterTellMs?: number, offHpMin?: number, offStrongTh?: number, offStrongBins?: number, offContact?: number,
@@ -699,6 +714,7 @@ export default function (args = {}) {
     const curtainImg = args.curtainImg ?? false; // v7 A2: image-rule curtain fallback (probe when not in curtain)
     const curtainDark = args.curtainDark ?? false; // v7 A2: tell dark (arg 6) at the cover onset enters curtain mode
     const repress = args.repress ?? false; // v7 A3: re-arm a pressed item when the estimated contact moves later
+    const repressMax = args.repressMax ?? REPRESS_MAX; // total re-arms per item (0 = none, default 2)
     const closeIn = args.closeIn ?? false; // v7 B: keep melee range + chain bundle (hold/insure/presched v6)
     const qiAttack = args.qiAttack ?? false; // v7 C: light attacks + 处决 in the 气竭 (qi == 0) window
     const qiExecWait = args.qiExecWait ?? QI_EXEC_WAIT_MS; // ms of light attacks before the 处决 tap
@@ -717,6 +733,9 @@ export default function (args = {}) {
     // into parries while a flare is live (grabs keep the v7 anchor dodge while flareGrabDodge)
     const flareMode = args.flareMode === "late" || args.flareMode === "parry" ? args.flareMode : "dodge";
     const flareGrabDodge = args.flareGrabDodge ?? true; // parry mode: grab tells still dodge (anchor 4)
+    const grabParry = args.grabParry ?? false; // EXPERIMENTAL, default off: 742-744 pressed 23 live-grab labels, only 1/14 contacts ok; the labels include normal swings, so do not enable without a better grab classifier.
+    let grabParryFor = -1; // the flare episode (onset ms) that already got its grabParry item
+    const grabS = { plans: 0, replacedDodges: 0 };
     /** @type {Record<string, number>} the anchor table of the mode (frames after the episode's first tell fire) */
     const anchorTab = { ...(flareMode === "late" ? ANCHOR_LATE : flareMode === "parry" ? ANCHOR_PARRY : ANCHOR_FRAMES), ...(args.flareAnchor ?? {}) };
     // fut-head dodge items: own target show lead (default = the parry's, i.e. the v7 issue lead; late mode 2 f)
@@ -734,6 +753,11 @@ export default function (args = {}) {
     const flareSplit = args.flareSplit ?? false; // fast flare_other (fut1 4-15 f mass) -> hold off + early anchor
     const flareSplitTh = args.flareSplitTh ?? FLARE_SPLIT_TH;
     const flareFastAnchor = args.flareFastAnchor ?? FLARE_FAST_ANCHOR; // frames after the first report
+    const flareThreat = args.flareThreat ?? false; // v12: one pending request per 金光 threat (@see FLARE_THREAT_PRIOR)
+    const flareThreatKind = args.flareThreatKind === "dodge" ? "dodge" : "parry"; // parry for other / slam by default
+    const flareThreatGrabDodge = args.flareThreatGrabDodge ?? true; // grab keeps the dodge (parry ~50% there)
+    const flareThreatParryLead = args.flareThreatParryLead ?? issueLead / FRAME_MS; // press lead, frames
+    const flareThreatDodgeLead = args.flareThreatDodgeLead ?? 3; // dodge show lead, frames
     const curtainBeatEntry = (args.curtainBeatEntry ?? false) && curtainTimed; // sweep beat from the curtain entry
     const curtainBeatF = args.curtainBeatF ?? CURTAIN_BEAT_F; // entry -> first sweep, frames
     // v8 hit chain (@see HIT_ESC_MAX_DROP): all default off
@@ -969,6 +993,11 @@ export default function (args = {}) {
     let staggerUntil = 0, potionHoldUntil = 0;
     /** @type {number | null} */
     let hpNow = null;
+    // The confirmed injury baseline: `hpNow` is the latest read (display, potion), `hpBase` only follows a drop or an
+    // explained heal. A low-HP grey-bar overread (21% on a 17% red bar) raised `hpNow`, and the next 17% read looked
+    // like a fresh blow (737: seven hits for one drop). @see feedback
+    /** @type {number | null} */
+    let hpBase = null;
     let qiNow = -1, litPx = 0, bossNow = 0, meanNow = -1, dark3 = 0, flare = 0;
     /** @type {number[]} */
     const meanRing = [];
@@ -1074,6 +1103,129 @@ export default function (args = {}) {
             fsS.moved++;
         }
     }
+    // v12 flareThreat (@see FLARE_THREAT_PRIOR): one request per 金光 threat, kept through a script CD until the
+    // contact's deadline. It is independent of flareSplit / flareMode and default off.
+    let ftEp = 0, ftLastOnset = 0, ftLabel = "", ftLastLog = 0;
+    /** @type {PlanItem | null} */
+    let ftItem = null;
+    const ftS = { armed: 0, updated: 0, waited: 0, pressed: 0, satisfied: 0, cancelled: 0, expired: 0,
+                  byKind: /** @type {Record<string, number>} */ ({}), byLabel: /** @type {Record<string, number>} */ ({}),
+                  waitBy: /** @type {Record<string, number>} */ ({}) };
+    /** @param {string} why */
+    function ftCancel(why) {
+        if (!ftItem) return;
+        if (plan.includes(ftItem) && !ftItem.pressedAt) dropItem(ftItem, `threat ${why}`);
+        ftS.cancelled++;
+        mark("flarethreat", `cancel (${why}) ${ftLabel} ep+${Math.round((Date.now() - ftEp) / FRAME_MS)}f`);
+        ftItem = null;
+        ftEp = 0;
+        ftLabel = "";
+    }
+    /**
+     * Arm / update the request for one image-flare episode. @param {number} now @param {number} onset
+     * @param {string} label flare_other | flare_grab | flare_slam @param {string} why
+     */
+    function ftArm(now, onset, label, why) {
+        if (!onset) onset = now;
+        // a new episode replaces the old request (a fresh label, or the old one already past its deadline)
+        if (ftItem && Math.abs(onset - ftEp) > 1) ftCancel("new episode");
+        if (ftItem && ftItem.pressedAt) return; // one press per threat; the hit / ok resolves it
+        if (ftItem && !plan.includes(ftItem)) ftItem = null;
+        // the same image episode after its request was pressed/cancelled: no second request (the 400 ms image rule)
+        if (!ftItem && ftLastOnset && Math.abs(onset - ftLastOnset) <= 20 * FRAME_MS && now - ftLastOnset < 40 * FRAME_MS) return;
+        const tab = why === "color" ? FLARE_THREAT_IMG_PRIOR : FLARE_THREAT_PRIOR;
+        const prior = label === "flare_grab" ? tab.grab : label === "flare_slam" ? tab.slam : tab.other;
+        let c = onset + prior * FRAME_MS;
+        const st = pred ? futStats(pred.fut[0]) : null;
+        if (st && st.none < 0.65 && st.sum > 0.01 && st.exp >= 4 && st.exp <= 35) {
+            const c2 = now + st.exp * FRAME_MS;
+            if (c2 >= c - 1 * FRAME_MS && c2 <= c + 6 * FRAME_MS) c = c2; // 710: the head moved the contact EARLIER by 5 f and the parry missed; only later refinements are allowed
+        }
+        if (c - now < LATE_FRAMES * FRAME_MS) {
+            mark("flarethreat", `skip (late ${Math.round((c - now) / FRAME_MS)}f) ${label} ${why}`);
+            return;
+        }
+        const kind = label === "flare_grab" && flareThreatGrabDodge ? "dodge" : flareThreatKind;
+        const leadF = kind === "parry" ? flareThreatParryLead : flareThreatDodgeLead;
+        const at = Math.max(now, c - leadF * FRAME_MS);
+        if (ftItem) { // same episode: move the request, do not duplicate it
+            ftItem.cMs = c;
+            ftItem.atMs = at;
+            ftItem.untilMs = c + FLARE_THREAT_END_F * FRAME_MS;
+            ftItem.noDropUntil = c - FLARE_THREAT_LATE_F * FRAME_MS;
+            ftS.updated++;
+            if (now - ftLastLog > 200) {
+                ftLastLog = now;
+                mark("flarethreat", `update ${label} c+${Math.round((c - now) / FRAME_MS)}f at+${Math.round((at - now) / FRAME_MS)}f ${why}`);
+            }
+            return;
+        }
+        // an existing plan press on this contact: if it already sits in the parry window, the threat is satisfied
+        // (one press per threat); otherwise the threat owns the slot and drops the unpressed items.
+        for (const it of [...plan]) {
+            if (it.threat || Math.abs(it.cMs - c) > 12 * FRAME_MS || it.kind !== "parry") continue;
+            if (it.pressedAt) {
+                const lead = (c - it.pressedAt) / FRAME_MS;
+                if (Math.abs(lead - flareThreatParryLead) <= 4) {
+                    ftS.satisfied++;
+                    mark("flarethreat", `satisfied by an existing parry at lead ${lead.toFixed(1)}f ${label}`);
+                    return;
+                }
+            } else {
+                dropItem(it, "threat owns the slot");
+            }
+        }
+        // the threat owns this contact's dodge slot too
+        for (const it of [...plan]) {
+            if (it.pressedAt || it.threat || it.kind !== "dodge") continue;
+            if (Math.abs(it.cMs - c) <= 12 * FRAME_MS) dropItem(it, "threat owns the slot");
+        }
+        ftEp = onset;
+        ftLastOnset = onset;
+        ftLabel = label;
+        ftItem = addItem({ kind, k: -1, src: "tell", cMs: c, atMs: at, untilMs: c + FLARE_THREAT_END_F * FRAME_MS,
+                           threat: true, ep: onset, noDropUntil: c - FLARE_THREAT_LATE_F * FRAME_MS,
+                           why: `threat ${label}${why ? ` ${why}` : ""}` });
+        ftS.armed++;
+        ftS.byKind[kind] = (ftS.byKind[kind] ?? 0) + 1;
+        ftS.byLabel[label] = (ftS.byLabel[label] ?? 0) + 1;
+        mark("flarethreat", `new ${label} -> ${kind} c+${Math.round((c - now) / FRAME_MS)}f at+${Math.round((at - now) / FRAME_MS)}f ep+${Math.round((now - onset) / FRAME_MS)}f ${why}`);
+    }
+    /** Per frame: refresh the request from the fresh fut estimate, cancel it on a resolving hit / ok or expiry. @param {number} now */
+    function ftTick(now) {
+        if (!ftItem) return;
+        if (!plan.includes(ftItem)) { ftItem = null; ftEp = 0; ftLabel = ""; return; }
+        if (ftItem.pressedAt) {
+            if (now > ftItem.untilMs) { ftItem = null; ftEp = 0; ftLabel = ""; }
+            return;
+        }
+        if (now > ftItem.untilMs) {
+            ftS.expired++;
+            mark("flarethreat", `expired ${ftLabel} c+${Math.round((ftItem.cMs - now) / FRAME_MS)}f`);
+            dropItem(ftItem, "threat expired");
+            ftItem = null; ftEp = 0; ftLabel = "";
+            return;
+        }
+        if ((lastHitAt && now - lastHitAt < 100 && lastHitAt >= ftItem.cMs - 4 * FRAME_MS)
+            || (lastOkAt && now - lastOkAt < 100 && lastOkAt >= ftItem.cMs - 4 * FRAME_MS)) {
+            ftCancel("resolved");
+            return;
+        }
+        if (now < ftItem.cMs - 4 * FRAME_MS && pred) {
+            const st = futStats(pred.fut[0]);
+            if (st.none < 0.65 && st.sum > 0.01 && st.exp >= 4 && st.exp <= 35) {
+                const c2 = now + st.exp * FRAME_MS;
+                if (c2 > ftItem.cMs + 0.5 * FRAME_MS && c2 - ftItem.cMs <= 5 * FRAME_MS) { // later only (710: early moves miss)
+                    ftItem.cMs = c2;
+                    ftItem.atMs = Math.max(now, c2 - (ftItem.kind === "parry" ? flareThreatParryLead : flareThreatDodgeLead) * FRAME_MS);
+                    ftItem.untilMs = c2 + FLARE_THREAT_END_F * FRAME_MS;
+                    ftItem.noDropUntil = c2 - FLARE_THREAT_LATE_F * FRAME_MS;
+                    ftS.updated++;
+                }
+            }
+        }
+    }
+
     /** @type {Pred | null} */
     let pred = null;
     /** @type {PlanItem[]} */
@@ -1207,6 +1359,24 @@ export default function (args = {}) {
         plan.splice(i, 1);
         mark("plan", `- ${it.kind} k${it.k} ${why}`);
     }
+    /**
+     * Re-arm a pressed fut item for a later contact (same slot, fresh action). A stale pressed item otherwise keeps
+     * k0 until it expires, so the new contact gets no plan at all (@see REPRESS_MAX).
+     * @param {PlanItem} it @param {PlanItem["kind"]} kind @param {number} cMs @param {string} why
+     */
+    function rearmItem(it, kind, cMs, why) {
+        it.rearms = (it.rearms ?? 0) + 1;
+        it.repressed = true;
+        it.pressedAt = 0;
+        it.kind = kind === "avoid" && !inCurtain ? "parry" : kind;
+        it.cMs = cMs;
+        it.atMs = cMs - leadOf(it.kind);
+        it.untilMs = cMs + missGraceMs;
+        it.relocked = false;
+        it.held = false;
+        rerepresses++;
+        mark("re-press", `k${it.k} ${it.kind} ${why} (#${it.rearms})`);
+    }
     /** @param {string} why */
     function clearPlan(why) {
         if (!plan.length) return;
@@ -1254,6 +1424,10 @@ export default function (args = {}) {
     /** @param {number} now @param {number} k */
     function syncK(now, k) {
         if (plan.some((x) => x.k === k && x.src === "combo")) return; // a pre-scheduled template item owns the slot
+        if (flareThreat && ftItem && !ftItem.pressedAt) { // v12: the pending 金光 request owns this contact's slot
+            const st0 = pred ? futStats(pred.fut[k]) : null;
+            if (st0 && st0.none < 0.65 && st0.sum > 0.01 && Math.abs(now + st0.exp * FRAME_MS - ftItem.cMs) <= 12 * FRAME_MS) return;
+        }
         // v7 A3: a pressed item whose believed contact has passed without any ok/hit feedback, while the fresh fut
         // still points at a real contact, is re-armed once. Bypasses the S1 trigger on purpose: after an early press
         // the head is quiet until the arm's real contact approaches (r241 press@196 c=210: S1 0.04-0.18 until t225,
@@ -1264,27 +1438,16 @@ export default function (args = {}) {
             && lastHitAt < main0.pressedAt - FRAME_MS && lastOkAt < main0.pressedAt - FRAME_MS) {
             const st2 = futStats(pred.fut[k]);
             if (st2.none < 0.65 && st2.sum > 0.01 && st2.exp >= LATE_FRAMES && st2.exp <= 45) {
-                main0.repressed = true;
-                main0.pressedAt = 0;
-                main0.kind = defAction(pred.def[k]) ?? /** @type {"parry"} */ ("parry");
-                if (main0.kind === "avoid" && !inCurtain) main0.kind = "parry";
-                main0.cMs = now + st2.exp * FRAME_MS;
-                main0.atMs = main0.cMs - leadOf(main0.kind);
-                main0.untilMs = main0.cMs + missGraceMs;
-                rerepresses++;
-                mark("re-press", `k${k} ${main0.kind} late fill c+${Math.round(st2.exp)}f`);
+                const kind = defAction(pred.def[k]) ?? /** @type {"parry"} */ ("parry");
+                rearmItem(main0, kind, now + st2.exp * FRAME_MS, `late fill c+${Math.round(st2.exp)}f`);
                 return;
             }
             if (st2.sum > 0.05) {
                 // the head is unsure (none >= 0.65) but the contact is still coming (252 f4204: press 37 f early,
                 // sum 0.16-0.22 / none 0.80-0.89 while the real contact was 4241): a fixed short-delay second tap
-                main0.repressed = true;
-                main0.pressedAt = 0;
-                main0.atMs = now + REPRESS_DELAY_FRAMES * FRAME_MS;
-                main0.cMs = main0.atMs + leadOf(main0.kind);
-                main0.untilMs = main0.atMs + 40 * FRAME_MS;
-                rerepresses++;
-                mark("re-press", `k${k} ${main0.kind} second tap +${REPRESS_DELAY_FRAMES}f`);
+                rearmItem(main0, main0.kind,
+                          now + (REPRESS_DELAY_FRAMES + leadOf(main0.kind) / FRAME_MS) * FRAME_MS,
+                          `second tap +${REPRESS_DELAY_FRAMES}f`);
                 return;
             }
         }
@@ -1325,18 +1488,16 @@ export default function (args = {}) {
             main.cMs = t.cMs;
             main.atMs = t.cMs - leadOf(t.kind);
             main.untilMs = t.cMs + missGraceMs;
-        } else if (repress && main.pressedAt && !main.repressed && t.cMs - main.cMs > REVISE_MOVE_MS
+        } else if (repress && main.pressedAt && (main.rearms ?? 0) < repressMax
+                   && t.cMs - main.cMs > REVISE_MOVE_MS
                    && t.cMs - main.pressedAt >= repressGapMs && t.cMs - now >= LATE_FRAMES * FRAME_MS
                    && now - main.pressedAt >= parryCd) {
-            // v7 A3: the contact moved later after the press (long wind-up): re-arm once and press again at its window
+            // v7 A3: the contact moved later after the press (long wind-up): re-arm and press again at its window.
+            // Keep the original kind here (the old code did): a def-head dodge flip is only taken when the old
+            // believed contact has passed (@see the branch above), so a normal parry is not turned into a dodge
+            // by a transient def1 vote.
             const moved = t.cMs - main.cMs;
-            main.repressed = true;
-            main.pressedAt = 0;
-            main.cMs = t.cMs;
-            main.atMs = t.cMs - leadOf(main.kind);
-            main.untilMs = t.cMs + missGraceMs;
-            rerepresses++;
-            mark("re-press", `k${k} ${main.kind} contact moved +${Math.round(moved / FRAME_MS)}f`);
+            rearmItem(main, main.kind, t.cMs, `contact moved +${Math.round(moved / FRAME_MS)}f`);
         }
         if (t.branchMs) {
             if (!br) addItem({ kind: t.kind, k, src: "fut", branch: true, cMs: t.branchMs, atMs: t.branchMs - leadOf(t.kind), untilMs: t.branchMs + missGraceMs, t1Ms: t.cMs, why: "branch (bimodal)" });
@@ -1374,14 +1535,14 @@ export default function (args = {}) {
             if (spinGuard && t.p >= tellTh) spinFlareSeen(now, t.arg); // v11 spinGuard: the episode's onset + label (@see spinArm)
             if (now - flareLastFireAt > 20 * FRAME_MS || t.arg !== flareLastArg) {
                 flareFirstAt = now;
-                if (flareHoldFut && t.arg === 1) {
+                if (flareHoldFut && !flareThreat && t.arg === 1) {
                     if (foFrom) foEnd("new episode");
                     foFrom = now;
                     foItem = null;
                     foS.holds++;
                     mark("flarehold", `start (flare_other first report p${Math.round(t.p * 100)})`);
                 }
-                if (flareSplit) {
+                if (flareSplit && !flareThreat) {
                     fsFrom = t.arg === 1 ? now : 0; // v8 flareSplit: a new episode
                     fsFast = null;
                     fsItem = null;
@@ -1392,6 +1553,11 @@ export default function (args = {}) {
             if (t.arg === 1) foLastAt = now;
         }
         if (flareSplit) fsTick(now);
+        if (flareThreat && t.p >= tellTh && t.arg >= 1 && t.arg <= 3) {
+            // v12: one threat request owns the 金光 slot (no onset anchor, no dodge CD race)
+            ftArm(now, flareFirstAt, TELL_LABELS[t.arg], `tell p${Math.round(t.p * 100)}`);
+            return;
+        }
         // v7 A2 fallback 2 (per-frame): the tell head's dark class fires at the curtain's black cover onset
         // (233-252: 77/82 dark streaks p>=0.7 (>=2 f) sit at a real episode; 46/54 episodes covered). Sampling a
         // 400 ms slow task would miss the short covers, so it lives here, in the per-frame tell path.
@@ -1425,8 +1591,10 @@ export default function (args = {}) {
             return;
         }
         if (inCurtain) return;
-        // a one-frame blip is noise; one dodge per episode (the tell stays lit while the flare is on screen)
-        if (t.p < tellDodgeP || !sustained) return;
+        // a one-frame blip is noise; one dodge per episode (the tell stays lit while the flare is on screen).
+        // GrabParry accepts the first frame of a grab label: the headline case is arg2 appearing exactly at the
+        // anchored dodge's dispatch, and waiting for a second frame would let the dodge fire first.
+        if (t.p < tellDodgeP || (!sustained && !(grabParry && t.arg === 2))) return;
         if (t.arg === lastTellDodgeArg && now - lastTellDodgeAt < tellEpisodeMs) return;
         // part 5 oursTellTh: our own press just went out (its effect looks like 金光 to v8): a surer tell first
         if (oursTellTh > 0 && t.arg >= 1 && t.arg <= 3 && t.p < oursTellTh && lastOffDownAt && now - lastOffDownAt < oursTellMs) {
@@ -1445,6 +1613,29 @@ export default function (args = {}) {
             return;
         }
         const label = TELL_LABELS[t.arg];
+        if (grabParry && !flareThreat && flareGrabDodge && t.arg === 2 && anchored
+            && grabParryFor !== flareFirstAt && st.none < 0.65 && st.sum > 0.01
+            && now - lastParryAt >= parryCd && now - lastDodgeAt >= dodgeCd) {
+            // GrabParry (default off, negative on 742-744): a grab tell that is still live when its plan would go
+            // out replaces the anchored onset dodge (which the flare data shows is caught ~88% of the time) with a
+            // 卸势 at the fresh contact. The live tell often starts as flare_other and only turns grab later, so this
+            // is deliberately a reclassification of the same episode, not a second plan. 742-744: 23 presses,
+            // 14 contacts, 1 ok; the same label fires on normal swings / golden AoE, so it is not a grab detector.
+            for (const o of [...plan]) {
+                if (o.src === "tell" && o.kind === "dodge" && !o.pressedAt
+                    && o.atMs >= flareFirstAt - FRAME_MS && o.atMs <= flareFirstAt + 20 * FRAME_MS) {
+                    dropItem(o, "grabParry replaces dodge");
+                    grabS.replacedDodges++;
+                }
+            }
+            grabParryFor = flareFirstAt;
+            grabS.plans++;
+            lastTellDodgeArg = t.arg;
+            lastTellDodgeAt = now;
+            addItem({ kind: "parry", k: -1, src: "tell", cMs: c1, atMs: Math.max(now, c1 - issueLead),
+                      untilMs: c1 + missGraceMs, why: `tell flare_grab parry (grabParry) p${Math.round(t.p * 100)}` });
+            return;
+        }
         let at;
         if (anchored && flareMode === "parry" && !(flareGrabDodge && t.arg === 2)) {
             // v8 parry mode: the flare gets a 卸势 lit ~5-6 f before its contact (one per episode, like the dodge)
@@ -1527,6 +1718,9 @@ export default function (args = {}) {
             if (it.src === "fut" || it.src === "combo") lastPlanParryAt = lastParryAt; // v8 failEscape's timer
             mark("press", `parry${observe ? " sim" : ""} k${it.k} ${it.src} c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f ${it.why}`);
         } else if (it.kind === "dodge") {
+            // Fut/combo and grab-threat plans have no explicit direction. Resolve it at dispatch so they honor
+            // dodgeDir, and cancelled plans do not consume a side. An empty direction otherwise means back.
+            if (!it.dir) it.dir = nextDir();
             const tapAt = Date.now();
             pressDodge(it.dir);
             pressFrame(frameIdx);
@@ -1567,6 +1761,9 @@ export default function (args = {}) {
     }
     /** @param {PlanItem} it @param {number} now @returns {string} */
     function pressBlocked(it, now) {
+        // `off` is deliberately absent: offBusyUntil / offHold / offAct only gate offense (offCan / offActTick). A
+        // defense plan press goes regardless; tap() only calls offYield to let a held 蓄力 go. Do not "fix" r748
+        // #2806 here: that plan was never created (the curtain state skips syncK, @see syncPlan).
         if (now < staggerUntil) return "stagger";
         if (now < potionHoldUntil && !(potionSafe && it.kind === "dodge")) return "potion"; // v9: a dodge keeps the drink
         if (inDodge) return "dodge";
@@ -1642,8 +1839,28 @@ export default function (args = {}) {
                 dropItem(it, "posthit done");
                 continue;
             }
+            if (it.threat) { // v12: the request waits out a script CD until its contact deadline, then gives up
+                const tw = pressBlocked(it, now);
+                if (tw) {
+                    if (now <= (it.noDropUntil ?? it.cMs)) {
+                        if (!it.waited || now - it.waited > 150) {
+                            it.waited = now;
+                            ftS.waited++;
+                            ftS.waitBy[tw] = (ftS.waitBy[tw] ?? 0) + 1;
+                            mark("flarethreat", `wait ${tw} c+${Math.round((it.cMs - now) / FRAME_MS)}f (deadline +${Math.round(((it.noDropUntil ?? it.cMs) - now) / FRAME_MS)}f)`);
+                        }
+                        continue;
+                    }
+                    blocked[tw] = (blocked[tw] ?? 0) + 1;
+                    ftS.waitBy[`drop:${tw}`] = (ftS.waitBy[`drop:${tw}`] ?? 0) + 1;
+                    mark("flarethreat", `drop (${tw}) past deadline c+${Math.round((it.cMs - now) / FRAME_MS)}f`);
+                    dropItem(it, `threat ${tw}`);
+                    if (ftItem === it) { ftItem = null; ftEp = 0; ftLabel = ""; }
+                    continue;
+                }
+            }
             const why = pressBlocked(it, now);
-            if (parryRelockMs > 0 && it.kind === "parry" && (why === "" || why === "parry cd")) {
+            if (parryRelockMs > 0 && !it.threat && it.kind === "parry" && (why === "" || why === "parry cd")) {
                 // v8 parryRelockMs: a second 卸势 at the same believed contact inside the game's lock waits for its end
                 const end = relockAt(now, it.cMs, !!it.repressed);
                 if (end) {
@@ -1681,6 +1898,11 @@ export default function (args = {}) {
                 continue;
             }
             press(it, now);
+            if (it.threat) {
+                ftS.pressed++;
+                const busy = offOn ? Math.max(0, offBusyUntil - Date.now()) : 0;
+                mark("flarethreat", `pressed ${it.kind} c+${Math.round((it.cMs - it.pressedAt) / FRAME_MS)}f busy+${busy}ms hold ${offHold ? offHold.a : "-"}`);
+            }
             if (it.held) holdPresses++;
             if (it.relocked) hcS.relock.pressed++;
         }
@@ -1795,18 +2017,11 @@ export default function (args = {}) {
                 // for (the true contact has not happened yet), re-arm once and press again in its window. The trigger
                 // gate is deliberately bypassed here: after an early press the S1 trigger usually drops while the
                 // arm is still winding up (r241 press@196 c=210, S1 0.04-0.18 until t225, real contact 243).
-                if (repress && !it.repressed && it.src === "fut" && it.k >= 0 && pred) {
+                if (repress && (it.rearms ?? 0) < repressMax && it.src === "fut" && it.k >= 0 && pred) {
                     const st2 = futStats(pred.fut[it.k]);
                     if (st2.none < 0.65 && st2.sum > 0.01 && st2.exp >= LATE_FRAMES && st2.exp <= REPRESS_LOOK_FRAMES) {
-                        it.repressed = true;
-                        it.pressedAt = 0;
-                        it.kind = defAction(pred.def[it.k]) ?? /** @type {"parry"} */ ("parry");
-                        if (it.kind === "avoid" && !inCurtain) it.kind = "parry";
-                        it.cMs = now + st2.exp * FRAME_MS;
-                        it.atMs = it.cMs - leadOf(it.kind);
-                        it.untilMs = it.cMs + missGraceMs;
-                        rerepresses++;
-                        mark("re-press", `k${it.k} late fill c+${Math.round(st2.exp)}f`);
+                        const kind = defAction(pred.def[it.k]) ?? /** @type {"parry"} */ ("parry");
+                        rearmItem(it, kind, now + st2.exp * FRAME_MS, `late fill c+${Math.round(st2.exp)}f`);
                         continue;
                     }
                 }
@@ -1822,6 +2037,7 @@ export default function (args = {}) {
     /** @param {number} now */
     function syncPlan(now) {
         if (!pred) return;
+        if (flareThreat) ftTick(now);
         for (const it of plan) if (!it.branch && !it.pressedAt) it.committed = it.atMs - now <= commitMs;
         if (inCurtain) {
             if (now - curtainLastAt > CURTAIN_GONE_MS) {
@@ -1867,6 +2083,7 @@ export default function (args = {}) {
         hits++;
         lastHitAt = now;
         pressedSinceHit = false;
+        if (flareThreat && ftItem && !ftItem.pressedAt && now >= ftItem.cMs - 4 * FRAME_MS) ftCancel("hit");
         // v8 staggerByDrop: the stagger by the read drop (off: staggerMs)
         const drop = before - after;
         if (spinGuard) spinHit(now, drop); // v11 spinGuard: the 劈 hit arms the spin timer (@see spinTick)
@@ -1983,6 +2200,7 @@ export default function (args = {}) {
             if (it.kind === "parry" && it.pressedAt && now - it.pressedAt <= 1500 && (!best || it.pressedAt > best.pressedAt)) best = it;
         }
         mark("ok", `真气 ${qiNow}->${qiRead()}${best ? ` (k${best.k})` : ""}`);
+        if (flareThreat && ftItem && !ftItem.pressedAt && now >= ftItem.cMs - 4 * FRAME_MS) ftCancel("ok");
         if (best) {
             plan.splice(plan.indexOf(best), 1);
             mark("plan", `- parry k${best.k} done ok`);
@@ -1992,7 +2210,23 @@ export default function (args = {}) {
         const now = Date.now();
         const h = hpRead();
         if (h != null) {
-            if (hpNow != null && h < hpNow - HIT_DROP && h > hpNow - 0.35) onHit(now, hpNow, h);
+            // A drop is judged against hpBase, not the last read: a grey-bar overread must not turn the next correct
+            // read into a second hit. The bar is quantized to ~0.4%, so hpBase follows every downward step (a small
+            // chip does not accumulate into a late hit).
+            if (hpBase == null) hpBase = h;
+            else if (h < hpBase) {
+                if (h < hpBase - HIT_DROP && h > hpBase - 0.35) onHit(now, hpBase, h);
+                hpBase = h;
+            } else if (h > hpBase) {
+                // An upward jump is a heal only when it reaches the drink's documented +POTION_HEAL (a +4% grey
+                // overread does not, even while the drink is pending), while the confirmed bar still fills
+                // (POTION_SETTLE_MS), or when it is a whole POTION_HEAL with no drink (the other heal sources).
+                const drink = potionPend ?? potionLate;
+                const healing = (drink != null && h >= drink.hp0 + POTION_HEAL)
+                    || (lastPotionOkAt > 0 && now - lastPotionOkAt <= POTION_SETTLE_MS)
+                    || h - hpBase >= POTION_HEAL;
+                if (healing) hpBase = h;
+            }
             hpNow = h;
         }
         const q = qiRead();
@@ -2630,6 +2864,10 @@ export default function (args = {}) {
         if (!seen) return;
         flareSeenAt = now; // v8 parry mode: the flare is live
         mark("flare", "gold + streak");
+        if (flareThreat) { // v12: the image rule arms the request only when no tell already owns this episode
+            if (!inCurtain && !(ftItem && ftItem.ep && Math.abs(now - ftItem.ep) < 40 * FRAME_MS)) ftArm(now, now, "flare_other", "color");
+            return;
+        }
         if (!flareDodge || inCurtain) return;
         if (flareMode === "parry") return; // v8: the fut items turn into parries meanwhile (@see flareParryNow)
         if (now - lastDodgeAt < dodgeCd || now - lastFlareDodgeAt < 1000) return;
@@ -2810,6 +3048,7 @@ export default function (args = {}) {
     // qiPlan window is on (so closeIn stops walking and failEscape stays quiet, as with qiAttack) and the unpressed
     // fut items it drops in that window. Called from the main loop only when offOn.
     let offUpAt = 0, offTouched = false; // offContact is down until offUpAt (0: up); lifted by offUp, never by upDue
+    let grabHoldAt = 0; // the first grab tell of the current held charge (the same-tick release fallback)
     /** Put the offense finger down on p for ms (the lift comes from offUp, every loop turn). @param {Point} p @param {number} ms */
     function offDown(p, ms) {
         if (observe) return;
@@ -3107,17 +3346,46 @@ export default function (args = {}) {
     }
     /** The guard's rules for a held 蓄力 ("" = hold on). @param {number} now */
     function offHoldAbort(now) {
-        if (!offHold) return "";
+        if (!offHold) { grabHoldAt = 0; return ""; }
         const qi = offHold.src === "qi";
         if (lastHitAt > offHold.startAt) return "hit";
         if (curtainVeto()) return "curtain"; // v10 curtainFlank: @see curtainVeto
         if (inDodge) return "dodge";
         if (now < potionHoldUntil) return "potion";
         const t = pred?.tell;
-        if (!qi && t && t.arg !== 0 && t.p >= tellTh) return `tell(${t.label})`;
+        if (!qi && t && t.arg >= 1 && t.arg <= 3 && t.p >= tellTh) {
+            // A flare that will be dodged keeps the charge until pressDodge's own offYield releases it in the
+            // dodge's tick (the combat.js order). Releasing here leaves the release recovery in front of the dodge:
+            // 726 grab 3291 / 3692 had the release 195 / 112 ms before the dodge and no dodge movement in the video.
+            // The live tell label misses grabs (729: 0 grab labels while the visual/plans were grabs), so the hold
+            // covers every tell that the current mode turns into a dodge, not arg 2 alone. Other tells (parry mode's
+            // other / slam) keep the early release. A 600 ms fallback still lets go when the dodge never comes.
+            const anyDodge = flareMode !== "parry" || (flareThreat && flareThreatKind === "dodge");
+            const grabDodge = t.arg === 2 && ((flareThreat && flareThreatGrabDodge) || flareGrabDodge);
+            if (anyDodge || grabDodge) {
+                if (!grabHoldAt) {
+                    grabHoldAt = now;
+                    mark("off", `flare tell: hold charge for the dodge (${t.label} p${Math.round(t.p * 100)})`);
+                }
+                if (now - grabHoldAt <= 600) return "";
+            }
+            grabHoldAt = 0;
+            return `tell(${t.label})`;
+        }
+        grabHoldAt = 0;
         if (offHold.src === "win") return ""; // oldWindow: held through, a defense tap lets it go (offYield)
         const lim = offAbortMs + (offNoCancel.charge ?? 0);
         const near = plan.find((it) => !it.pressedAt && it.atMs - now <= lim && !(qi && it.src === "fut"));
+        if (near && near.kind === "dodge") {
+            // The tell has gone quiet but the dodge plan is the next touch: pressDodge's offYield releases the
+            // charge in that same tick. Releasing here would put the release recovery in front of the dodge
+            // (730 t2379: plan(dodge tell) fired 7.1 f before the dodge and the dodge still ate the grab).
+            if (!grabHoldAt) {
+                grabHoldAt = now;
+                mark("off", `dodge plan: hold charge for the dodge (${near.src} c+${Math.round((near.cMs - now) / FRAME_MS)}f)`);
+            }
+            if (now - grabHoldAt <= 600) return "";
+        }
         return near ? `plan(${near.kind} ${near.src})` : "";
     }
     /** @param {number} now @param {string} why @param {boolean} early */
@@ -4607,10 +4875,11 @@ export default function (args = {}) {
         `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, weak ${weakWindows} (${weakLights} light, ${weakExecs} exec), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
     if (seqRing) log(`seqRing: ${headCalls} head calls, ringBad ${ringBad} (device ring vs own ${ringBad ? "MISMATCH" : "ok"})`);
-    const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn || flareSplit;
+    const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn || flareSplit || flareThreat || grabParry;
     if (flareHoldFut) foEnd("run over");
-    const v8 = v8On ? { flareMode, tellParries, flare2s, timedSweeps, failEscapes, ...(flareHoldFut ? { holdFut: foS } : {}), ...(chainOn ? { chain: hcS } : {}),
-        ...(flareSplit ? { split: fsS } : {}), ...(curtainBeatEntry ? { beatEntry: beatS } : {}) } : undefined;
+    const v8 = v8On ? { flareMode, tellParries, flare2s, timedSweeps, failEscapes, ...(grabParry ? { grab: grabS } : {}), ...(flareHoldFut ? { holdFut: foS } : {}), ...(chainOn ? { chain: hcS } : {}),
+        ...(flareSplit ? { split: fsS } : {}), ...(flareThreat ? { threat: ftS } : {}),
+        ...(curtainBeatEntry ? { beatEntry: beatS } : {}) } : undefined;
     if (v8) log(`v8: ${JSON.stringify(v8)}`);
     // v8 offense: only when one of its switches is on (the default return is unchanged)
     if (qiPlan && qp.shown) qpEnd(Date.now(), "run over");

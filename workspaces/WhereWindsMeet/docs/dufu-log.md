@@ -632,4 +632,16 @@
   * 按了·晚、早各约 1 / 分，一部分是模型报得就晚或太早；漏报 0.3–0.6；喝药、硬直 0.4–1.0；金光 1–2（砸地、抓取只能闪）；幕布有了 sweepNet 约 0.5。
   * 就算被挡清零、早按和晚按各减一半，也还剩每分钟 5–7 下。目前最好的单轮 6.2（193 轮），组最好 7.0（207–211）。
 * 2026-10-19：`dufu.js` 新增三个默认关的实验开关：`curtainFlank`（幕布起手绕后）、`spinGuard`（金光后「劈→旋转风火轮」的左右闪）、`qiFront`（气竭窗口：唤千军→爆发→蓄力→读秒末处决→倒地后蓄力）。均默认关、实验状态，口径见脚本顶部注释与 data/tmp/dufu_breakthrough/live/ 下的 report24_flank.md、report25_spin.md、next_lever.md。
+* 2026-10-20：独夫一阶段调度/触控修复（详见 data/tmp/dufu_breakthrough/review30/HANDOFF.md、EXPERIMENTS.md、normal2/、flare2/）：
+  * 已确认并修：`fut/combo` dodge 空方向落到后退（派发时补 `nextDir()`）；pressed k0 的 one-shot re-arm 占位（`rearmItem()` + `rearms`，默认 `REPRESS_MAX=2`；1472 分支保持原 kind，接触已过的分支/expire 才允许换动作）；抓取 tell 提前 100–200ms 释放蓄力（改为 `offHoldAbort` 对会闪避的 flare tell/近 dodge 计划继续握持，由 `pressDodge` 的 `offYield` 同 tick 释放，600ms 兜底）。
+  * 测试：`node tests/dufu_scheduler.mjs` 8/8；`uv run pytest -q` 32 passed。假时钟覆盖空方向、后移接触的多次纠偏、上限、parry→dodge。
+  * 实机 726–739：旧基线 0/7 通关；max2+抓取同 tick 2/6（733、734，20–22 hits）；`repressMax=1` 对照 0/2（731、739，26/30 hits）。**仍不是稳定通关**，最近 4 轮 max2 都 dead；死亡轮 normal 12/0.84、flare 9/0.58，普通首下仍有大量 pressed-window（press lead 6–13f、believed 误差 ≤4f 仍 hit），金光 dodge 即使强闪也可能 hit。
+  * 已否定：`curtainParryPlan=true`（732：21 个幕布内 parry 计划，总根伤害 1.679，幕布根 5/0.355，无收益/有风险）；抓取 `arg===2` 单独条件（729：live 标签漏抓取，0 次 hold）。
+  * 结论：调度/触控的确定性 bug 已修，通关率有方向性提升（2/6 vs 0/7，Fisher p≈0.19），但稳定解未达成；下一步应针对死亡轮的低 ok/高 normal+flare 组合，优先查更新后的 parry 时序/模型偏差与抓取策略（parry vs dodge），不要再加 re-arm 次数或盲调固定 lead。
+  * 追加（2026-10-20 晚，740–747，录像/seq/attrib 全部留档）：
+    * 更新后近似旧行为基线（`repressMax=1`）739–741 全 dead：hits 30/27/24，oks 75/32/78；根伤害轮均 normal 0.583、flare 0.628、curtain 0.209。735–747 已连续 13 轮 dead，733/734 的 2/6 没有在当前版本复现。
+    * 新开关 `grabParry`（仅 live `arg===2` 改卸势，默认 false）：742–744 分别 8/6/9 个计划，23 次 press，14 次有接触仅 1 ok/13 hit；轮均 normal 0.596、flare 0.590、curtain 0.193，全 dead。抽查视频发现 live grab 标签既漏报也误报（742 t1582/t5459 是普通挥砍、t6095 是金色 AoE；737 5 个 grab press 中 3 个不是抓取）；按 seq flare onset 分母，grab press 覆盖率仅 8–23%。结论：**先解决抓取分类，不要再用 arg===2 触发 parry**。
+    * `targetGlowLead=5`（issue lead 14f→10f）745–747 全 dead：hits 31/27/30，oks 42/46/45；轮均 normal 0.769（基线 0.583）、flare 0.582、curtain 0.148。缩短固定提前量让 normal 更差，**不支持“更新后卸势窗口变窄、只需按晚 4 帧”的假设**。
+    * 737/738 pressed-window 抽查：t1067 press c+12f 而实际 lead 14.8f；t1246 实际 lead 17.8f；t3547 re-arm 在接触前 0.2f 才发出。问题是 fresh fut 接触估计晚报/漂移或该下不可卸，不是 H1 占位。
+    * 测试：`node tests/dufu_scheduler.mjs` 11/11（新增 grabParry 替换/不替换/dodge CD 三例）；`uv run pytest -q` 32 passed。
 

@@ -1,0 +1,12 @@
+:root{font-family:system-ui,sans-serif;color:#e6edf4;background:#101820;color-scheme:dark}
+body{margin:0;padding:20px;max-width:1700px;margin-inline:auto}header,nav,.controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+header strong{font-size:22px}header span,.muted{color:#b1c0cd;font-size:13px}header button{margin-left:auto}
+main{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(320px,1fr);gap:24px}aside{padding:18px;background:#1b2833;border-radius:8px}
+img{width:100%;height:auto;aspect-ratio:3/2;object-fit:contain;background:#000}button,select,input,textarea{font:inherit;padding:7px;border:1px solid #526777;border-radius:4px;background:#223544;color:inherit}
+button{cursor:pointer}button:hover{background:#31516b}button:disabled{opacity:.45;cursor:default}input[type=number]{width:90px}input[type=range]{width:100%;padding:0}
+#warning{padding:12px;background:#493c22;color:#ffe6a9}#error{color:#ff9c9c;white-space:pre-wrap}
+form label{display:block;margin:14px 0 5px}form input,form select,form textarea{box-sizing:border-box;width:100%}textarea{min-height:80px;resize:vertical}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#17232e;padding:12px;font-size:12px;max-height:400px;overflow:auto}
+h2{font-size:18px}.table{max-height:420px;overflow:auto}table{border-collapse:collapse;width:100%;font-size:12px}td,th{padding:6px;border-bottom:1px solid #39505f;text-align:left}td{vertical-align:top}td:last-child{white-space:pre-wrap;overflow-wrap:anywhere}
+#saved{color:#9fdfb4}#save,#reveal{margin:12px 4px 0 0}
+@media(max-width:950px){main{grid-template-columns:1fr}}

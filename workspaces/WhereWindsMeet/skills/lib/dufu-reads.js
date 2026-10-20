@@ -43,9 +43,16 @@ export function health(image) {
         return Math.max(0, Math.min(1, (right - HP_LEFT) / (HP_FULL - HP_LEFT)));
     };
     const grey = read(HP_GREY);
-    if (grey != null) return grey;
+    // Above the red bar's range the grey bar is authoritative and the red mask only sees effects: keep the old
+    // one-read path (and its cost) there.
+    if (grey != null && grey > HP_RED_MAX) return grey;
+    // At/below HP_RED_MAX the bar itself is red. The grey mask (unsaturated + bright) also catches the red bar's
+    // white hit flash / bright tip a few px past the fill, so at 17% it can read 21% (737 f5970-6051: seven
+    // 21%->17% "hits" against a stable offline 17%). Prefer the red read whenever both are in the low range; the
+    // grey read stays the fallback when red cannot be read (the grey bar was the original high-HP source).
     const red = read(HP_RED);
-    return red != null && red <= HP_RED_MAX ? red : null;
+    if (red != null && red <= HP_RED_MAX) return red;
+    return grey;
 }
 
 /** The boss's 真气 px from the left end; 0 when empty, -1 when not read. @param {Image} im */

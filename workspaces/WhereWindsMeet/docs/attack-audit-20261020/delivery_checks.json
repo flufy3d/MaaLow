@@ -1,0 +1,101 @@
+{
+  "pytest": {
+    "command": "uv run pytest -q",
+    "passed": 40,
+    "failed": 0
+  },
+  "javascript": {
+    "command": "node --check workspaces/WhereWindsMeet/tools/attack_review/app.js",
+    "passed": true
+  },
+  "pilot": {
+    "passed": true,
+    "samples": 20,
+    "errors": [],
+    "media_frames_checked": 60,
+    "sequential_seek_crosschecks": 5,
+    "alignment_status": "mapping arithmetic checked; residuals in alignment.json; physical clock remains unverified",
+    "not_human_review": true
+  },
+  "full": {
+    "passed": true,
+    "samples": 90,
+    "errors": [],
+    "media_frames_checked": 270,
+    "sequential_seek_crosschecks": 5,
+    "alignment_status": "mapping arithmetic checked; residuals in alignment.json; physical clock remains unverified",
+    "not_human_review": true
+  },
+  "browser": {
+    "passed": true,
+    "checks": [
+      "rendered 1080x720 frame",
+      "future frames blocked",
+      "stage3 gated",
+      "stage1 saved before stage2",
+      "stage2 saved before logs",
+      "source links",
+      "video range",
+      "immutable first judgment",
+      "export"
+    ],
+    "exceptions": [],
+    "labels_are_disposable_fixture": true
+  },
+  "reproduced_with_final_tool": {
+    "samples.json": true,
+    "population.json": true,
+    "sampling.json": true,
+    "rounds.json": true,
+    "alignment.json": true,
+    "labels.json": true,
+    "evidence": true
+  },
+  "cards": 180,
+  "unmodified_pending_labels": 90,
+  "scope": "Offline extraction/review only. No live fight, training, production change or deployment.",
+  "final_sources": [
+    {
+      "path": "workspaces/WhereWindsMeet/tools/attack_audit.py",
+      "exists": true,
+      "sha256": "70758d3c90dc141623a587a94b3c377c8877603282c1b7d0de1766e7abd0361c",
+      "bytes": 39855
+    },
+    {
+      "path": "workspaces/WhereWindsMeet/tools/attack_review/__init__.py",
+      "exists": true,
+      "sha256": "dfc492ef203df51366d9c8e2100d4252b7e5842ad1b646a6e6e86316b82e7920",
+      "bytes": 41
+    },
+    {
+      "path": "workspaces/WhereWindsMeet/tools/attack_review/server.py",
+      "exists": true,
+      "sha256": "1b1aa76f58983fc4f7c88ef31682bccf9d45c045d306756ffb5562dcf02894a7",
+      "bytes": 9743
+    },
+    {
+      "path": "workspaces/WhereWindsMeet/tools/attack_review/app.js",
+      "exists": true,
+      "sha256": "fe4ed83a56fb98ac5f8af333de6be497fc68ca0d04da47668078b5a59b6a2afe",
+      "bytes": 9185
+    },
+    {
+      "path": "workspaces/WhereWindsMeet/tools/attack_review/index.html",
+      "exists": true,
+      "sha256": "5c048f18917633e1bcc00c908854113ed1328a852c752f450112e74160a28b18",
+      "bytes": 2855
+    },
+    {
+      "path": "workspaces/WhereWindsMeet/tools/attack_review/style.css",
+      "exists": true,
+      "sha256": "ef2158b62d30d46905c7512ed3411490683d46629fd9e4a461a39db24e91ab75",
+      "bytes": 1630
+    },
+    {
+      "path": "tests/test_attack_audit.py",
+      "exists": true,
+      "sha256": "5e739f8d10b4fd60639f0b306da3c649235f42900ef5aade42d4e27999689912",
+      "bytes": 7772
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "source": "agent_candidate",
+  "human_confirmed": false,
+  "review_scope": "仅抽查五组样本稀疏原帧卡片及一组样本外灰屏原帧、原始数值；不是90样本人工逐帧复核。代理此前已读运行结果，不能把这些观察当作盲审第一步判断。",
+  "candidates": [
+    {
+      "sample_id": "r745-c073-f07438",
+      "attack_id": "unknown",
+      "parryability": "unknown",
+      "observation": "f7423、7433、7438、7443已是灰屏，不能把该条0.449 maxHP直接当作一次普通攻击损伤。",
+      "frames": [7407, 7444],
+      "conditions": "死亡末段，HUD消失或变色，HP测量失效候选",
+      "confidence": "high_for_measurement_anomaly_only",
+      "raw_feature_evidence": {
+        "7390_hp": 0.06692913385826772,
+        "7400_hp": 0.01968503937007874,
+        "7407_grey": 0.898,
+        "7428_hp": 0.6181102362204725,
+        "7430_hp": 0.7204724409448819,
+        "7440_hp": 0.48031496062992124,
+        "7442_hp": 0.027559055118110236,
+        "merged_hp_drop_frames": [7443, 7444]
+      },
+      "conclusion_limit": "保留原始seq，不自动删除；不把排除该读数的敏感性差值当作可挽回损伤。须人工确认画面和HUD失效边界。"
+    },
+    {
+      "sample_id": "r737-c074-f07264",
+      "in_review_set": false,
+      "attack_id": "unknown",
+      "parryability": "unknown",
+      "observation": "全清单质量筛查补查：f7230、7259、7264、7269都已灰屏且无可用HP条；seq把f7269读出的0.051 maxHP下降记为normal根。",
+      "frames": [7230, 7269],
+      "conditions": "死亡末段，HUD不可用；本条未入90样本，不能混入样本损伤分母",
+      "confidence": "high_for_measurement_anomaly_only",
+      "conclusion_limit": "保留原始seq；仅作样本外质量标记和全清单敏感性分析，不宣称真实额外损伤。"
+    },
+    {
+      "sample_id": "r738-c018-f01246",
+      "attack_id": "unknown",
+      "parryability": "unknown",
+      "observation": "近距离Boss身体占据画面，局部遮挡玩家；f1231见抬臂，f1246有2110伤害数字。稀疏帧不足以确定真实接触帧、段号或可卸性。",
+      "frames": [1198, 1261],
+      "conditions": "近身、玩家可见性不足；代理截断f1224而真实推理输入帧未知",
+      "confidence": "medium_for_visible_context_only",
+      "conclusion_limit": "不能从press后受伤断言不可卸，也不能依据事后抬臂画面认定当时模型已经可辨识。"
+    },
+    {
+      "sample_id": "r737-c041-f02782",
+      "attack_id": "unknown",
+      "parryability": "unknown",
+      "observation": "截断卡片先见远处Boss接近/跃起；完整卡片见近身武器挥动、f2782附近冲击亮效。与近身遮挡样本的可观察上下文不同。",
+      "frames": [2609, 2797],
+      "conditions": "从远到近；代理截断f2699显著早于接触候选f2782",
+      "confidence": "medium_for_visible_context_only",
+      "conclusion_limit": "normal不是同一种招式。尚不能确认该样本真实段号，也不能据提前截断片段否定决策前可辨识。"
+    },
+    {
+      "sample_id": "r733-c008-f00730",
+      "attack_id": "unknown",
+      "parryability": "unknown",
+      "observation": "f715至775有玩家进攻动作及Boss伤害数字；seq ok所用Boss真气下降可能受玩家输出影响，需分离明确卸劲反馈。",
+      "frames": [715, 775],
+      "conditions": "玩家进攻与Boss动作并存",
+      "confidence": "medium_for_feedback_confound_only",
+      "conclusion_limit": "不能把本条ok直接当作成功卸劲对照；没有给出可卸标签。"
+    },
+    {
+      "sample_id": "r734-c063-f04396",
+      "attack_id": "unknown",
+      "parryability": "unknown",
+      "observation": "f4351至4411见近身横向金色武器轨迹，后续Boss跃起。可用作成功轮中的待审上下文，不足以确认与失败样本同招式。",
+      "frames": [4351, 4441],
+      "conditions": "近身武器连续动作",
+      "confidence": "medium_for_visible_context_only",
+      "conclusion_limit": "机制、真实段号和明确卸劲反馈仍待逐帧核对，未声称人工确认。"
+    }
+  ]
+}
