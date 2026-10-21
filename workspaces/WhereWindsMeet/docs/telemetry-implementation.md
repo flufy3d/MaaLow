@@ -242,3 +242,6 @@ run JSON：`data/tmp/dense_pred/r749.run.json`（CLI 原样输出）与 `r749.ru
 - r757/r759/r760（lead 13）：212.1s / 285.3s / 313.2s，22/66、25/63、26/83 hit/ok；`grabContact.plans=0`。
 - r758（lead 13）：录像 `20261021-103128`；dead，313.4s，23 hit / 66 ok；`grabContact.plans=2`。110638 用户复核不是抓；297102 用户复核是抓、contact dodge 后 3s 无掉血（第一个正样本）。详见 findings §18.4。
 - r761（lead 13 + `grabClass` log-only）：录像 `20261021-114002`；dead，252.0s，24 hit / 45 ok；`grabContact.plans=2`；`grabClass` 5 次调用仅 1 次 ready（119406，p 0.95 grab），contact dodge 后仍掉血 99→94%。3 帧 `infer` 历史不足是主要限制。
+- r762–r764（lead 16）：dead，275.2s / 290.0s / 209.8s，23/68、26/83、26/38 hit/ok；3 个 contact（r762 201670 busy=448 中；r764 69905 中；r764 183046 3s 无 hit，未知）。详见 findings §20。
+
+**注意：`telemetry:true` + `predMs:50` 是诊断配置，不是游玩配置。** 默认 r737/r748 的 `loop` p50 是 30–32ms、p95 101–105ms；r752/r761/r764 诊断轮 p50 58–77ms、p95 121–137ms（逐帧 `goldline`、press 后两次读取、`grabClass` 推理）。诊断轮的 hit/min 和 0/16 通关**不能**和默认的 2/25（约 8%）直接比。实际游玩或通关率测量请用默认 args：不传 `telemetry` / `predMs` / `grabContactDodge` / `grabClass`。

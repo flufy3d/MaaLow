@@ -593,7 +593,7 @@ r761（lead 13 + `grabClass` log-only）：dead，252.0s，24 hit / 45 ok；`gra
 
 ### 20.1 设备轮
 
-三轮都是 737 + `telemetry:true` + `predMs:50` + `grabContactDodge:true` + `grabContactLeadF:16` + `grabClass:true`，args-only，不是 A/B：
+三轮都是 737 + `telemetry:true` + `predMs:50` + `grabContactDodge:true` + `grabContactLeadF:16` + `grabClass:true`，args-only，不是 A/B。**这是诊断配置，不是游玩配置**：默认 r737/r748 的 loop p50 30–32ms、p95 101–105ms；这三轮 p50 58–77ms、p95 121–137ms。诊断轮的 0/16 通关不能和默认的 2/25（约 8%）直接比。
 
 | run | 时长 s | hit | ok | contact plans | grabClass ready/calls |
 |---|---:|---:|---:|---:|---:|
