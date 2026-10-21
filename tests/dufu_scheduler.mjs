@@ -40,9 +40,20 @@ globalThis.color = ({ roi: [x, y], lower }) => {
     } else if (y === 27 && x === 347) box = [347, 27, 386, 6];
     else if (y === 35 && x === 347) box = [347, 35, 300, 6];
     else if (y === 648 && x === 1004) box = [1004, 648, 34, 39];
+    else if (y === 477 && x === 934) { // telemetry: the parry button's white glow (0 = not lit)
+        const n = cfg.parryGlow ?? 0;
+        return n > 0 ? { hit: true, results: [{ box: [934, 477, 36, 36], count: n }] } : { hit: false, results: [] };
+    } else if (y === 656 && x === 906) { // telemetry: the dodge button's white flash
+        const n = cfg.dodgeGlow ?? 0;
+        return n > 0 ? { hit: true, results: [{ box: [906, 656, 36, 36], count: n }] } : { hit: false, results: [] };
+    } else if (y === 120 && x === 150) { // telemetry: the golden grab line (log-only)
+        const n = typeof cfg.goldLine === "function" ? cfg.goldLine(time) : cfg.goldLine ?? 0;
+        return n > 0 ? { hit: true, results: [{ box: [150, 120, 780, 60], count: n }] } : { hit: false, results: [] };
+    }
     return box ? { hit: true, results: [{ box, count: 999 }] } : { hit: false, results: [] };
 };
 globalThis.infer = (model) => {
+    if (model.includes("flare3")) return { ready: true, probs: cfg.flare3 ?? [0.10, 0.80, 0.10] };
     if (model.includes("back")) return { ready: true, output: new Array(192).fill(0) };
     const out = new Array(77).fill(-8);
     out[0] = out[16] = out[70] = 8;
@@ -237,6 +248,120 @@ const tests = {
         assert.equal(result.potion.healed, 1, `the late heal was not counted: ${JSON.stringify(result.potion)}`);
         assert.equal(result.potion.lateOks, 1, `the late-heal path did not run: ${JSON.stringify(result.potion)}`);
         assert.equal(result.potion.fails, 0, `the late heal left a failed drink: ${JSON.stringify(result.potion)}`);
+    },
+    "telemetry off adds no events or touches"() {
+        // The switch must be invisible when false: same deterministic events, same presses, same touch stream.
+        const opts = { contacts: [1500, 3000, 4500], def: 1, hp: () => 1 };
+        const base = run({ trigTh: 0.45 }, opts);
+        const off = run({ trigTh: 0.45, telemetry: false }, opts);
+        assert.deepEqual(off.result.presses, base.result.presses);
+        assert.deepEqual(off.touches, base.touches);
+        assert.deepEqual(off.result.events.map((e) => [e[1], e[2], e[3]]), base.result.events.map((e) => [e[1], e[2], e[3]]));
+        assert.ok(!off.result.events.some((e) => e[2] === "press result" || e[2] === "state"), "telemetry events with the switch off");
+    },
+    "telemetry logs def1 probabilities and a 5-10f parry result"() {
+        const opts = { contacts: [1500, 3000, 4500], def: 1, hp: (t) => t < 1200 ? 0.80 : 0.70, parryGlow: 210 };
+        const on = run({ trigTh: 0.45, telemetry: true }, opts);
+        const off = run({ trigTh: 0.45 }, opts);
+        assert.deepEqual(on.result.presses, off.result.presses, "telemetry changed the press counts");
+        assert.equal(on.touches.length, off.touches.length, "telemetry changed the touch count");
+        const preds = on.result.events.filter((e) => e[2] === "pred");
+        assert.ok(preds.length > 0, "no pred events");
+        assert.ok(preds.every((e) => e[3].includes("def1 p ") && e[3].includes("arg ")), `pred without def1 p0-p4: ${preds[0]?.[3]}`);
+        const results = on.result.events.filter((e) => e[2] === "press result");
+        const fresh = results.filter((e) => !e[3].includes("read window missed"));
+        assert.ok(fresh.length > 0, "no press result after a parry");
+        for (const e of fresh) {
+            const f = Number(/delay=(\d+)f/.exec(e[3])?.[1]);
+            assert.ok(f >= 5 && f <= 10, `press result outside 5-10f: ${e[3]}`);
+        }
+        assert.ok(fresh.some((e) => e[3].startsWith("parry lit")), `no lit parry: ${results.map((e) => e[3])}`);
+        assert.ok(fresh.every((e) => e[3].includes("stance=unknown")), "the unread stance must say unknown");
+        assert.ok(fresh.every((e) => /off=\S+ busy=\d+ms grab=[01]/.test(e[3])), `missing own-action/grab context: ${fresh[0]?.[3]}`);
+        const lates = on.result.events.filter((e) => e[2] === "press late");
+        assert.ok(lates.length > 0, "no second press read");
+        for (const e of lates) {
+            const f = Number(/delay=(\d+)f/.exec(e[3])?.[1]);
+            assert.ok(f >= 14 && f <= 18, `late read outside 14-18f: ${e[3]}`);
+            assert.ok(/early=(lit|none|unknown)/.test(e[3]), `late read lost the early state: ${e[3]}`);
+        }
+        assert.ok(on.result.events.some((e) => e[2] === "state" && e[3].startsWith("hp ")), "no hp state mark");
+        assert.ok(on.result.events.some((e) => e[2] === "state" && e[3].startsWith("stagger ")), "no stagger state mark");
+    },
+    "telemetry logs curtain would-plan without pressing"() {
+        const opts = { contacts: [1500], tell: [[300, 900, 5]] };
+        const on = run({ trigTh: 0.45, telemetry: true }, opts);
+        const off = run({ trigTh: 0.45 }, opts);
+        assert.deepEqual(on.result.presses, off.result.presses, "would-plan changed the press counts");
+        assert.equal(on.touches.length, off.touches.length, "would-plan changed the touch count");
+        const w = on.result.events.filter((e) => e[2] === "would-plan");
+        assert.ok(w.length > 0, "no curtain would-plan mark");
+        assert.ok(w.some((e) => /k\d/.test(e[3])), `would-plan never saw a contact: ${w.map((e) => e[3])}`);
+        assert.ok(!off.result.events.some((e) => e[2] === "would-plan"), "would-plan with telemetry off");
+    },
+    "telemetry logs the golden grab line without pressing"() {
+        const on = run({ telemetry: true }, { contacts: [1500], goldLine: 30000 });
+        const off = run({}, { contacts: [1500], goldLine: 30000 });
+        assert.deepEqual(on.result.presses, off.result.presses, "goldline changed the press counts");
+        assert.equal(on.touches.length, off.touches.length, "goldline changed the touch count");
+        assert.ok(on.result.events.some((e) => e[2] === "goldline" && e[3].startsWith("on")), "no goldline on");
+        assert.ok(!off.result.events.some((e) => e[2] === "goldline"), "goldline with telemetry off");
+    },
+    "grabContactDodge waits for a slow grab's contact and drops the fut dodge"() {
+        // User-confirmed mechanism: the catch is the boss hand/weapon contact, ~10 f before the delayed hp drop
+        // (c1). A fut dodge at c1-14 must not take the dodge CD first.
+        const { result, dodges } = run({ tellAnchor: true, grabContactDodge: true }, {
+            contacts: [], tell: [[900, 1500, 2]], futFn: () => 2000,
+        });
+        assert.equal(dodges.length, 1, `expected one contact dodge: ${dodges.map((d) => d.at)}`);
+        const presses = result.events.filter((e) => e[2] === "press" && e[3].startsWith("dodge"));
+        assert.equal(presses.length, 1, `unexpected dodge presses: ${presses.map((e) => e[3])}`);
+        assert.ok(presses[0][3].includes(" contact "), `not a contact dodge: ${presses[0][3]}`);
+        assert.ok(presses[0][1] >= 1600, `the contact dodge went too early: ${presses[0][1]}`);
+        assert.equal(result.v8.grabContact.plans, 1);
+        assert.ok(result.v8.grabContact.droppedFut >= 1, `did not drop the fut dodge: ${JSON.stringify(result.v8.grabContact)}`);
+        assert.ok(!result.events.some((e) => e[2] === "press" && e[3].startsWith("dodge") && e[1] < 1500), "an early fut dodge still went");
+    },
+    "grabContactDodge leaves a fast grab on the anchor"() {
+        // c1 < grabContactMinF (18 f): the catch is already at tell+1-2 f, so the contact rule must not move it later.
+        const { result } = run({ tellAnchor: true, grabContactDodge: true }, {
+            contacts: [], tell: [[900, 1500, 2]], futFn: () => 1000,
+        });
+        assert.equal(result.v8.grabContact.plans, 0, `a fast grab got a contact dodge: ${JSON.stringify(result.v8.grabContact)}`);
+        assert.ok(result.v8.grabContact.fastKept >= 1, `fast grab not counted: ${JSON.stringify(result.v8.grabContact)}`);
+        assert.ok(result.events.some((e) => e[2] === "press" && e[3].startsWith("dodge") && e[3].includes(" anchor ")),
+            `the fast grab lost the anchor: ${result.events.filter((e) => e[2] === "press").map((e) => e[3])}`);
+    },
+    "grabContactDodge off does not change the grab dodge"() {
+        const opts = { contacts: [], tell: [[900, 1500, 2]], futFn: () => 2000 };
+        const base = run({ tellAnchor: true }, opts);
+        const off = run({ tellAnchor: true, grabContactDodge: false }, opts);
+        assert.deepEqual(off.result.events.map((e) => [e[1], e[2], e[3]]), base.result.events.map((e) => [e[1], e[2], e[3]]));
+        assert.deepEqual(off.touches, base.touches);
+        assert.equal(off.result.v8?.grabContact, undefined);
+    },
+    "grabClass logs the flare3 grab probability without pressing"() {
+        const opts = { contacts: [], tell: [[900, 1500, 2]], futFn: () => 2000, flare3: [0.10, 0.80, 0.10] };
+        const on = run({ grabClass: true }, opts);
+        const off = run({}, opts);
+        assert.deepEqual(on.result.presses, off.result.presses, "grabClass changed the press counts");
+        assert.equal(on.touches.length, off.touches.length, "grabClass changed the touch count");
+        const marks = on.result.events.filter((e) => e[2] === "grabclass");
+        assert.equal(marks.length, 1, `expected one grabclass mark: ${marks.map((e) => e[3])}`);
+        assert.ok(marks[0][3].includes("p 0.10/0.80/0.10 arg grab"), `unexpected grabclass: ${marks[0][3]}`);
+        assert.equal(on.result.v8.grabClass.grab, 1);
+        assert.ok(!off.result.events.some((e) => e[2] === "grabclass"), "grabclass with the switch off");
+        assert.equal(off.result.v8?.grabClass, undefined);
+    },
+    "telemetry reads a dodge press without extra touches"() {
+        const opts = { contacts: [1500, 3000], def: 2, dodgeGlow: 600 };
+        const on = run({ trigTh: 0.45, telemetry: true }, opts);
+        const off = run({ trigTh: 0.45 }, opts);
+        assert.deepEqual(on.result.presses, off.result.presses, "telemetry changed the press counts");
+        assert.equal(on.touches.length, off.touches.length, "telemetry changed the touch count");
+        const results = on.result.events.filter((e) => e[2] === "press result" && e[3].startsWith("dodge"));
+        assert.ok(results.length > 0, "no dodge press result");
+        assert.ok(results.some((e) => e[3].startsWith("dodge lit")), `no lit dodge: ${results.map((e) => e[3])}`);
     },
 };
 

@@ -40,6 +40,7 @@ import { argmax, futStats, headOut, softmax } from "./lib/dufu-math.js";
 // L4513-L4637 主循环：读屏 -> 死亡/成功 -> 推理 -> 计划/执行 -> 慢规则 -> 预算
 // L4638-L4651 统计与返回（按开关裁剪 v8/off/potion/flank/spin）
 // 文档：docs/dufu-log.md（逐轮实验）、docs/dufu-models.md（模型/推理管道）、
+//       docs/telemetry-implementation.md（telemetry 开关的字段/读数/测试）、
 //       data/tmp/dufu_breakthrough/live/report*.md（各批 A/B 结论）
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -274,6 +275,29 @@ const FLARE_THREAT_PRIOR = { other: 17, grab: 9, slam: 15 }; // contact after th
 const FLARE_THREAT_IMG_PRIOR = { other: 20, grab: 13, slam: 19 }; // ... after the image onset (batch 26: other p50 20)
 const FLARE_THREAT_LATE_F = 1; // a request may wait for a CD until this close to the contact
 const FLARE_THREAT_END_F = 4; // ... and is dropped this long after it (a hit / ok cancels it sooner)
+// telemetry (2026-10-20; args.telemetry, default OFF): logging only. With it on, predMark carries def1's p0-p4 /
+// argmax, every parry / dodge press gets a `press result` read 5-10 f later (the parry button's white glow,
+// combat/parry_ok.png, the dodge button's white glow), and `state` marks record curtain / stagger / off / hp / qi
+// transitions. No press, touch or plan path reads this state; with it off no extra read runs and the events are
+// unchanged. The glow ROIs / masks are the ones measured on r748 (data/tmp/dufu_yolo/glow.py; parry lit 200-270 px
+// vs 60-80 idle; dodge flash 500-1000 px vs 80-100 idle).
+const TEL_PRESS_DELAY_F = 5, TEL_PRESS_LATE_F = 10; // first read at the first frame >= 5 f; past 10 f = unknown
+const TEL_PRESS_LATE2_F = 14, TEL_PRESS_LATE2_MAX_F = 18; // second read (12-18 f): the late glow / hit flash
+const TEL_PARRY_GLOW_ROI = /** @type {Box} */ ([934, 477, 36, 36]); // S<40, V>230 (glow.py)
+const TEL_DODGE_GLOW_ROI = /** @type {Box} */ ([906, 656, 36, 36]); // the dodge button's white flash
+const TEL_GLOW = { lower: [0, 0, 230], upper: [180, 40, 255], method: 40 };
+const TEL_PARRY_GLOW_PX = 150, TEL_DODGE_GLOW_PX = 250;
+const TEL_PARRY_OK_ROI = /** @type {Box} */ ([815, 391, 75, 75]); // combat.js parryOk (the 重击派生 diamond)
+const TEL_HP_STEP = 0.02, TEL_QI_STEP = 8; // a `state` hp / qi mark needs at least this much drift
+// 金光抓的金色亮线：r750 95600-95750 的 FLASH 金色掩码有 780px 宽、23k-49k px，远早于 tell
+// flare_grab 95820。这里只做 log-only 的 `goldline` on/off，不触发任何 press；逐帧读取（线只持续约
+// 4-5f，400ms 的 slowFlare 会漏）。r752 设备验证：27 段/298s，不是 grab 专属，详见
+// docs/telemetry-findings.md §16；不要按单个上升沿 dodge。
+/** @type {Box} */ const TEL_GOLD_ROI = [150, 120, 780, 440];
+const TEL_GOLD = { lower: [8, 25, 235], upper: [35, 255, 255], method: 40 };
+const TEL_GOLD_PX = 5000, TEL_GOLD_W = 300;
+// grabClass: the old combat.js flare3 input (3 gray frames, 96 px, the boss + effects) for the log-only p[other/grab/slam].
+const GRAB_CLASS_OPTS = { roi: [240, 30, 600, 600], size: 96, color: "gray", frames: [-4, -2, 0], frame_ms: 1000 / 30, post: "softmax" };
 // v8 hit chain (data/tmp/dufu_breakthrough/chain.md §4, chain_new.py; args all default OFF). Lit-axis facts (263-411):
 //   the device sees a blow at H+7 (median) and then pressed nothing for 500 ms (H+22); the real stun is ~H+8 on a
 //   light blow (< 4%), ~H+12-15 on a mid one, ~H+18-20 on a heavy one. A 卸势 after a whiffed (early) one is locked
@@ -578,6 +602,8 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   tellAnchor?: boolean, curtainImg?: boolean, curtainDark?: boolean, repress?: boolean, repressGap?: number, repressMax?: number,
  *   closeIn?: boolean, qiAttack?: boolean, qiExecWait?: number, execThreshold?: number,
  *   flareMode?: string, flareAnchor?: Record<string, number>, futDodgeLead?: number, flareGrabDodge?: boolean, grabParry?: boolean,
+ *   grabContactDodge?: boolean, grabContactLeadF?: number, grabContactMinF?: number,
+ *   grabClass?: boolean, grabClassModel?: string,
  *   curtainTimed?: boolean, sweepLead?: number, sweepPeriod?: number, curtainKeepParry?: boolean,
  *   flare2?: boolean, failEscape?: boolean, flareHoldFut?: boolean,
  *   flareSplit?: boolean, flareSplitTh?: number, flareFastAnchor?: number, curtainBeatEntry?: boolean, curtainBeatF?: number,
@@ -586,7 +612,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   offComboVeto?: boolean, offGuardMs?: number, offAbortMs?: number, offAfterHitMs?: number, offAfterDodgeMs?: number,
  *   offAfterTellMs?: number, offHpMin?: number, offStrongTh?: number, offStrongBins?: number, offContact?: number,
  *   qiPlan?: boolean, qiExecAfter?: number, qiExecMax?: number, qiLightMs?: number, qiPostMs?: number, qiExecFix?: boolean,
- *   untilCleared?: boolean, offQuietOff?: number, offMinOpenMs?: number, offPoke?: boolean, offLightMs?: number,
+ *   untilCleared?: boolean, telemetry?: boolean, offQuietOff?: number, offMinOpenMs?: number, offPoke?: boolean, offLightMs?: number,
  *   offLightMax?: number, offBurstMs?: number, offWhiffN?: number, offSkill?: boolean, offSkillPauseMs?: number,
  *   offCharge?: boolean, offHotHoldMs?: number, offNoCancelMs?: Record<string, number>, qiSkill?: boolean,
  *   qiColdHoldMs?: number, qiPostLeftMs?: number, qiFront?: boolean, qiFrontBuffMs?: number, qiFrontBurstMs?: number,
@@ -619,10 +645,14 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  *   keepPlanOnHit / posthit / posthitNarrow: the v6 second-segment lifecycle switches (all default off).
  *   v8 (all default off, @see ANCHOR_LATE / SWEEP_PERIOD_F / FLARE2_MS / FAIL_ESCAPE_MS): flareMode dodge | late |
  *   parry, flareAnchor (overrides the mode's anchor table), futDodgeLead, flareGrabDodge; curtainTimed (sweepLead,
- *   sweepPeriod); curtainKeepParry; flare2; failEscape; flareHoldFut (@see FLARE_HOLD_F).
+ *   sweepPeriod); curtainKeepParry; flare2; failEscape; flareHoldFut (@see FLARE_HOLD_F). grabContactDodge (default
+ *   off, @see the args block): a slow flare_grab dodge at c1 - grabContactLeadF, dropping the same contact's fut dodge
+ *   so the timed dodge owns the slot; fast grabs keep the anchor.
  *   v8 offense (all default off, @see OFF_QUIET_TH / QP_EXEC_AFTER_MS / CLR_LOW_PX): offShadow (+ the off* gate
  *   parameters; logs only, no touches); qiPlan (qiExecAfter / qiExecMax / qiLightMs / qiPostMs; replaces qiAttack);
- *   untilCleared. Part 2 (@see OFF_QUIET_OFF): offQuietOff / offMinOpenMs (gate hysteresis); offPoke (offLightMs /
+ *   untilCleared. telemetry (default off; logs only, @see TEL_PRESS_DELAY_F): def1 p0-p4 + argmax in `pred`, a
+ *   `press result` 5-10 f after each parry / dodge press, and `state` marks for curtain / stagger / off / hp / qi.
+ *   Part 2 (@see OFF_QUIET_OFF): offQuietOff / offMinOpenMs (gate hysteresis); offPoke (offLightMs /
  *   offLightMax / offBurstMs / offWhiffN), offSkill (offSkillPauseMs), offCharge (offHotHoldMs), offNoCancelMs (per
  *   action: light buff switch dash burst strike ranshi charge); qiSkill (qiColdHoldMs / qiPostLeftMs), qiFront
  *   (qiFrontBuffMs / qiFrontBurstMs / qiFrontSwitchMs; @see QF_BURST_MS: 唤千军 -> 横刀 爆发 -> 蓄力, then the 处决,
@@ -657,6 +687,7 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
  */
 export default function (args = {}) {
     const observe = args.observe ?? false;
+    const telemetry = args.telemetry ?? false; // logs only (@see TEL_PRESS_DELAY_F); no press / touch / plan change
     const untilMs = args.ms ?? 300_000;
     const model = args.model ?? "dufu/unified_head2.onnx";
     const backModel = args.backModel ?? "dufu/unified_back2.onnx";
@@ -734,8 +765,25 @@ export default function (args = {}) {
     const flareMode = args.flareMode === "late" || args.flareMode === "parry" ? args.flareMode : "dodge";
     const flareGrabDodge = args.flareGrabDodge ?? true; // parry mode: grab tells still dodge (anchor 4)
     const grabParry = args.grabParry ?? false; // EXPERIMENTAL, default off: 742-744 pressed 23 live-grab labels, only 1/14 contacts ok; the labels include normal swings, so do not enable without a better grab classifier.
+    // grabContactDodge (default OFF, 2026-10-21): user confirmed the catch is the boss hand/weapon contact; the tell's
+    // fut contact c1 follows the delayed hp drop by ~9-10 f in the four labeled slow grabs (r752 66128/190014/282626,
+    // r750 96597). For a slow grab (c1 >= grabContactMinF) arm the dodge at c1 - grabContactLeadF and drop the fut
+    // dodge targeting the same contact so it does not take the dodge CD first. Fast grabs (c1 < 18 f) keep the old
+    // anchor: their catch is already at tell+1-2 f and a contact dodge would be late. Not a grab detector by itself;
+    // the tell label also fires on normal gold attacks, so this stays default off until a controlled A/B.
+    const grabContactDodge = args.grabContactDodge ?? false;
+    const grabContactLeadF = Math.min(20, Math.max(0, args.grabContactLeadF ?? 10)); // frames before c1
+    const grabContactMinF = Math.min(40, Math.max(0, args.grabContactMinF ?? 18)); // only slow grabs
+    // grabClass (default OFF, log-only, 2026-10-21): run the old dufu/flare3.onnx on the first sustained flare_grab
+    // tell of an episode and log p [other, grab, slam]. This tests whether the existing 3-class model can separate a
+    // real golden-hand/chain grab from the normal gold attacks that also carry the grab tell. No plan / press change.
+    const grabClass = args.grabClass ?? false;
+    const grabClassModel = args.grabClassModel ?? "dufu/flare3.onnx";
+    let grabClassFor = -1; // the episode already classified
     let grabParryFor = -1; // the flare episode (onset ms) that already got its grabParry item
     const grabS = { plans: 0, replacedDodges: 0 };
+    const gcS = { plans: 0, droppedFut: 0, fastKept: 0 };
+    const gclsS = { calls: 0, ready: 0, grab: 0, other: 0, slam: 0 };
     /** @type {Record<string, number>} the anchor table of the mode (frames after the episode's first tell fire) */
     const anchorTab = { ...(flareMode === "late" ? ANCHOR_LATE : flareMode === "parry" ? ANCHOR_PARRY : ANCHOR_FRAMES), ...(args.flareAnchor ?? {}) };
     // fut-head dodge items: own target show lead (default = the parry's, i.e. the v7 issue lead; late mode 2 f)
@@ -905,6 +953,160 @@ export default function (args = {}) {
         const t = Date.now();
         events.push([t, t - start, kind, detail]);
         log(`@${t} +${t - start} ${kind}${detail ? " " + detail : ""}`);
+    }
+
+    // --- telemetry (args.telemetry, default OFF): logs only. Nothing in the press / touch / plan paths reads this;
+    // `telTick` detects the press timestamps already written by every path (plan, posthit, hitEscape, early re-press,
+    // curtain, spin) and reads the button 5-10 f later, then a second time at 14-18 f. With it off every function
+    // here returns before any read.
+    /** @type {{kind: "parry" | "dodge", at: number, first: boolean, early: string, late: boolean, off: string, busy: number, grab: number}[]} */
+    let telProbes = [];
+    /** @type {null | {curtain: boolean, staggerOn: boolean, staggerUntil: number, hp: number | null, qi: number, off: string, parryAt: number, dodgeAt: number}} */
+    let telPrev = null;
+    let telWouldAt = 0, telWouldLast = "", telGoldOn = false;
+    /** The offense's current action ("" when offShadow etc. are off). @param {number} now */
+    function telOffState(now) {
+        if (!offOn) return "off";
+        if (offHold) return `hold:${offHold.a}`;
+        if (offWalking) return `walk:${offWalkWhy}`;
+        if (offUpAt > now) return "tap";
+        if (offOpenAt) return "gate";
+        return "idle";
+    }
+    /** @param {Box} roi */
+    function telGlow(roi) {
+        const h = color({ ...TEL_GLOW, image: img, roi, count: 1 });
+        return h.hit ? h.results[0]?.count ?? 0 : 0;
+    }
+    /** The first read (5-10 f); returns `lit` / `none`. @param {number} now
+     * @param {{kind: "parry" | "dodge", at: number, first: boolean, early: string, late: boolean, off: string, busy: number, grab: number}} p */
+    function telReadPress(now, p) {
+        const delayF = Math.round((now - p.at) / FRAME_MS);
+        if (p.kind === "parry") {
+            const n = telGlow(TEL_PARRY_GLOW_ROI);
+            const ok = match("combat/parry_ok.png", { image: img, roi: TEL_PARRY_OK_ROI, threshold: -1 }).score;
+            const state = n >= TEL_PARRY_GLOW_PX ? "lit" : "none";
+            mark("press result", `parry ${state} glow=${n}px ` +
+                `parry_ok=${ok == null ? "-" : ok.toFixed(2)} stance=unknown off=${p.off} busy=${p.busy}ms grab=${p.grab} ` +
+                `delay=${delayF}f press=+${Math.round(p.at - start)}ms`);
+            return state;
+        }
+        const n = telGlow(TEL_DODGE_GLOW_ROI);
+        const state = n >= TEL_DODGE_GLOW_PX ? "lit" : "none";
+        mark("press result", `dodge ${state} glow=${n}px off=${p.off} busy=${p.busy}ms grab=${p.grab} ` +
+            `delay=${delayF}f press=+${Math.round(p.at - start)}ms (execution unverified)`);
+        return state;
+    }
+    /** The second read (14-18 f): late glow after the first result. @param {number} now
+     * @param {{kind: "parry" | "dodge", at: number, first: boolean, early: string, late: boolean, off: string, busy: number, grab: number}} p */
+    function telReadLate(now, p) {
+        const n = telGlow(p.kind === "parry" ? TEL_PARRY_GLOW_ROI : TEL_DODGE_GLOW_ROI);
+        const state = n >= (p.kind === "parry" ? TEL_PARRY_GLOW_PX : TEL_DODGE_GLOW_PX) ? "lit" : "none";
+        mark("press late", `${p.kind} ${state} glow=${n}px early=${p.early} off=${p.off} busy=${p.busy}ms grab=${p.grab} ` +
+            `delay=${Math.round((now - p.at) / FRAME_MS)}f press=+${Math.round(p.at - start)}ms`);
+    }
+    /** Curtain shadow: what syncK would plan if the curtain did not suppress it. Log-only, no plan / press.
+     * @param {number} now */
+    function telWouldPlan(now) {
+        if (now - telWouldAt < 300) return;
+        telWouldAt = now;
+        /** @type {string[]} */
+        const out = [];
+        for (let k = 0; k < 3; k++) {
+            const t = targetOf(now, k);
+            if (!t) continue;
+            if (t.far) { out.push(`k${k} far`); continue; }
+            if (t.late) { out.push(`k${k} late`); continue; }
+            out.push(`k${k} ${t.kind} c+${Math.round((t.cMs - now) / FRAME_MS)}f` +
+                (t.branchMs ? ` br+${Math.round((t.branchMs - now) / FRAME_MS)}f` : ""));
+        }
+        const s = out.length ? out.join(" | ") : "none";
+        if (s !== telWouldLast) {
+            telWouldLast = s;
+            mark("would-plan", s);
+        }
+    }
+    /** Log-only: the golden grab line (a wide gold band), on/off. No press. @param {number} now */
+    function telGoldLine(now) {
+        const h = color({ ...TEL_GOLD, image: img, roi: TEL_GOLD_ROI, count: 150, connected: true });
+        const m = h.hit ? h.results.find((r) => (r.box?.[2] ?? 0) >= TEL_GOLD_W && (r.count ?? 0) >= TEL_GOLD_PX) : null;
+        const on = !!m;
+        if (on === telGoldOn) return;
+        telGoldOn = on;
+        mark("goldline", on ? `on w=${m.box[2]}px count=${m.count ?? 0} f${img.seq}` : "off");
+    }
+    /** End of each loop frame: press probes + state transitions. @param {number} now */
+    function telTick(now) {
+        if (!telemetry) return;
+        telGoldLine(now);
+        if (telPrev) {
+            // Every parry / dodge press writes lastParryAt / lastDodgeAt (plan press, posthit, hitEscape, early
+            // re-press, curtain sweeps, spin). Diffing them catches all paths without instrumenting each one.
+            const offNow = telOffState(now);
+            const busy = Math.max(0, offBusyUntil - now);
+            const grab = (flareLastArg === 2 && now - flareLastFireAt <= 800) || pred?.tell.arg === 2 ? 1 : 0;
+            if (!observe && lastParryAt && lastParryAt !== telPrev.parryAt) {
+                telProbes.push({ kind: "parry", at: lastParryAt, first: false, early: "", late: false, off: offNow, busy, grab });
+                if (telProbes.length > 16) telProbes.shift();
+            }
+            if (!observe && lastDodgeAt && lastDodgeAt !== telPrev.dodgeAt) {
+                telProbes.push({ kind: "dodge", at: lastDodgeAt, first: false, early: "", late: false, off: offNow, busy, grab });
+                if (telProbes.length > 16) telProbes.shift();
+            }
+        }
+        for (const p of [...telProbes]) {
+            if (!p.first) {
+                if (now < p.at + TEL_PRESS_DELAY_F * FRAME_MS) continue;
+                if (now - p.at > TEL_PRESS_LATE_F * FRAME_MS) {
+                    p.first = true;
+                    p.early = "unknown";
+                    mark("press result", `${p.kind} unknown delay=${Math.round((now - p.at) / FRAME_MS)}f (read window missed)`);
+                } else {
+                    p.early = telReadPress(now, p);
+                    p.first = true;
+                }
+            }
+            if (!p.late) {
+                if (now < p.at + TEL_PRESS_LATE2_F * FRAME_MS) continue;
+                if (now - p.at > TEL_PRESS_LATE2_MAX_F * FRAME_MS) {
+                    p.late = true;
+                    mark("press late", `${p.kind} unknown early=${p.early} delay=${Math.round((now - p.at) / FRAME_MS)}f (late window missed)`);
+                } else {
+                    telReadLate(now, p);
+                    p.late = true;
+                }
+                telProbes = telProbes.filter((x) => x !== p);
+            }
+        }
+        const offNow = telOffState(now);
+        if (!telPrev) {
+            telPrev = { curtain: inCurtain, staggerOn: now < staggerUntil, staggerUntil, hp: hpNow, qi: qiNow,
+                        off: offNow, parryAt: lastParryAt, dodgeAt: lastDodgeAt };
+            mark("state", `telemetry start curtain=${inCurtain ? "in" : "out"} ` +
+                `hp=${hpNow == null ? "-" : Math.round(hpNow * 100) + "%"} qi=${qiNow} off=${offNow}`);
+            return;
+        }
+        if (inCurtain !== telPrev.curtain) mark("state", `curtain ${inCurtain ? "in" : "out"}`);
+        const staggerOn = now < staggerUntil;
+        if (staggerOn !== telPrev.staggerOn) {
+            mark("state", staggerOn
+                ? `stagger on +${Math.round((staggerUntil - now) / FRAME_MS)}f (${staggerUntil - now} ms) control=unknown`
+                : "stagger over");
+        } else if (staggerOn && staggerUntil !== telPrev.staggerUntil) {
+            mark("state", `stagger moved to +${Math.round((staggerUntil - now) / FRAME_MS)}f`);
+        }
+        // hp / qi keep the last logged value as the baseline, so a slow drift also reports every 2 % / 8 px
+        if (hpNow != null && telPrev.hp != null && Math.abs(hpNow - telPrev.hp) >= TEL_HP_STEP) {
+            mark("state", `hp ${Math.round(telPrev.hp * 100)}% -> ${Math.round(hpNow * 100)}%`);
+            telPrev.hp = hpNow;
+        } else if (hpNow != null && telPrev.hp == null) telPrev.hp = hpNow;
+        if (qiNow >= 0 && telPrev.qi >= 0 && Math.abs(qiNow - telPrev.qi) >= TEL_QI_STEP) {
+            mark("state", `qi ${telPrev.qi} -> ${qiNow} px`);
+            telPrev.qi = qiNow;
+        } else if (qiNow >= 0 && telPrev.qi < 0) telPrev.qi = qiNow;
+        if (offNow !== telPrev.off) mark("state", `off ${telPrev.off} -> ${offNow}`);
+        Object.assign(telPrev, { curtain: inCurtain, staggerOn, staggerUntil, off: offNow,
+                                 parryAt: lastParryAt, dodgeAt: lastDodgeAt });
     }
 
     /** @type {{back: number[], head: number[], reads: number[], loop: number[]}} */
@@ -1612,6 +1814,26 @@ export default function (args = {}) {
             mark("late", `tell ${t.label}`);
             return;
         }
+        if (grabClass && t.arg === 2 && grabClassFor !== flareFirstAt) {
+            grabClassFor = flareFirstAt;
+            gclsS.calls++;
+            let p = null;
+            try {
+                const r = infer(grabClassModel, { ...GRAB_CLASS_OPTS, image: img });
+                if (r.ready && r.probs) p = r.probs;
+            } catch (e) { /* a missing model / bad frame is logged as not ready, not fatal */ }
+            if (p && p.length >= 3) {
+                gclsS.ready++;
+                const a = argmax(p);
+                if (a === 1) gclsS.grab++;
+                else if (a === 2) gclsS.slam++;
+                else gclsS.other++;
+                mark("grabclass", `p ${p.slice(0, 3).map((x) => x.toFixed(2)).join("/")} arg ${["other", "grab", "slam"][a]} ` +
+                    `tellp ${t.p.toFixed(2)} c1 +${Math.round((c1 - now) / FRAME_MS)}f`);
+            } else {
+                mark("grabclass", `not ready tellp ${t.p.toFixed(2)}`);
+            }
+        }
         const label = TELL_LABELS[t.arg];
         if (grabParry && !flareThreat && flareGrabDodge && t.arg === 2 && anchored
             && grabParryFor !== flareFirstAt && st.none < 0.65 && st.sum > 0.01
@@ -1636,8 +1858,24 @@ export default function (args = {}) {
                       untilMs: c1 + missGraceMs, why: `tell flare_grab parry (grabParry) p${Math.round(t.p * 100)}` });
             return;
         }
-        let at;
-        if (anchored && flareMode === "parry" && !(flareGrabDodge && t.arg === 2)) {
+        let at, contact = false;
+        if (anchored && t.arg === 2 && grabContactDodge && flareMode !== "parry"
+            && c1 - now >= grabContactMinF * FRAME_MS) {
+            // Slow grab: the boss hand/weapon contact is ~9-10 f before the delayed hp drop (c1). The fut dodge
+            // usually presses at c1-14 and would take the dodge CD first, so drop it for this contact and let the
+            // contact-timed dodge own the slot. Fast grabs (c1 < min) keep the old anchor.
+            contact = true;
+            for (const o of [...plan]) {
+                if (!o.pressedAt && o.src === "fut" && o.kind === "dodge"
+                    && Math.abs(o.cMs - c1) <= 12 * FRAME_MS) {
+                    dropItem(o, "grab contact owns the slot");
+                    gcS.droppedFut++;
+                }
+            }
+            at = Math.max(now, c1 - grabContactLeadF * FRAME_MS);
+            gcS.plans++;
+            mark("grab", `contact c+${Math.round((c1 - now) / FRAME_MS)}f at+${Math.round((at - now) / FRAME_MS)}f lead=${grabContactLeadF}f`);
+        } else if (anchored && flareMode === "parry" && !(flareGrabDodge && t.arg === 2)) {
             // v8 parry mode: the flare gets a 卸势 lit ~5-6 f before its contact (one per episode, like the dodge)
             const pat = Math.max(now, flareFirstAt + (anchorTab[label] ?? ANCHOR_PARRY.flare_other) * FRAME_MS);
             if (plan.some((x) => x.src === "tell" && x.kind === "parry" && Math.abs(x.atMs - pat) < TELL_DEDUP_MS)) return;
@@ -1646,8 +1884,7 @@ export default function (args = {}) {
             tellParries++;
             addItem({ kind: "parry", k: -1, src: "tell", cMs: pat + issueLead, atMs: pat, untilMs: pat + issueLead + missGraceMs, why: `tell ${label} parry anchor p${Math.round(t.p * 100)}` });
             return;
-        }
-        if (anchored) {
+        } else if (anchored) {
             // v7 A1: press at the episode onset + anchor frames (the appearance lands ~5 f later); the head's first
             // fire is the image onset +-3 f (tells head vs flares_ds onsets, 233-252: p50 0 / p90 +3). v8: the
             // mode's table (late: show ~2 f before the contact); parry mode's grab dodge keeps the v7 table
@@ -1664,7 +1901,8 @@ export default function (args = {}) {
         if (plan.some((x) => x.src === "tell" && x.kind === "dodge" && Math.abs(x.atMs - at) < TELL_DEDUP_MS)) return;
         lastTellDodgeArg = t.arg;
         lastTellDodgeAt = now;
-        const tit = addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: at, untilMs: Math.max(c1, at) + missGraceMs, why: `tell ${label}${anchored ? " anchor" : ""} p${Math.round(t.p * 100)}` });
+        if (t.arg === 2 && grabContactDodge && !contact) gcS.fastKept++;
+        const tit = addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: at, untilMs: Math.max(c1, at) + missGraceMs, why: `tell ${label}${contact ? " contact" : anchored ? " anchor" : ""} p${Math.round(t.p * 100)}` });
         if (flareHoldFut && foFrom && anchored && t.arg === 1 && !foItem) {
             foItem = tit;
             foS.anchorPlans++;
@@ -1776,6 +2014,14 @@ export default function (args = {}) {
         const items = [...plan].sort((a, b) => a.atMs - b.atMs);
         for (const it of items) {
             if (!plan.includes(it) || it.pressedAt) continue;
+            if (grabContactDodge && it.src === "fut" && it.kind === "dodge"
+                && plan.some((x) => x.src === "tell" && !x.pressedAt && x.why.includes(" contact ")
+                    && Math.abs(x.cMs - it.cMs) <= 12 * FRAME_MS)) {
+                // a fut dodge added after the grab tell must not take the contact dodge's CD
+                dropItem(it, "grab contact owns the slot");
+                gcS.droppedFut++;
+                continue;
+            }
             if (now < it.atMs) continue;
             if (it.branch) {
                 if (now < it.t1Ms + 3 * FRAME_MS) continue;
@@ -2047,6 +2293,8 @@ export default function (args = {}) {
                 curtainSync = true;
                 for (let k = 0; k < 3; k++) syncK(now, k);
                 curtainSync = false;
+            } else if (telemetry) {
+                telWouldPlan(now); // log-only: what syncK would plan if the curtain did not suppress it
             }
         } else {
             for (let k = 0; k < 3; k++) syncK(now, k);
@@ -2072,8 +2320,11 @@ export default function (args = {}) {
         const st = futStats(pred.fut[0]);
         let s1 = 0;
         for (let i = 1; i <= s1Hi; i++) s1 += futBin(0, i);
+        const def1 = pred.def[0];
+        // telemetry: the full def1 distribution next to its argmax (the default `def1 <label>` stays untouched)
+        const def1Tel = telemetry ? ` def1 p ${def1.map((p) => p.toFixed(2)).join("/")} arg ${DEF_LABELS[argmax(def1)]}` : "";
         mark("pred", `S1 ${s1.toFixed(2)} bin ${st.mode}(${FUT_LABELS[st.mode] ?? "-"}) c1 +${st.sum > 0 ? Math.round(st.exp) : "-"}f ` +
-            `def1 ${DEF_LABELS[argmax(pred.def[0])]} tell ${pred.tell.label} combo ${(comboV6 ? COMBO6_LABELS : COMBO_LABELS)[pred.combo.arg]} ${pred.combo.p.toFixed(2)} stage ${pred.stage.label}`);
+            `def1 ${DEF_LABELS[argmax(def1)]} tell ${pred.tell.label} combo ${(comboV6 ? COMBO6_LABELS : COMBO_LABELS)[pred.combo.arg]} ${pred.combo.p.toFixed(2)} stage ${pred.stage.label}${def1Tel}`);
     }
     let predMarkAt = 0;
 
@@ -4857,6 +5108,7 @@ export default function (args = {}) {
                 s.at = nowS;
                 s.run(nowS);
             }
+            telTick(Date.now());
             tMs.loop.push(Date.now() - t0);
             looks++;
             if (Date.now() >= until) break;
@@ -4875,10 +5127,10 @@ export default function (args = {}) {
         `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, weak ${weakWindows} (${weakLights} light, ${weakExecs} exec), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
     if (seqRing) log(`seqRing: ${headCalls} head calls, ringBad ${ringBad} (device ring vs own ${ringBad ? "MISMATCH" : "ok"})`);
-    const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn || flareSplit || flareThreat || grabParry;
+    const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn || flareSplit || flareThreat || grabParry || grabContactDodge || grabClass;
     if (flareHoldFut) foEnd("run over");
     const v8 = v8On ? { flareMode, tellParries, flare2s, timedSweeps, failEscapes, ...(grabParry ? { grab: grabS } : {}), ...(flareHoldFut ? { holdFut: foS } : {}), ...(chainOn ? { chain: hcS } : {}),
-        ...(flareSplit ? { split: fsS } : {}), ...(flareThreat ? { threat: ftS } : {}),
+        ...(flareSplit ? { split: fsS } : {}), ...(flareThreat ? { threat: ftS } : {}), ...(grabContactDodge ? { grabContact: gcS } : {}), ...(grabClass ? { grabClass: gclsS } : {}),
         ...(curtainBeatEntry ? { beatEntry: beatS } : {}) } : undefined;
     if (v8) log(`v8: ${JSON.stringify(v8)}`);
     // v8 offense: only when one of its switches is on (the default return is unchanged)
