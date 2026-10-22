@@ -215,7 +215,10 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 // round start prep (@see prep): the item slot opens a column above it; the pick swaps with the slot's item
 /** @type {Point} */ const ITEM_OPEN = [700, 633];
 /** @type {Point} */ const ITEM_PICK = [702, 575];
-const PREP_MENU_MS = 600, PREP_USE_MS = 1500;
+const PREP_MENU_MS = 600, PREP_USE_MS = 1500, PREP_SWAP_TRIES = 3;
+// the slot's item: the potion jar is white (26 px), the poison purple (0)
+/** @type {Box} */ const SLOT_ROI = [683, 650, 35, 30];
+const SLOT_POTION_PX = 10;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
@@ -1270,8 +1273,15 @@ export default function (args = {}) {
         step(ITEM_OPEN, PREP_MENU_MS);
         step(ITEM_PICK, PREP_MENU_MS);
         step(POTION, PREP_USE_MS); // the slot now holds the poison
-        step(ITEM_OPEN, PREP_MENU_MS);
-        step(ITEM_PICK, PREP_MENU_MS); // the potion took the poison's place
+        // the potion takes the poison's place; checked, it once stayed poison and the drink never came
+        const potionIn = () => color({ ...ICON_WHITE, image: shot(), roi: SLOT_ROI, count: SLOT_POTION_PX }).hit;
+        let back = false;
+        for (let i = 0; i < PREP_SWAP_TRIES && !back; i++) {
+            step(ITEM_OPEN, PREP_MENU_MS);
+            step(ITEM_PICK, PREP_MENU_MS);
+            back = potionIn();
+            if (!back) mark("prep", `potion not back in the slot (try ${i + 1})`);
+        }
         // 增益 is 陌刀's (横刀 has 爆发 there): switch first when the round starts on 横刀
         img = shot();
         let w = offWeaponNow();
@@ -1283,7 +1293,7 @@ export default function (args = {}) {
         if (w !== "modao") mark("prep", `weapon ${w ?? "unknown"}: 增益 may be the wrong button`);
         step(BUFF, PREP_USE_MS);
         step(QISHU, PREP_USE_MS);
-        mark("prep", `poison + 增益 + 伤害 (${w ?? "unknown"}) in ${Date.now() - start} ms`);
+        mark("prep", `poison + ${back ? "potion back" : "POTION NOT BACK"} + 增益 + 伤害 (${w ?? "unknown"}) in ${Date.now() - start} ms`);
     }
 
     // --- round start: walk in, in short bursts, until the boss bar shows
