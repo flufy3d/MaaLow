@@ -457,8 +457,8 @@ if (r && r.score >= 0.4 && r.score - r.second >= 0.1) pos = [r.x, r.y]; // 可�
 工作区 `model/` 下的任意 ONNX 模型（`maalow sync --push` 推上去，下次调用就用新文件），用 MaaFramework 自带的 onnxruntime（1.19.2，`android/app/src/main/cpp/nn_jni.cpp` 只用它的 C API，不加包体）。会话按模型文件和线程等选项缓存，文件变了才重开。
 
 ```js
-// 独夫“还有几帧打中”：固定区域缩到 96×96，第 n−4、n−2、n 帧的灰度图叠成 3 通道
-const r = infer("ttc/ttc.onnx", { image: screenshot(), roi: [240, 30, 600, 600], size: 96, color: "gray",
+// 例：“还有几帧打中”分类器，固定区域缩到 96×96，第 n−4、n−2、n 帧的灰度图叠成 3 通道
+const r = infer("my/ttc.onnx", { image: screenshot(), roi: [240, 30, 600, 600], size: 96, color: "gray",
                                   frames: [-4, -2, 0], frame_ms: 1000 / 30, mean: 0.45, std: 0.25, post: "softmax" });
 if (r.ready && r.index === 1) parry();   // r.probs、r.score、r.output（原始输出）、r.frames（实际用的帧）、r.ms
 ```
