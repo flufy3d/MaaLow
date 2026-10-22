@@ -134,7 +134,8 @@ const POTION_SETTLE_MS = 2500, POTION_WAIT_MAX_MS = 2500;
 // 气竭: 真气 read empty twice AND the 处决 button seen (it can show first). From its first sighting: 轻击 every
 //   QP_LIGHT_MS until QP_EXEC_AFTER_MS, then 处决 when seen (the unpressed plan items go, the boss strikes nothing);
 //   a button gone for QP_LOST_MS walks us in and is tapped as soon as it shows again; 轻击 until 真气 is back.
-// 奇术 (箫吟千浪) where safe (the opening before any contact, or within QS_OK_MS of an ok); a 卸势 cuts it only after
+// 奇术 (箫吟千浪) only in the opening before any contact (after an ok its long recovery ate blows; 轻蓄力 / the
+//   follow-up pay better there, teacher 2026-10-23); a 卸势 cuts it only after
 //   ~2 s, so the horizon must be clear that long. Out only once the cooldown shows; else retried.
 // The 横刀 ok follow-up: a 横刀 ok turns 重击 into the blue 爆发 disc for ~3 s; tap it FOLLOW_DELAY_MS after the ok
 //   (sooner is swallowed); the rest of the offense waits for it meanwhile.
@@ -163,7 +164,7 @@ const QP_EXEC_SCENE_MS = 1100, QP_EXEC_TAP_MS = 50, QP_MAX_MS = 9000, QP_CAND_MS
 const QP_LOST_MS = 300, QP_CHASE_MS = 500, QI_EXEC_EVERY = 3;
 /** @type {Box} */ const EXEC_ROI = [815, 391, 75, 75];
 const EXEC_TH = 0.7;
-const QS_OK_MS = 1500, QS_OPEN_MS = 15_000, QS_RETRY_MS = 3000, QS_EVAL_MS = 7000, QS_NO_CANCEL_MS = 2000, QS_TH = 0.1;
+const QS_OPEN_MS = 15_000, QS_RETRY_MS = 3000, QS_EVAL_MS = 7000, QS_NO_CANCEL_MS = 2000, QS_TH = 0.1;
 const QS_CONFIRM_MS = 1000, QS_LIT_AGAIN_MS = 350, QS_RETRY_SOON_MS = 300, QS_COOL_WHITE = 70, QS_COOL_DARK = 600, QS_LIT_PX = 30;
 /** @type {ColorOptions} */ const QS_DARK = { lower: [0, 0, 0], upper: [180, 255, 34], method: 40 };
 const PF_DELAY_MS = 400, PF_NO_CANCEL_MS = 600, PF_TH = 0.3, PF_WINDOW_MS = 3000, PF_COST_MS = 900, PF_RETRY_MS = 350, PF_TRIES = 3;
@@ -2191,7 +2192,7 @@ export default function (args = {}) {
         if (plan.some((it) => !it.pressedAt && it.atMs - now <= nc + OFF_ABORT_MS)) return "plan";
         return "";
     }
-    /** Where 奇术 may go now ("" = nowhere): the opening (the bar up, no contact yet) or just after an ok. @param {number} now */
+    /** Where 奇术 may go now ("" = nowhere): the opening (the bar up, no contact yet). @param {number} now */
     function qsWhere(now) {
         if (!qsBossAt && bossNow > 50) qsBossAt = now;
         if (qp.shown) return "";
@@ -2199,7 +2200,6 @@ export default function (args = {}) {
             if (lastHitAt || lastOkAt || (qsBossAt && now - qsBossAt > QS_OPEN_MS)) qsOpenOk = false;
             else if (qsBossAt) return "open";
         }
-        if (sinceOk(now) <= QS_OK_MS) return "ok";
         return "";
     }
     /** The tap's end: out (the hold to QS_NO_CANCEL_MS) or not (the hold off, a retry). @param {number} now @param {string} how */
