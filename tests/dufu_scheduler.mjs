@@ -68,7 +68,7 @@ function run(args = {}, options = {}) {
     touches = [];
     stick = [175, 569];
     cfg = { contacts: [1500, 3000, 4500], tell: [], def: 2, hp: () => 1, ...options };
-    const result = dufu({ ms: 5100, potions: 0, ...args });
+    const result = dufu({ ms: 5100, potions: 0, prep: false, ...args });
     const dodges = touches.filter((t) => t.op === "down" && t.id === 2);
     return { result, dodges, touches };
 }

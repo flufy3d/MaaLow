@@ -120,16 +120,17 @@ const POTION_SETTLE_MS = 2500, POTION_WAIT_MAX_MS = 2500;
 // m30 / m40 / m60: fut1 mass of a contact within 1-30 / 1-40 / 1-60 f.
 // The near gate: an ok within OFF_OK_MS or the boss bar down >= OFF_DROP_PX within OFF_DROP_WIN_MS (damage 0-5 s after
 //   an ok took boss px 95%, later 32%), m30 <= OFF_GATE_VETO_TH, no combo veto, not in curtain / dodge / stagger /
-//   potion / OFF_OK_AFTER_HIT_MS after a hit / OFF_AFTER_TELL_MS after a tell. In it: hot 蓄力 (热血难凉) first, else a
-//   cold one for the near time left (>= OFF_COLD_MIN_MS; a switch to 陌刀 only for that 蓄力), 唤千军 on a fresh ok,
-//   轻击 as the filler. A 蓄力 starts only with m60 < OFF_CHARGE_FREE (a 卸势 0-500 ms after the release leaves 0
-//   damage). Each action needs its own horizon: fut1 mass of the contacts before it can be cut < OFF_VETO_TH and no
+//   potion / OFF_OK_AFTER_HIT_MS after a hit / OFF_AFTER_TELL_MS after a tell. In it: hot 蓄力 (热血难凉; a switch to
+//   陌刀 only for that), else back to 横刀; 唤千军 on a fresh ok while still 陌刀; 横刀 轻蓄力 (held 轻击) as the filler.
+//   A 蓄力 starts only with m60 < OFF_CHARGE_FREE (a 卸势 0-500 ms after the release leaves 0 damage). No cold 蓄力:
+//   our own 卸势 cut most of them (teacher, 2026-10-23). Each action needs its own horizon: fut1 mass of the contacts before it can be cut < OFF_VETO_TH and no
 //   plan item within its no-cancel time + OFF_ABORT_MS. OFF_WHIFF_FAR actions in a row without boss px = far.
-// The committed 横刀 set (combat.js hengdaoPart: switch -> 突进 -> 爆发 -> 突进 -> 伤害) starts on a fresh ok with 爆发
-//   cool and plays through, waiting only for the defense's own states; a 金光 / curtain tell (outside 爆发's 2.4 s)
+// The committed 横刀 set (combat.js hengdaoPart: switch -> 突进 -> 爆发 -> 突进 -> 伤害) starts in the open gate with
+//   爆发 cool (爆发 can slip a blow, so no horizon check) and plays through, waiting only for the defense's own states; a 金光 / curtain tell (outside 爆发's 2.4 s)
 //   gives it up. No switch back (the next 蓄力 switches).
 // Far (no ok for OFF_NEAR_OK_MS and no drop for OFF_NEAR_DROP_MS, or the whiffs) for OFF_FAR_MS: one close-in (燃此魂 /
-//   横刀 突进 when lit, else a forward push).
+//   横刀 突进 when lit, else a forward push). 燃此魂 is ended RANSHI_END_MS later by a second tap on its button (unless a
+//   卸势 / dodge / blow cut it first); the offense waits for that.
 // 气竭: 真气 read empty twice AND the 处决 button seen (it can show first). From its first sighting: 轻击 every
 //   QP_LIGHT_MS until QP_EXEC_AFTER_MS, then 处决 when seen (the unpressed plan items go, the boss strikes nothing);
 //   a button gone for QP_LOST_MS walks us in and is tapped as soon as it shows again; 轻击 until 真气 is back.
@@ -144,12 +145,14 @@ const OFF_GUARD_MS = 600, OFF_ABORT_MS = 150, OFF_AFTER_TELL_MS = 1500;
 const OFF_OK_MS = 3000, OFF_VETO_TH = 0.3, OFF_GATE_VETO_TH = 0.45, OFF_CHARGE_FREE = 0.7;
 const OFF_DROP_PX = 1.5, OFF_DROP_WIN_MS = 1200, OFF_DROP_MAX_PX = 80, OFF_BOSS_RING_MS = 4000, OFF_OK_AFTER_HIT_MS = 700;
 const OFF_NEAR_OK_MS = 5000, OFF_NEAR_DROP_MS = 3000, OFF_WHIFF_FAR = 2, OFF_FAR_MS = 8000, OFF_FAR_PUSH_MS = 450;
-const OFF_COLD_MIN_MS = 1500, OFF_COLD_HOLD_MS = 2300, OFF_HOT_HOLD_MS = 1800, OFF_LIGHT_MS = 420;
+const HLIGHT_HOLD_MS = 800; // 横刀 轻击 held: 轻蓄力, out on the lift (the ring fills 0.4-0.75 s; probe 2026-10-23)
+const RANSHI_END_MS = 2500; // 燃此魂 runs on until its button is tapped again (ends it with a slash; teacher, 2026-10-23)
+const OFF_HOT_HOLD_MS = 1800, OFF_LIGHT_MS = 420;
 const OFF_SWITCH_PEND_MS = 1500, OFF_FRESH_OK_MS = 1500, OFF_COMMIT_PAUSE_MS = 3000, OFF_SKILL_PAUSE_MS = 2500;
 const OFF_SLASH_MS = 500, OFF_EVAL_MS = 1200, OFF_SET_RETRY_MS = 5000;
 // how long after an action starts a 卸势 cannot cut it (E0 dummy test, 2026-10-16)
 /** @type {Record<string, number>} */
-const OFF_NO_CANCEL_MS = { light: 0, buff: 2000, switch: 400, dash: 0, burst: 2400, strike: 300, ranshi: 800, charge: 0 };
+const OFF_NO_CANCEL_MS = { light: 0, hlight: 0, buff: 2000, switch: 400, dash: 0, burst: 2400, strike: 300, ranshi: 800, charge: 0 };
 /** @type {Record<string, number>} */ // press + animation (combat.js BUFF_COST_MS / SWITCH_COST_MS / WEAK_SWITCH_MS)
 const OFF_COST_MS = { light: 300, buff: 700, switch: 400, dash: 800, strike: 700, ranshi: 600, burst: 2400, follow: 900 };
 const OFF_ICON_EVERY = 250, OFF_ICON_TH = 0.7;
@@ -208,13 +211,18 @@ const GOLD = { lower: [200, 180, 100], upper: [255, 245, 200] };
 const LOCK_MS = 2000; // between re-lock taps
 // round start: walk in (short bursts, never blocking) until the boss bar shows
 const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
+// round start prep (@see prep): the item slot opens a column above it; the pick swaps with the slot's item
+/** @type {Point} */ const ITEM_OPEN = [700, 633];
+/** @type {Point} */ const ITEM_PICK = [702, 575];
+const PREP_MENU_MS = 600, PREP_USE_MS = 1500;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
 /** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, rearms?: number, relocked?: boolean}} PlanItem */
 
 /**
- * @param {{ms?: number, potions?: number}} [args] ms: run length (default 10 min); potions: drinks allowed (default 1)
+ * @param {{ms?: number, potions?: number, prep?: boolean}} [args] ms: run length (default 10 min); potions: drinks allowed
+ *     (default 1); prep: poison + buffs at the start (default on; the scheduler test turns it off)
  */
 export default function (args = {}) {
     const untilMs = args.ms ?? 600_000;
@@ -1249,6 +1257,25 @@ export default function (args = {}) {
         }
     }
 
+    // --- round start, before walking in (the boss does not come yet): coat the blade with poison, switch the item
+    // slot back to the potion, then 增益 and 伤害 (teacher, 2026-10-23)
+    function prep() {
+        /** @param {Point} p @param {number} ms */
+        const step = (p, ms) => {
+            tap(p);
+            releaseDue(true);
+            sleep(ms);
+        };
+        step(ITEM_OPEN, PREP_MENU_MS);
+        step(ITEM_PICK, PREP_MENU_MS);
+        step(POTION, PREP_USE_MS); // the slot now holds the poison
+        step(ITEM_OPEN, PREP_MENU_MS);
+        step(ITEM_PICK, PREP_MENU_MS); // the potion took the poison's place
+        step(BUFF, PREP_USE_MS);
+        step(QISHU, PREP_USE_MS);
+        mark("prep", `poison + 增益 + 伤害 in ${Date.now() - start} ms`);
+    }
+
     // --- round start: walk in, in short bursts, until the boss bar shows
     let bossSeen = false;
     /** @param {number} now */
@@ -1650,13 +1677,13 @@ export default function (args = {}) {
         inc(offActS.n, a);
         const t = Date.now();
         const sok = lastOkAt ? t - lastOkAt : -1, sdrop = lastDropAt ? t - lastDropAt : -1;
-        const evalAt = a === "charge" || a === "coldCharge" ? Infinity : t + (a === "qishu" ? QS_EVAL_MS : OFF_EVAL_MS);
+        const evalAt = a === "charge" || a === "hlight" ? Infinity : t + (a === "qishu" ? QS_EVAL_MS : OFF_EVAL_MS);
         offRecs.push({ a, src, t, b0: bossNow, done: false, evalAt, sok, sdrop });
         mark("off", `act ${a} ${src} ${offState()} boss ${bossNow} sok ${sok} sdrop ${sdrop}`);
     }
-    /** A held 蓄力 on CHARGE. @param {string} a @param {string} src @param {number} ms */
-    function offStartCharge(a, src, ms) {
-        offAct(a, src, CHARGE, ms);
+    /** A held 蓄力 (陌刀 蓄力 on CHARGE, 横刀 轻蓄力 on LIGHT). @param {string} a @param {string} src @param {number} ms @param {Point} [p] */
+    function offStartCharge(a, src, ms, p = CHARGE) {
+        offAct(a, src, p, ms);
         const now = Date.now();
         offHold = { a, src, startAt: now, until: now + ms };
         offHoldS.n++;
@@ -1882,8 +1909,9 @@ export default function (args = {}) {
     // --- the near gate (@see OFF_OK_MS) and the far close-in
     /** @type {{t: number, b: number}[]} */ const bossRing = [];
     let lastDropAt = 0, okOpenAt = 0, okTickAt = 0, okWhiff = 0, okFarByWhiff = false, okWhiffAt = 0, okFarSince = 0;
+    let ranshiAt = 0; // 燃此魂 out, its ending tap still due
     let okSwitchPend = 0, okSwitchAt = 0, okLastLight = 0, okDeferAt = 0;
-    const DMG_ACTS = new Set(["light", "charge", "coldCharge", "dash", "strike", "burst", "farRanshi", "farDash", "qishu", "follow"]);
+    const DMG_ACTS = new Set(["light", "hlight", "charge", "dash", "strike", "burst", "farRanshi", "ranshiEnd", "farDash", "qishu", "follow"]);
     /** @typedef {{n: number, hit: number, px: number}} OkRes */
     const okS = {
         evalMs: 0, openMs: 0, farMs: 0, opens: 0, farByWhiff: 0, switchPend: 0, chargeDefers: 0,
@@ -1981,7 +2009,7 @@ export default function (args = {}) {
         if (w === "modao" && mdashLit()) {
             inc(okS.closeIns, "ranshi");
             offAct("farRanshi", "far", DASH);
-            offBusyUntil = now + OFF_COST_MS.ranshi;
+            ranshiAt = now;
         } else if (w === "hengdao" && offSeen("dash")) {
             inc(okS.closeIns, "dash");
             offAct("farDash", "far", DASH);
@@ -2001,10 +2029,10 @@ export default function (args = {}) {
         okDeferAt = now;
         return false;
     }
-    /** @param {string} a @param {number} ms */
-    function okCharge(a, ms) {
+    /** @param {string} a @param {number} ms @param {Point} [p] */
+    function okCharge(a, ms, p = CHARGE) {
         okSwitchPend = 0;
-        offStartCharge(a, "ok", ms);
+        offStartCharge(a, "ok", ms, p);
     }
     /** The near gate's action pick. @param {number} now @param {boolean} pend only the 蓄力 a switch was for */
     function okAct(now, pend) {
@@ -2012,8 +2040,7 @@ export default function (args = {}) {
         if (okSwitchPend && now < okSwitchPend) offW = offWeaponNow() ?? offW; // after a switch: per frame, not 4 Hz
         const w = offW;
         const so = sinceOk(now);
-        const left = Math.max(OFF_NEAR_OK_MS - so, OFF_NEAR_DROP_MS - sinceDrop(now), 0);
-        if (!pend && w && burstReady(now) && now >= offSetRetryAt && so <= OFF_FRESH_OK_MS && commitCan(now)) {
+        if (!pend && w && burstReady(now) && now >= offSetRetryAt && commitCan(now)) {
             hd = { step: w === "hengdao" ? "dash1" : "switch", stepAt: now, readyAt: 0, tapAt: 0, tries: 0, gone: false, goneAt: 0 };
             offSetS.started++;
             mark("off", `横刀 set start (${w}, committed) sok ${so} ${offState()}`);
@@ -2021,16 +2048,18 @@ export default function (args = {}) {
             return;
         }
         if (w === "modao") {
-            const can = okCan("charge", now);
-            if (hot && can) {
+            if (hot && okCan("charge", now)) {
                 if (okChargeFree(now, "charge")) return okCharge("charge", OFF_HOT_HOLD_MS);
-            } else {
-                const hold = Math.min(OFF_COLD_HOLD_MS, left);
-                if (hold >= OFF_COLD_MIN_MS && can && okChargeFree(now, "coldCharge")) return okCharge("coldCharge", Math.round(hold));
+            } else if (!hot && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && okCan("switch", now)) {
+                // 横刀 the rest of the time: its ok follow-up (追击重击) and 爆发 pay, a cold 蓄力 was mostly cut by
+                // our own 卸势 (teacher, 2026-10-23)
+                offAct("switch", "ok", SWITCH);
+                okSwitchAt = now;
+                offBusyUntil = now + OFF_COST_MS.switch;
+                return;
             }
-        } else if (w === "hengdao" && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && (hot || left >= OFF_COST_MS.switch + OFF_COLD_MIN_MS)
-            && okCan("switch", now)) {
-            offAct("switch", "ok", SWITCH); // only for the 蓄力 right after it
+        } else if (w === "hengdao" && !pend && hot && now - okSwitchAt >= SWITCH_WAIT_MS && okCan("switch", now)) {
+            offAct("switch", "ok", SWITCH); // only for the hot 蓄力 right after it
             okSwitchAt = now;
             offBusyUntil = now + 300;
             okSwitchPend = now + SWITCH_WAIT_MS + OFF_SWITCH_PEND_MS;
@@ -2044,6 +2073,7 @@ export default function (args = {}) {
             offBuffSeen = false;
             return;
         }
+        if (w === "hengdao" && okCan("hlight", now)) return okCharge("hlight", HLIGHT_HOLD_MS, LIGHT);
         if (now - okLastLight >= OFF_LIGHT_MS && okCan("light", now)) {
             offAct("light", "ok", LIGHT);
             okLastLight = now;
@@ -2077,6 +2107,18 @@ export default function (args = {}) {
             inc(okS.closeWhy, why);
             mark("off", `ok-gate close ${why} after ${now - okOpenAt} ms`);
             okOpenAt = 0;
+        }
+        if (ranshiAt) {
+            if (now - ranshiAt < RANSHI_END_MS) return;
+            // late (the 气竭 window took the frames): a tap now would start a new 燃此魂
+            const cut = Math.max(lastParryAt, lastDodgeAt, lastHitAt) > ranshiAt || now - ranshiAt > RANSHI_END_MS + 500;
+            ranshiAt = 0;
+            if (cut) mark("off", "燃此魂 cut or late: no ending tap");
+            else {
+                offAct("ranshiEnd", "far", DASH);
+                offBusyUntil = now + OFF_COST_MS.ranshi;
+                return;
+            }
         }
         if (hd || offHold || offWalking || now < offBusyUntil) return;
         if (pfHold(now)) return; // the follow-up first
@@ -2278,6 +2320,13 @@ export default function (args = {}) {
         if (plan.some((x) => !x.pressedAt && x.atMs - now < QP_PENDING_MS)) return; // a tell dodge is about to go
         if (now - qp.lastLight < QP_LIGHT_MS) return;
         qp.lastLight = now;
+        // 横刀: 轻蓄力 while one still fits before the 处决 tap (teacher, 2026-10-23), else plain 轻击
+        if (!post && offW === "hengdao" && now - qp.shown + HLIGHT_HOLD_MS + OFF_SLASH_MS <= QP_EXEC_AFTER_MS) {
+            offStartCharge("hlight", "qi", HLIGHT_HOLD_MS, LIGHT);
+            qp.lights++;
+            mark("qi", `qiPlan 轻蓄力 +${now - qp.shown} ms`);
+            return;
+        }
         offAct("light", "qi", LIGHT);
         if (post) qp.post++;
         else qp.lights++;
@@ -2431,6 +2480,7 @@ export default function (args = {}) {
     }
 
     log(`dufu start: ${BACK_MODEL} + ${MODEL}, ${untilMs} ms, issueLead ${ISSUE_LEAD_MS} ms, potions ${maxPotions}`);
+    if (args.prep ?? true) prep();
     let lastFrameStart = Date.now() - 35;
     try {
         for (;;) {
