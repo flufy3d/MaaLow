@@ -9,10 +9,10 @@
 | | 内容 |
 |---|---|
 | 流水线 `pipeline/` | 启动登录 `LaunchAndLogin`、每日签到 `DailySignIn`、各种弹窗（商城、奖励、物品提示、空闲幻灯片）、自动拾取 `AutoPickup`、找怪开打 `SeekAndFight`、据点一键入口 `Cixin`、`Foye`、`Jiurou`、`Longhu`、`Lianhua`（每个据点一个文件 `stronghold_<id>.json`，节点参数就是这个据点的配置，见「据点配置」）、通用的传送链 `StrongholdTeleport`（`Teleport_*`）和清场 `StrongholdFight` |
-| 技能 `skills/` | `move.js` 移动（摇杆、疾跑、追怪、按路点连续定位跑）、`combat.js` 战斗（普通战斗、Boss 战与独夫：蓄力输出、闪避、卸势、处决、转镜头）、`route.js` 据点路线、`stronghold.js` 据点检查、`zhenshou.js` 镇守挑战、`dufu.js` 独夫调度器、`dufu_enter.js` 独夫演练场入口、`clear_popups.js` 连续关弹窗、`dummy.js` 木桩测招、`where()` 开地图读位置、任务栏 OCR、一键入口、传送时找石碑、`auto_pickup.js` 拾取、`pinch.js` 双指缩放、`set_time.js` 调游戏里的时辰（见「调时辰」）；`lib/minimap.js` 读小地图（镜头朝向、红点、据点橙色区域），`lib/hud.js` 右上角图标，`lib/stats.js` 统计 min / p50 / p95，`lib/dufu-reads.js` / `lib/dufu-labels.js` / `lib/dufu-math.js` 独夫读屏（HP/真气/图标/boss 条/金光/幕布边沿）、标签分箱与纯解码；另有 `*_bench.js`、`ttc_probe.js` 等开发期测量脚本 |
+| 技能 `skills/` | `move.js` 移动（摇杆、疾跑、追怪、按路点连续定位跑）、`combat.js` 战斗（普通战斗、Boss 战与独夫：蓄力输出、闪避、卸势、处决、转镜头）、`route.js` 据点路线、`stronghold.js` 据点检查、`zhenshou.js` 镇守挑战、`dufu.js` 独夫调度器、`dufu_enter.js` 独夫演练场入口、`clear_popups.js` 连续关弹窗、`where()` 开地图读位置、任务栏 OCR、一键入口、传送时找石碑、`auto_pickup.js` 拾取、`pinch.js` 双指缩放、`set_time.js` 调游戏里的时辰（见「调时辰」）；`lib/minimap.js` 读小地图（镜头朝向、红点、据点橙色区域），`lib/hud.js` 右上角图标，`lib/stats.js` 统计 min / p50 / p95，`lib/dufu-reads.js` / `lib/dufu-labels.js` / `lib/dufu-math.js` 独夫读屏（HP/真气/图标/boss 条/金光/幕布边沿）、标签分箱与纯解码 |
 | 守护规则 | `AutoPickup`（500 ms）、`DismissIdleSlideshow`、`CloseItemTip`（1000 ms） |
 | OCR 模型 `model/ocr/` | PaddleOCR v4 中文（MaaCommonAssets），onnx 走 Git LFS；读任务栏、据点卡片、宝箱面板。每次只读一小块，约 240 ms，App 多占约 60 MB |
-| 离线工具 `tools/` | `rec_route.py` 从一段录像全自动做据点路线（见「从一段录像做据点路线」；命令行，步骤分在 `rr_map.py` 建图、`rr_plan.py` 规划和写配置、`rr_device.py` 设备上的空跑和补采三块）；`strongholds.py` 读写据点配置（`list` / `show <id>` / `teleport <id>`）；`regress.py` 回归（`save` 存基线，`check` 比对：酒肉山林的规划和离线评测、佛爷寨的 check，不能变差）；`wwm_ocr.py` PC 上的 OCR（同一套 PaddleOCR 模型）；`wwm_locate.py` 小地图处理（`rec_route.py` 调用它）；`route_bench.py` 慈心山院路线跑分；`route_seg.py` 只跑路线的一段（`stronghold=jiurou` 换据点）、`plot_seg.py` 画轨迹（调试用）；`live_run.py <名字> <输出目录>` 实跑一键入口（拆成它的两次技能调用，拿得到路线的完整日志），全程抓帧，打印每趟的定位丢失、卡住、遇敌、重新定位、开箱 |
+| 离线工具 `tools/` | `rec_route.py` 从一段录像全自动做据点路线（见「从一段录像做据点路线」；命令行，步骤分在 `rr_map.py` 建图、`rr_plan.py` 规划和写配置、`rr_device.py` 设备上的空跑和补采三块）；`strongholds.py` 读写据点配置（`list` / `show <id>` / `teleport <id>`）；`wwm_ocr.py` PC 上的 OCR（同一套 PaddleOCR 模型）；`wwm_locate.py` 小地图处理（`rec_route.py` 调用它）；`route_seg.py` 只跑路线的一段（`stronghold=jiurou` 换据点）；`live_run.py <名字> <输出目录>` 实跑一键入口（拆成它的两次技能调用，拿得到路线的完整日志），全程抓帧，打印每趟的定位丢失、卡住、遇敌、重新定位、开箱 |
 
 ## 历史记录
 
@@ -20,7 +20,6 @@
 - [白天小地图配不上的排查](docs/locate-daylight.md)：2026-10-03 的离线分析、预处理改法和验证数据。
 - [独夫逐轮实验日志](docs/dufu-log.md)：2026-10-10 起的逐轮实验、规则和阈值来源。
 - [独夫统一模型交付笔记](docs/dufu-models.md)：v1、v4–v9 的模型、训练、A/B 与推理管道。
-- [离线攻击证据审计](docs/attack-evidence-audit.md)：733/734/737/738/745 的90个待审候选接触、时间与事件定义、分阶段本机复核工具；不运行游戏或修改战斗策略。
 
 ## 据点配置
 
@@ -76,7 +75,7 @@
 * **到宝箱点没有宝箱**（最多 2 轮）：读任务栏。按路线里的毒花点清单，没销毁的（`skip` 掉的不算）沿路线走回去补；任务栏计数比记录的少，说明有一朵误判了，就全部回查一遍；绣金卫那行还在就跑 `StrongholdFight`（只追橙色区域里的红点）清场。然后沿路线回宝箱
 * **补的中间点**：「绕开第二个毒花旁的石像」(6,−28.5)。从第二朵花直线去精英怪会撞上花旁的石像，照解困后走的路补的
 
-**调试**：`uv run python workspaces/WhereWindsMeet/tools/route_seg.py FROM TO [x y] [key=json …] out=…json` 用慈心山院的配置只跑一段（`stronghold=foye` 换据点）（比如 `1 6` 石碑到第一朵花，`'skip=[14]'` 留下第四朵），返回带完整日志；goto 的轨迹每 250 ms 一条，带帧号 `seq`，配合 `scripts/grab_frames.py` 抓的帧能对上画面；`tools/plot_seg.py RUN.json OUT.png`（要 `--extra cv`）把轨迹画到大地图上（底图是 `data/wwm/bigmap/composite.png`）。
+**调试**：`uv run python workspaces/WhereWindsMeet/tools/route_seg.py FROM TO [x y] [key=json …] out=…json` 用慈心山院的配置只跑一段（`stronghold=foye` 换据点）（比如 `1 6` 石碑到第一朵花，`'skip=[14]'` 留下第四朵），返回带完整日志；goto 的轨迹每 250 ms 一条，带帧号 `seq`，配合 `scripts/grab_frames.py` 抓的帧能对上画面。
 
 ## 据点：佛爷寨
 

@@ -468,7 +468,6 @@ if (r.ready && r.index === 1) parry();   // r.probs、r.score、r.output（原�
 * 输出：第一个输出的 `shape` / `output`（最多 4096 个值，`raw: true` 给全部输出）；向量输出带 `index` / `score` / `label`（最大的那个），`post: "softmax" | "sigmoid"` 另给 `probs`；`post: "yolo"` 解码 YOLOv8 / YOLO11 检测头（`[1, 4 + 类数, n]` 或转置），`threshold` / `iou` / `max_det` 过滤和 NMS，`detections` 的框换算回屏幕坐标，`hit` / `box` 是最好的那个（可以直接 `click(r)`）。`labels` 不给时用模型的 `names` 元数据
 * `modelInfo(model)`：输入输出的名字、类型、形状。`threads`（onnxruntime 线程数，默认 1）、`provider`（cpu / nnapi）、`input: true`（返回预处理后的字节，和离线流程对拍）
 * MaaFramework 自己的 `NeuralNetworkClassify` / `NeuralNetworkDetect`（Pipeline 节点，或技能里的 `classify()` / `detect()`）照常可用：工作区有 `model/` 时整个工作区按 bundle 加载，模型放 `model/classify/`、`model/detect/`，`model` 写其下的路径。它们只吃当前一张图、预处理固定
-* 计时：`skills/infer_bench.js`（燕云工作区，只截图不点击）
 
 ## 目标
 
