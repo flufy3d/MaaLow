@@ -1,52 +1,23 @@
-// 独夫 unified defense scheduler (pilot, no attacks). Each processed stream frame: backbone dufu/unified_back2.onnx
-// -> 192-d feature -> causal GRU head dufu/unified_head2.onnx (extra seq [1,30,207]; the head ignores its image
-// input) -> combo/stage/fut1-3/def1-3/tell -> a press plan (卸势 / dodge / potion) rebuilt every frame, revised
-// until a commit window freezes it, executed by cooldowns; bimodal fut results become branches whose later-mode
-// item stays uncommitted until the first mode resolves. Slow rules (curtain gap / flare colour / potion) only run
-// while the per-frame budget is left over: they never hold the key path. `observe` does inference and logging
-// only (no touches at all). The 15 aux columns reproduce unified_head2.json exactly. The boss is kept locked on
-// (tap the lock button whenever its gold icon is gone: the arena auto-locks, the game drops it at the phase
-// change and the camera stops tracking; combat.js rule).
-//   maalow do skill dufu --args '{"observe":true,"ms":45000}'
-// v1 pair: --args '{"model":"dufu/unified_head.onnx","backModel":"dufu/unified_back.onnx"}'
+// 独夫 scheduler (试炼 → 开封皇宫 → 独夫 → 演练场 阶段一). Every stream frame: backbone dufu/unified_back9.onnx -> 192-d
+// feature + 15 aux columns into the device's feature ring -> causal GRU head dufu/unified_head9s.onnx (no image input,
+// seq [1,30,207] read from the ring) -> combo / stage / fut1-3 / def1-3 / tell -> a defense plan (卸势 / dodge / potion)
+// rebuilt every frame, frozen near its press, executed under the button cooldowns. Around it: the flare (金光) anchored
+// dodges, the curtain (幕布) gap rules and timed sweep dodges, the hit chain (stagger by drop, the escape 卸势, the
+// relock wait), the safe drink, and the offense (the near gate after a 卸势 ok, the committed 横刀 set, the far
+// close-in, the 气竭 window with 处决, 奇术, the 横刀 ok follow-up). Slow reads only run on the frame budget's leftover.
+// The behavior is the 2026-10-20 r737 baseline (the args it ran with are the constants here); docs/dufu.md has the
+// numbers and what was tried.
+//   maalow do skill dufu                       (10 min, 1 potion)
+//   maalow do skill dufu --args '{"ms":300000,"potions":0}'
 import { stats } from "./lib/stats.js";
-import { BOSS_FULL, BOSS_RED, BOSS_ROI, ICON_WHITE, ME_X, bossPx, countAtLeast, gapNow, health, litNow, readMean, readQi, seeFlash } from "./lib/dufu-reads.js";
-import { COMBO6_CENTER, COMBO6_LABELS, COMBO_LABELS, DEF_LABELS, FUT_CENTER, FUT_HI, FUT_LABELS, FUT_LO, STAGE_LABELS, TELL_LABELS } from "./lib/dufu-labels.js";
+import { BOSS_FULL, ICON_WHITE, ME_X, bossPx, countAtLeast, gapNow, health, litNow, readMean, readQi, seeFlash } from "./lib/dufu-reads.js";
+import { COMBO6_LABELS, DEF_LABELS, FUT_CENTER, FUT_HI, FUT_LABELS, FUT_LO, STAGE_LABELS, TELL_LABELS } from "./lib/dufu-labels.js";
 import { argmax, futStats, headOut, softmax } from "./lib/dufu-math.js";
 
-// ── 分节地图（2026-10-19 快照；行号会随改动漂移，按 banner / 函数名搜）────────────────────────────────
-// 本文件只放调度器本身；纯函数在 lib/：
-//   lib/dufu-labels.js  头的标签/分箱表（COMBO*/FUT*/DEF/TELL）
-//   lib/dufu-math.js    softmax / argmax / headOut / futStats
-//   lib/dufu-reads.js   HP / 真气 / 技能图标 / boss 条 / 金光 / 幕布边沿的读屏（每个都显式传 Image）
-//
-// L49-L641   常量 + args 规格：模型/按钮/读屏参数（读屏常量已移 lib/dufu-reads.js），v1..v11 每个开关的
-//            背景、默认值与相关报告；改开关先读这里
-// L643-L897  export default：args -> 调度状态（默认值都在这一段）
-// L898-L959  mark/timed、触摸原语（tap/release/halt）、每帧读屏缓存 perFrame
-// L960-L1100 各功能状态：药、幕布绕后、旋转、受击链、flareHold、flareSplit
-// L1101-L1171 预测解码 decode（纯数学在 lib/dufu-math.js）+ 15 列 aux
-// L1172-L1863 计划与执行：targetOf / syncK / tellPlan / branch / executePlan / press
-// L1864-L2010 反馈（onHit / onOk）与 comboPlan（连段模板）
-// L2011-L2124 回合结束（重伤）/ 成功页 halt / 锁定
-// L2125-L2140 开局接近（armed：短促前走直到 boss 条出现）
-// L2141-L2349 slow rules：幕布 slowCurtain / 定时扫 / 药 / 衰弱，按优先级在帧预算剩余里跑
-// L2350-L2481 v10 curtainFlank（flankTick）：幕布近身 -> 取消锁定 -> 前冲 -> 重锁
-// L2482-L2806 v11 spinGuard（spinTick）：金光->劈命中武装，T 前侧闪两下，槽位卸势让路
-// L2807-L4424 v8 offense：quietGate -> 动作（轻击/唤千军/蓄力）-> 近门 -> 奇术/追击 -> qiPlan/qiFront
-// L4425-L4472 untilCleared / clearedCheck（一阶段打完）
-// L4475-L4492 slowQueue（每条慢规则的频率与开关）
-// L4493-L4512 nextShot（取最新帧；静止画面等 NEXT_MS）
-// L4513-L4637 主循环：读屏 -> 死亡/成功 -> 推理 -> 计划/执行 -> 慢规则 -> 预算
-// L4638-L4651 统计与返回（按开关裁剪 v8/off/potion/flank/spin）
-// 文档：docs/dufu-log.md（逐轮实验）、docs/dufu-models.md（模型/推理管道）、
-//       docs/telemetry-implementation.md（telemetry 开关的字段/读数/测试）、
-//       data/tmp/dufu_breakthrough/live/report*.md（各批 A/B 结论）
-// ────────────────────────────────────────────────────────────────────────────────────────────────
-
 /** @type {SkillMeta} */
-export const meta = { description: "独夫 unified model defense: parry/dodge/potion from fut/def/tell (observe = reads only)", timeout: 660_000 };
+export const meta = { description: "独夫 phase one: model defense (卸势 / dodge / potion) + offense (near gate, 处决, 奇术)", timeout: 660_000 };
 
+const MODEL = "dufu/unified_head9s.onnx", BACK_MODEL = "dufu/unified_back9.onnx";
 const T = 30; // ring / seq window (frames)
 const F = 192; // backbone features per frame
 const A = 15; // aux columns per frame
@@ -66,61 +37,23 @@ const STICK_R = 83;
 /** @type {Point} */ const BACKWARD = [175, 652];
 /** @type {Point} */ const LEFT = [92, 569];
 /** @type {Point} */ const RIGHT = [258, 569];
-/** @type {Point} */ const FORWARD = [175, 486];
-// reads (combat.js; aux sources are dataset-exact per data/tmp/dufu/f6.py + ds_build.py): lib/dufu-reads.js
+/** @type {Point} */ const LIGHT = [945, 592];
+/** @type {Point} */ const EXECUTE = [852, 430];
+/** @type {Point} */ const CHARGE = [1020, 478]; // 陌刀 蓄力 (横刀: 重击)
+/** @type {Point} */ const DASH = [833, 593]; // 陌刀 突进 = 燃此魂; 横刀 突进 -> 伤害
+/** @type {Point} */ const BUFF = [825, 668]; // 陌刀 唤千军; 横刀 爆发
+/** @type {Point} */ const SWITCH = [993, 320];
+/** @type {Point} */ const QISHU = [881, 525];
+// reads (lib/dufu-reads.js has the masks / ROIs)
 const HIT_DROP = 0.025; // a blow: health down this much at once
-const QI_STEP = 8, QI_JUMP = 80; // a good 卸势 takes 10-25 px
+const QI_STEP = 8, QI_JUMP = 80; // a good 卸势 takes 10-25 px of the boss's 真气
 const GAP_IN = 20, GAP_PUSH = 120;
 const CURTAIN_GONE_MS = 1500, CURTAIN_FIRST_DODGE_MS = 950, CURTAIN_DODGE_GAP_MS = 700;
-// v10 curtainFlank (teacher 2026-10-18: the black cover blinds the reads and the gap rules cannot dodge the sweep;
-// running through the boss to its back is outside the sweep's fan and keeps the offense up. Round 623: the ok-based
-// "near" was wrong — the boss was still mid-range). @see the args.
-const CURTAIN_FLANK_MS = 1000, CURTAIN_FLANK_NEAR_MS = 5000;
-const CURTAIN_FLANK_NEAR_H = 150; // the near line: the boss gold box height (OFF_STRIKE_H, the strike distance)
-const CURTAIN_FLANK_RELOCK_MS = 1500; // the re-lock waits this long past the curtain state's end (round 623 churn)
-// v11 spinGuard (teacher 2026-10-19; data/tmp/dufu_breakthrough/spin26/REPORT.md; v2 by the batch-25 live fit,
-// data/tmp/dufu_breakthrough/live/report25_spin.md + spin_fit25.json, 648-667 x 10 rounds): the 金光 chain's second
-// half — 金光 onset -> 劈 (the flare's own hits, 1-4) -> a ~4 s pause -> 旋转 (a cloak sweep that carries no flare of
-// its own). The spin's contact sits a fixed 119-120 frames after the 劈 hit h1 (p5-p95 116-123.5); h1 is the contact
-// frame and the runtime sees it as the hp drop h1 + DROP_LAG (@see DROP_LAG). 0.37/min, mean 11.7% hp a hit, 8.8% of
-// all damage taken — and 93% of the 416 recorded spins had nothing but a 卸势 planned before them (def1 unknown ->
-// the scheduler's parry default), which does nothing against a sweep. combat.js's pullGuard (round 9) already solved
-// this shape: two side dodges 250 ms apart, left/right alternating. So: arm on the flare's 劈 hit, press a side dodge
-// at T - spinLeadF, one more spinGapMs later, and keep the slot's CD for ourselves (no fut/tell dodge and no 卸势 for
-// that contact). @see the args; all default off.
-// v2 (batch 25 measured, not fitted): the real contact sits at T_v1 + [-2.0, 0.0, +1.9] (p10/50/90, n=12) — v1's T IS
-// the contact — but v1's dodges LIT 6.5 f early (#1) and 2.0 f late (#2): both missed the 0-4 f-before-contact window.
-// The fix is to move the pair 7 f later, and the fit gives TWO equivalent ways to do it (spin_fit25.py's summary:
-// spinLeadF_v2 = 1 and SPIN_DELAY_F_v2 = 127 are "the equivalent one-constant fix"). This build applies the spec's
-// pair — SPIN_DELAY_F 127 AND spinLeadF 1 — so the taps land at T - 1 / T + 6.5 in the marks, i.e. 7 f PAST the fit's
-// contact target (contact - 1 / contact + 6.5): with one of the two changes undone (spinLeadF 8 here, or
-// SPIN_DELAY_F 120 with spinLeadF 1) the pair sits on the fit's target. spin26/spin_smoke.mjs's INFO line prints both.
-// The v1 gate armed 7.5 times a round for 1.2 real spins (precision 0.16); by the flare label the split is flare_grab
-// 16 arms / 11 spins (0.69 / 0.92) vs flare_other 56 / 1 (0.02), so the arm now needs a flare_grab episode plus an
-// h1 age (the onset -> the 劈 hit) <= SPIN_AGE_F (the real spins: 15-17 f, every v1 arm: 15-37).
-// The label is the episode's OWN (recorded at its onset, @see spinFlareSeen), not the tell's label at the arm: the
-// 金光 is off screen by then. spin26/an21.py reads the dataset's per-frame flare flag (data/tmp/dufu/r<k>.json, the
-// same gold+streak rule the head was trained on) — in 16/16 measured flare_grab arms the flag ends 4-13 f BEFORE the
-// arm frame, and the tell's own flare reports span 6-12 f from their first fire (the run logs' flarehold "episode
-// over" ends) — so a gate reading pred.tell AT the arm would see "none" nearly always and never arm. That is also why
-// the image rule no longer opens episodes (v1's slowFlare hook): its episodes could only be labeled "image" and can
-// never arm, so the hook was pure noise.
-// The age gate on batch 25 (the flare_grab bucket, live/spin_fit25.json): age <= 20 -> 15 arms / 10 of the 12 spins
-// (P 0.67, R 0.83); age <= 21 -> 16 arms / 11 spins (P 0.69, R 0.92). Every grab arm's age is 11-21 and the one the
-// <= 20 gate drops is a real spin (r651 T 1023), so 20 is the spec's default and spinAgeF is there to raise it live.
-const SPIN_DELAY_F = 127; // h1 -> the spin's contact T (v2: the measured contact is T + [-2, 0, +1.9])
-const SPIN_ARM_WIN_F = 45; // the 劈 hit (the drop) must sit this close after the flare episode's onset
-const SPIN_AGE_F = 20; // v2: and the h1 age (the onset -> the 劈 hit) must be <= this (the real spins: 15-17 f)
-const SPIN_LEAD_F = 1, SPIN_GAP_MS = 250, SPIN_LATE_F = 20; // v2: the two dodges: T - lead, + gap, the late deadline
-const SPIN_SLOT_F = 10; // fut/tell items this close to T belong to the spin's slot (no 卸势, no rival dodge)
-const SPIN_TELL_F = 10; // the slot protection watches the tell from T - max(this, spinLeadF + 2) (a new flare's anchored dodge needs the CD)
-const SPIN_EP_GAP_F = 20; // no flare evidence this long: the next report starts a new episode (a fresh arm is allowed)
 
-// scheduler defaults (spec)
-const TARGET_GLOW_LEAD = 9; // frames: press this early for the parry to be lit at the contact
-const LATENCY_FRAMES = 5; // measured press -> on screen, frames
+// the plan
+const ISSUE_LEAD_MS = Math.round((9 + 5) * FRAME_MS); // the parry lit 9 f before the contact + 5 f press -> screen
 const COMMIT_MS = 90; // an item this close is frozen
-const PARRY_CD_MS = 220, DODGE_CD_MS = 500, STAGGER_MS = 500;
+const PARRY_CD_MS = 220, DODGE_CD_MS = 500;
 const NEXT_MS = 50; // wait for a new stream frame at most (then screenshot anyway)
 const PRED_MS = 500; // "pred" mark period
 const MISS_GRACE_MS = 250; // a pressed item unresolved this long past its contact: miss
@@ -129,420 +62,111 @@ const LATE_FRAMES = 2; // closer than this: too late to press
 const COVER_FRAMES = 15; // bimodal modes this close: one press covers both
 const REVISE_MOVE_MS = 100; // a contact this much later/earlier: revise (and log)
 const BRANCH_MIN_P = 0.2, BRANCH_SEP_BINS = 5, BRANCH_KEEP_P = 0.25; // bimodal split + later-mode survival
-const TELL_TH = 0.5, TELL_DEDUP_MS = 300;
-const TRIG_TH = 0.4; // the timing-head trigger (S1 = fut bins 1-5): a contact this likely within 4-19 frames acts
-const DODGE_MIN_P = 0.5; // def1 "dodge" below this is treated as parry (the dodge class over-fires in fights)
-// v5 tell re-calibration (tell_scan.py on 219-234, v4 head outputs): at 0.75 only 36/110 flagged flare hits got a
-// tell dodge (28 at lead >= 4); at 0.50 it is 76/110 (51 at lead >= 4) for +2.7 dodges/min. sustained stays (it
-// drops one-frame blips for free), episode dedup stays 2 s (1 s adds presses, saves ~1 hit less).
-const TELL_DODGE_P = 0.5;
-const TELL_EPISODE_MS = 2000;
-
-// v5 scheduler switches (args, both default OFF; quantified offline in sim3.py --stagger-hold/--presched):
-// staggerHold: a press blocked by the post-hit stagger is kept and retried every frame; it fires once the stagger
-//   ends while >= holdMinLead frames of lead remain, else it is dropped ("held: too late"). Offline effect on the
-//   219-234 sim was small (plan slots are re-created each frame anyway): keep off unless a live A/B says otherwise.
-// presched: after a hit, when the combo head reports a frozen template (combo p >= 0.4, stage 2-4) pre-schedule the
-//   next preschedN segment contacts from the template gaps (templates.json medians). BLOCKED offline: the v4 combo
-//   head never reports the right template (2.6-4.6% arg match on template frames), so this fires ~never; arg kept
-//   for future heads.
-// v6 scheduler switches (args, all default OFF, for the v6 pair with comboV6):
-// keepPlanOnHit: a hit no longer cancels the whole plan; unpressed items that still target a future contact stay
-//   (the fresh fut head often goes quiet during the 500 ms stagger and never rebuilds them — sim: +4/30 of the
-//   recorded gap24-39 "live-unpressed" second segments covered, E 9.59->9.53/min).
-// posthit K (with posthitNarrow): K plan-free insurance parry presses after a hit, first at the end of the stagger
-//   (+10 f for K=2). Narrow = only when no unpressed plan item is pending and no plan press happened since the hit
-//   (the wide v5 variant cost +15 presses/min for -0.16/min; narrow is +6.4 sim presses/min for ~-0.11/min total).
-const HOLD_MIN_LEAD = 4; // frames: a held press with less lead than this is dropped (ps_table 4-12 = 0.85-0.94)
-const DROP_LAG = 5; // dataset convention: the contact happened this many frames before the hp drop shows
-/** @type {number[][]} template T1..T14 median gaps (contact-to-contact frames, templates.json) */
-const COMBO_GAPS = [[17], [24], [31], [38], [11], [15, 30], [12, 31], [16, 25], [18, 16], [24, 38.5], [12, 25], [37, 23.5], [25, 11.5, 31], [24, 16]];
-const SLOW_EVERY = 250; // aux reads (boss / mean) and the potion decision: 4 Hz
-const FLARE_EVERY = 400;
-const CURTAIN_EVERY = 400;
-const POTION_HP = 0.3, POTION_URGENT = 0.15, POTION_HOLD_MS = 2000, POTION_YIELD_MS = 150, POTION_SAFE_FRAMES = 15;
-// v9 potion (2.3 patch, report8.md; all default off). Live 341-359: the tap always went out right after the hit's
-//   stagger + the posthit 卸势 (-50..-250 ms): post-patch 12/36 healed (pre 11/21). Arena test (potion_test.js, 34
-//   trials): a heal shows 1.2-1.65 s after the tap (+0.61 bar), the count stays 4 (dropped taps cost nothing), no
-//   cooldown (heals 5 s apart). A tap < 500 ms after our 卸势, or < 0.6 s (up to ~2 s on a knock-down) after a blow,
-//   is ignored; a 卸势 0.2-0.7 s into the drink or a blow cancels it (1.0 s: not); 闪避 0.3 s in does not (2/2).
-// potionSafe: the drink waits for a quiet moment (POTION_QUIET_MS after a hit, POTION_GAP_MS after our own 卸势 /
-//   dodge / offense touch, no plan item within POTION_PLAN_MS, fut1 mass in bins 0..8 (1-40 f) < POTION_MASS_TH, no
-//   tell / curtain); at hp <= POTION_URGENT only the touch gap and POTION_URGENT_QUIET_MS after a hit stay. While due,
-//   offense / qiPlan lights hold off; during the drink plan dodges still go (卸势 stay blocked, as before).
-// potionConfirm: a drink counts only once hp is up POTION_HEAL within POTION_CONFIRM_MS of the tap (a blow ends the
-//   wait at once); else not counted, again after POTION_RETRY_MS (potionMaxPresses taps at most); the hold ends there.
-// potionCdMs: no tap this long after a confirmed heal (live: no cooldown seen, default 0).
-const POTION_QUIET_MS = 1200, POTION_GAP_MS = 550, POTION_PLAN_MS = 1200, POTION_MASS_TH = 0.3, POTION_MASS_BINS = 9;
-const POTION_HEAL = 0.08, POTION_CONFIRM_MS = 2000, POTION_RETRY_MS = 600, POTION_URGENT_QUIET_MS = 900;
-// live 360: the bar fills over ~0.5 s, so a heal is seen at +0.09 first: no new tap POTION_SETTLE_MS after it (a
-// tap on the still-rising bar was counted as a third drink). potionWaitMaxMs: a drink due this long goes on the
-// urgent rules (360 waited 4.4 s on own presses, 26% -> 7%).
-const POTION_SETTLE_MS = 2500, POTION_WAIT_MAX_MS = 2500;
-const SLOW_SLACK_MS = 3; // a slow check may start while this much of the budget is left
 const BRANCH_LATE_MS = 400; // an unreleased branch this stale: drop
+const TRIG_TH = 0.45; // the timing-head trigger (S1 = fut bins 1-5): a contact this likely within 4-19 frames acts
+const DODGE_MIN_P = 0.5; // def1 "dodge" below this is treated as parry (the dodge class over-fires in fights)
+const HOLD_MIN_LEAD = 4; // frames: a press held by the hit stagger goes at its end only with this much lead left
+// repress: a pressed fut item whose contact moved >= REPRESS_GAP_FRAMES later (the 横刀 long wind-ups) or that is
+// about to expire while the fresh fut still shows a contact within REPRESS_LOOK_FRAMES is re-armed, at most REPRESS_MAX
+// times (the old one-shot flag left a stale pressed k0 in the slot, 726 t7251).
+const REPRESS_GAP_FRAMES = 18, REPRESS_DELAY_FRAMES = 12, REPRESS_LOOK_FRAMES = 25, REPRESS_MAX = 2;
 
-// v7 scheduler switches (args, default OFF; see model_head7_report.md):
-// tellAnchor: a flare tell (arg 1..3) no longer presses at fut1-E(c)-lead but at the episode's first tell frame +
-//   anchor[kind] (the head's first fire is the image onset +-3 frames, measured on 233-252: p50 0, p90 +3);
-//   the offline replay (tell_scan --mode anchor, 233-252, 401 image onsets) goes from 117 to 198 of 233 flare-hit
-//   contacts with a >=4-frame press, i.e. "press vs real contact" coverage 50% -> 85%.
-// curtainImg: run the combat.js curtain image rule (panels + orange edge, gapNow) every curtainEvery while NOT in
-//   curtain; non-null twice in a row -> enter curtain mode (the tell head only caught 1 of 252's 3 episodes).
-// curtainDark: the tell head's dark class fires at the curtain's black cover onset (252: p 0.86-0.95 at frames
-//   2537/4859/6990, the coach's 3 episodes); >= 2 consecutive frames of arg 6 p >= 0.7 -> enter curtain mode.
-// repress: a pressed fut item whose fresh contact estimate moves >= repressGap frames later is re-armed (the
-//   横刀 long wind-ups: c reported ~37 f early -> the i-frame/parry window expired before the real contact), and a
-//   pressed item that is about to expire as a miss is re-armed when the fresh fut still shows a contact within
-//   repressLook frames. repressMax bounds the total re-arms per item (the old one-shot `repressed` flag let a stale
-//   pressed k0 occupy the slot for the rest of the swing: 726 t7251 saw S1 .86 / def1 dodge / tell flare_other while
-//   the pressed parry still held k0, expired at t7255 and the replacement dodge went out at t7263, after the hit).
-// closeIn: keep the boss in melee range: forward bursts whenever no press is imminent (never during curtain /
-//   dodge / stagger), plus the hold bundle (keepPlanOnHit + staggerHold + posthit 1 narrow) and the v6 gap-head
-//   pre-schedule, so each chain segment gets its own c-14 press (segment gaps >= 8 f > the 6.6 f parry CD).
-// qiAttack: 气竭 (qi == 0) window: light attacks + 处决 (combat.js execute template) after qiExecWait ms.
-/** @type {Record<string, number>} */ const ANCHOR_FRAMES = { flare_grab: 4, flare_slam: 10, flare_other: 4 };
-const REPRESS_GAP_FRAMES = 18;
-const REPRESS_DELAY_FRAMES = 12;
-const REPRESS_LOOK_FRAMES = 25;
-const REPRESS_MAX = 2; // total re-arms of one item (each still needs REPRESS_GAP_FRAMES and parryCd)
-const CI_CYCLE_MS = 1600, CI_ON_MS = 500;
-const QI_LIGHT_MS = 420, QI_EXEC_WAIT_MS = 4000, QI_EXEC_EVERY = 3;
-/** @type {Point} */ const LIGHT = [945, 592];
-/** @type {Point} */ const EXECUTE = [852, 430];
-/** @type {Box} */ const EXEC_ROI = [815, 391, 75, 75];
-const EXEC_THRESHOLD = 0.7;
-
-// v8 switches (args, all default OFF; offline checks in data/tmp/dufu_breakthrough/newargs/, see attribution.md /
-// ceiling.md there). Device timing measured on the lit axis of attr_hits.py (253-262 run logs):
-//   anchored flare dodge: first tell fire = image onset + 3.3 f (other) / 4.2 f (grab), press -> white flash +1.3 f;
-//   flare contacts after the image onset: device "other" 20-21 f (p25-75), device "grab" 12-14 f (half of them 20-21).
-// flareMode "late": the flare dodge shows 0-4 f before the contact (the measured dodge window; anchor 4 showed it
-//   9 f after the onset = 11-12 f early on "other", 80% hit). Replayed on the 253-262 anchored presses (v8_check.py):
-//   other 13 -> lead median 2.6, 49% in 0..4 (anchor 4: 5%; 14: 1.6 / 51% but 23% late); grab 5 -> 46% (4: 23%).
-// flareMode "parry": flare tells press a 卸势 (lit ~5-6 f before the contact, the ps peak) instead of a dodge, and fut
-//   dodges become parries while a flare is live (ceiling.md: flare segments parry-only P(hit) 0.10 vs dodge 0.43);
-//   other 11 -> lit lead median 5.6, 79% in 2..9 (ps table ~0.87 ok before the 0.87 flare discount). slam: no device
-//   data, contact ~+19 (levers.md) -> late 12 / parry 9.
-//   Grabs keep the v7 anchor-4 dodge unless flareGrabDodge:false (grab-timed contacts parry only 11/22).
-/** @type {Record<string, number>} */ const ANCHOR_LATE = { flare_grab: 5, flare_slam: 12, flare_other: 13 };
-/** @type {Record<string, number>} */ const ANCHOR_PARRY = { flare_grab: 3, flare_slam: 9, flare_other: 11 };
-const FUT_DODGE_LEAD_LATE = 2; // flareMode late: fut-head dodge items target a 2 f show lead (parries keep 9)
-const FLARE_LIVE_MS = 1000; // a flare tell / image flare this recent: "a flare is live" (parry mode)
-// curtainTimed: 幕布 sweeps come every 65 f (219-262: 63 single gaps median 65.0, sd 1.8; 31 double gaps 129), three
-//   per episode (sweep index 0/1/2: 102/50/60 contacts), the first one at the black cover onset (tell dark p>=0.7
-//   onset +0/+1 f in 44/56). Sync = the first frame of a tell-dark run (sweep at its press-clock time - 3.3 f) or a
-//   hit in the curtain (- 7.2 f); the next SWEEP_N sweeps get one back dodge each, showing sweepLead f before.
-const SWEEP_PERIOD_F = 65, SWEEP_N = 2, SWEEP_LEAD_F = 2;
+// tells. A flare (金光) tell presses its dodge at the episode's first tell frame + ANCHOR[kind] (the head's first fire
+// is the image onset +-3 f). flare_other gets 14 (batch 2) and the fut dodges wait for it (flareHold: a fut dodge took
+// the CD at onset +9..12 in 42 of 66 plans) until it is pressed, FLARE_HOLD_F passes, or the episode goes quiet for
+// FLARE_HOLD_GAP_F. flareSplit: FLARE_SPLIT_F after the first report, fut1 mass at 4-15 f >= FLARE_SPLIT_TH = a fast
+// one (acc 0.82): the hold ends at once and the anchor moves to FLARE_FAST_ANCHOR.
+const TELL_TH = 0.5, TELL_DEDUP_MS = 300, TELL_DODGE_P = 0.5, TELL_EPISODE_MS = 2000;
+/** @type {Record<string, number>} */ const ANCHOR = { flare_grab: 4, flare_slam: 10, flare_other: 14 };
+/** @type {Record<string, number>} */ const DODGE_LEAD = { other: 5, sweep: 5 }; // frames: the image flare / sweep tell
+const FLARE_HOLD_F = 30, FLARE_HOLD_GAP_F = 6;
+const FLARE_SPLIT_F = 3, FLARE_SPLIT_TH = 0.6, FLARE_FAST_ANCHOR = 6;
+const SLOW_EVERY = 250, FLARE_EVERY = 400, CURTAIN_EVERY = 400; // slow reads
+const SLOW_SLACK_MS = 3; // a slow check may start while this much of the budget is left
+// curtain: entered by the tell (curtain), its dark class at the black cover (>= 2 frames p >= 0.7), or the image rule
+// (panels + orange edge). Its sweeps come every 65 f, three per episode; a dark run's first frame or a hit in the
+// curtain syncs them and the next SWEEP_N get one back dodge each, showing SWEEP_LEAD_F before. Entering it drops only
+// the planned dodges (the 卸势 of plain blows stay).
+const SWEEP_PERIOD_MS = 65 * FRAME_MS, SWEEP_N = 2, SWEEP_LEAD_F = 2;
 const SWEEP_DARK_LAG_F = 3.3, SWEEP_HIT_LAG_F = 7.2; // device sync time - sweep frame (press-lit clock)
 const DODGE_SHOW_F = 0.65; // a dodge tap shows white this long after a 卸势 tapped at the same moment would light
 const SWEEP_LATE_MS = 100, SWEEP_GAP_MS = 300, SWEEP_QUIET_MS = 600, SWEEP_DARK_GAP_MS = 500, SWEEP_HIT_NEAR_F = 10;
-// flare2 (combat.js): the 金光 dodge gets a second one FLARE_AGAIN_MS (250) after the 50 ms tap, whatever happened
-const FLARE2_MS = 300;
-// failEscape (combat.js, rounds 88-90: 10.3 -> 7.8 hits/min): a model 卸势 with no ok 250 ms after its press while the
-// timing head still sees a blow (S1 >= trigTh): one side dodge, at most within 300 ms after that, >= 1 s after a dodge
-const FAIL_ESCAPE_MS = 250, FAIL_ESCAPE_SPAN_MS = 300, FAIL_ESCAPE_QUIET_MS = 1000;
-// flareHoldFut: from the device tell's first flare_other report until that episode's anchored dodge is pressed (or
-// the episode ends: no flare_other report for FLARE_HOLD_GAP_F with no anchored item, the item dropped, or
-// FLARE_HOLD_F after the first report), unpressed fut dodge items are not pressed (kept, so they can still expire or
-// go after the hold). Batch 2 (287-302, flareAnchor other 14): 66 other anchored plans, 23 pressed, 42 "blocked
-// dodge cd" — a fut-head dodge took the CD at onset +9..12; white flashes 15-20 f after the onset hit 0.33 vs 0.68
-// at 6-14. Parries, tell dodges (grab / slam) and combo / insure items are untouched.
-const FLARE_HOLD_F = 30, FLARE_HOLD_GAP_F = 6;
-// v8 flareSplit + curtainBeatEntry (data/tmp/dufu_breakthrough/flare_curtain2.md, fc2/; args default OFF; offline on
-// 380-419 with head8 per-frame scores, lit axis):
-// flareSplit: flare_other first contacts come in three tiers after the image onset (+9-15 / +16-23 / >= +24 f; after
-//   the device's first report +4-13 / +13-25 / +20-36). head8's fut1 mass at 4-15 f (bins 1..4) FLARE_SPLIT_F frames
-//   after the first report splits them: >= flareSplitTh -> fast (acc 0.82, fast recall 0.71, mid judged fast 0.14).
-//   Fast: the flareHoldFut hold ends at once (the held fut dodges go: 51 of 67 fast first-contact hits had one held
-//   before the contact, 26 with lead 0..4) and the anchored dodge moves to flareFastAnchor frames after the first
-//   report; slow: as before (anchor 14 + hold). Offline -0.15/min gross, risk +0.05 (mids the anchor-14 dodge saved).
-//   The fast tier is mostly the held fut dodges: the anchor itself barely matters (4/6/14 within 0.01/min).
-// curtainBeatEntry (needs curtainTimed): entering the curtain state syncs the timed sweep dodges to a first sweep
-//   curtainBeatF frames later (then every sweepPeriod, SWEEP_N + 1 of them), unless a dark sync just happened (the
-//   cover onset is a sweep itself); a curtain hit always re-syncs an entry sync; the "first sweep, not in the gap"
-//   dodge is off (no in-gap exemption: the timed dodge goes anyway). First curtain hits after the entry: median ~36 f
-//   but IQR -9..+12 around the beat, so the entry phase is coarse: offline only ~0.06/min of 0.39/min unsynced.
-const FLARE_SPLIT_F = 3, FLARE_SPLIT_TH = 0.6, FLARE_FAST_ANCHOR = 6, CURTAIN_BEAT_F = 36;
-// v12 flareThreat (default OFF, 2026-10-19): one request per 金光 threat instead of an onset-anchored press that the
-// dodge / parry CD can swallow. Batch 26 (669-688) showed the anchored dodge pressed at a median 6 f before the
-// contact, and 75/149 flare hits had their correction dropped by "dodge cd"; a dodge press in 0-4 f still hit 92%.
-// Parry presses in the same batch have a clear window (press lead 12-15 f: 95% ok, 8-12 f: 86%) while the dodge has
-// none, so the request defaults to parry for flare_other / slam and keeps the dodge for flare_grab (parry there is
-// ~50%). The request keeps its slot through a script CD until the contact's deadline (noDropUntil), is cancelled on
-// the resolving hit/ok or the episode's end, and is updated (not duplicated) by later tell reports / fut estimates.
-const FLARE_THREAT_PRIOR = { other: 17, grab: 9, slam: 15 }; // contact after the first TELL fire (tell lags onset 3-4 f)
-const FLARE_THREAT_IMG_PRIOR = { other: 20, grab: 13, slam: 19 }; // ... after the image onset (batch 26: other p50 20)
-const FLARE_THREAT_LATE_F = 1; // a request may wait for a CD until this close to the contact
-const FLARE_THREAT_END_F = 4; // ... and is dropped this long after it (a hit / ok cancels it sooner)
-// telemetry (2026-10-20; args.telemetry, default OFF): logging only. With it on, predMark carries def1's p0-p4 /
-// argmax, every parry / dodge press gets a `press result` read 5-10 f later (the parry button's white glow,
-// combat/parry_ok.png, the dodge button's white glow), and `state` marks record curtain / stagger / off / hp / qi
-// transitions. No press, touch or plan path reads this state; with it off no extra read runs and the events are
-// unchanged. The glow ROIs / masks are the ones measured on r748 (data/tmp/dufu_yolo/glow.py; parry lit 200-270 px
-// vs 60-80 idle; dodge flash 500-1000 px vs 80-100 idle).
-const TEL_PRESS_DELAY_F = 5, TEL_PRESS_LATE_F = 10; // first read at the first frame >= 5 f; past 10 f = unknown
-const TEL_PRESS_LATE2_F = 14, TEL_PRESS_LATE2_MAX_F = 18; // second read (12-18 f): the late glow / hit flash
-const TEL_PARRY_GLOW_ROI = /** @type {Box} */ ([934, 477, 36, 36]); // S<40, V>230 (glow.py)
-const TEL_DODGE_GLOW_ROI = /** @type {Box} */ ([906, 656, 36, 36]); // the dodge button's white flash
-const TEL_GLOW = { lower: [0, 0, 230], upper: [180, 40, 255], method: 40 };
-const TEL_PARRY_GLOW_PX = 150, TEL_DODGE_GLOW_PX = 250;
-const TEL_PARRY_OK_ROI = /** @type {Box} */ ([815, 391, 75, 75]); // combat.js parryOk (the 重击派生 diamond)
-const TEL_HP_STEP = 0.02, TEL_QI_STEP = 8; // a `state` hp / qi mark needs at least this much drift
-// 金光抓的金色亮线：r750 95600-95750 的 FLASH 金色掩码有 780px 宽、23k-49k px，远早于 tell
-// flare_grab 95820。这里只做 log-only 的 `goldline` on/off，不触发任何 press；逐帧读取（线只持续约
-// 4-5f，400ms 的 slowFlare 会漏）。r752 设备验证：27 段/298s，不是 grab 专属，详见
-// docs/telemetry-findings.md §16；不要按单个上升沿 dodge。
-/** @type {Box} */ const TEL_GOLD_ROI = [150, 120, 780, 440];
-const TEL_GOLD = { lower: [8, 25, 235], upper: [35, 255, 255], method: 40 };
-const TEL_GOLD_PX = 5000, TEL_GOLD_W = 300;
-// grabClass: the old combat.js flare3 input (3 gray frames, 96 px, the boss + effects) for the log-only p[other/grab/slam].
-const GRAB_CLASS_OPTS = { roi: [240, 30, 600, 600], size: 96, color: "gray", frames: [-4, -2, 0], frame_ms: 1000 / 30, post: "softmax" };
-// v8 hit chain (data/tmp/dufu_breakthrough/chain.md §4, chain_new.py; args all default OFF). Lit-axis facts (263-411):
-//   the device sees a blow at H+7 (median) and then pressed nothing for 500 ms (H+22); the real stun is ~H+8 on a
-//   light blow (< 4%), ~H+12-15 on a mid one, ~H+18-20 on a heavy one. A 卸势 after a whiffed (early) one is locked
-//   for 10 f (lit gap 6-9 f ok 0.59-0.66, >= 10 f 0.93-0.99); after a 卸势 that worked (ok) there is no lock (6-9 f
-//   later 243/244 ok). 闪避 then 卸势: no lock.
-// staggerByDrop [[maxDrop, ms], ...]: the post-hit stagger by the read hp drop (first row with drop <= maxDrop; none:
-//   staggerMs); staggerHold's held items go at the new end.
-// hitEscape parry | dodge | both: one press per hit at its stagger end (HIT_ESC_WIN_F to get out, else given up), not
-//   on a hit in / just after the curtain, while drinking (potion hold / tap pending) or above hitEscapeMaxDrop (those
-//   keep posthit as it was); it replaces posthit. parry: yields to a plan 卸势 pressed / due within HIT_ESC_YIELD_F
-//   of it. dodge: side dodge, left / right in turn, dodgeCd. both: the dodge, then the parry rule HIT_ESC_BOTH_GAP_F
-//   later (no lock after a dodge).
-// parryRelockMs: a 卸势 within it of the last one with no ok / hit since and the same believed contact (a re-armed /
-//   insurance item, or contacts <= RELOCK_SAME_F apart) waits until then; its lit lead there < RELOCK_MIN_LEAD_F: dropped.
-// earlyRepress: a model 卸势 (fut / combo) with no ok / hit earlyRepressF frames after it while S1 >= earlyRepressTh
-//   (within EARLY_SPAN_F more frames): one more 卸势 (parryRelockMs applies).
-// curtainParryPlan: in the curtain state the fut head still plans 卸势 items (dodge / avoid targets are ignored); it
-//   needs curtainKeepParry (the curtain tell's cancelFuture would drop them every frame). v8 380-411: 47 plain blows
-//   (0.64/min) landed while the device sat in the curtain state with no planning at all (curtainKeepParry was on).
-const HIT_ESC_MAX_DROP = 0.065, HIT_ESC_WIN_F = 4, HIT_ESC_YIELD_F = 3, HIT_ESC_BOTH_GAP_F = 4;
-const RELOCK_SAME_F = 8, RELOCK_MIN_LEAD_F = 2, EARLY_REPRESS_F = 12, EARLY_SPAN_F = 4;
 
-// v8 offense (data/tmp/dufu_breakthrough/offense_plan.md, part 1; args all default OFF: with none of offShadow /
-// qiPlan / untilCleared nothing below runs, no read, no touch, no extra return field).
-// offShadow (§2): quietGate = fut1 m30 (bins 0..offQuietBins-1 = a contact within 1-30 f) < offQuietTh for
-//   offQuietFrames head frames in a row (1 within OFF_OK_FAST_MS of a 卸势 ok), no combo veto (a next segment
-//   expected), no unpressed plan item within offGuardMs, not in curtain / dodge / stagger / potion, offAfterTellMs
-//   past any tell (金光 / curtain / dark / sweep), offAfterHitMs past a hit, offAfterDodgeMs past a dodge, hp >=
-//   offHpMin (not in a qiPlan window). 253-262 offline: 26% of the time, then no contact for 1 s 96.8% / 2 s 86%,
-//   ~12 opens/min. offenseGuard's give-up rules (a plan item <= offAbortMs away, a tell, a hit since the open,
-//   curtain / dodge / potion) are logged as aborts. Shadow = reads + `off` events + return stats, no touches.
-// qiPlan (§3 T0, replaces qiAttack): 气竭 = 真气 read empty twice (the empty bar reads -1, @see slowWeak) AND the
-//   处决 button seen (combat.js weakNow: round 120's fake 衰弱 had 真气 0 while the boss struck on); the button can show
-//   before 真气 reads empty (126/127), so it is also looked for while 真气 <= QP_EXEC_QI_MAX. Clock = the button's first
-//   sighting (it goes ~3.2 s later: 129 lost it): 轻击 every qiLightMs until qiExecAfter, 处决 when seen from then
-//   (late mark past qiExecMax), its scene QP_EXEC_SCENE_MS, 轻击 until 真气 is back (qiPostMs at most). Unpressed
-//   fut items are dropped every frame of the window (tell / combo / insure items stay). Taps go on contact
-//   offContact with a self-managed lift (never tap()'s contact 1 / upDue). Skills / 蓄力 in the window: qiSkill (part 2).
-// untilCleared: combat.js deadCheck's phase-one-cleared rule (阶段二 in the quest line twice in a row) ends the run
-//   with reason "cleared". Since 2.3 phase one ends on the 成功 page instead (@see WON_T): deadCheck ends the run there
-//   as "cleared" whatever untilCleared says. The boss bar reads only log (mark "clrlow"): in round 566 they jumped
-//   between 281 / 371 / 214 and 0-15 px with the bar over half full (the old "last 10%" / "full again" rules).
-const OFF_QUIET_TH = 0.10, OFF_QUIET_BINS = 8, OFF_QUIET_FRAMES = 3, OFF_STRONG_TH = 0.05, OFF_STRONG_BINS = 9;
-const OFF_GUARD_MS = 600, OFF_ABORT_MS = 150, OFF_AFTER_HIT_MS = 1500, OFF_AFTER_DODGE_MS = 300, OFF_AFTER_TELL_MS = 1500;
-const OFF_HP_MIN = 0.35, OFF_OK_FAST_MS = 1000, OFF_CONTACT = 3, OFF_TAP_MS = 40;
-const QP_EXEC_AFTER_MS = 2600, QP_EXEC_MAX_MS = 2900, QP_LIGHT_MS = 300, QP_POST_MS = 3500;
-const QP_EXEC_SCENE_MS = 1100, QP_EXEC_TAP_MS = 50, QP_MAX_MS = 9000, QP_CAND_MS = 8000, QP_EXEC_QI_MAX = 25;
-// qiExecFix (default on with qiPlan; false = the old window): the late 处决 (10 of 78 windows 396-452 tapped 3.1-5.7 s
-//   after the sighting) is the button going away, not a template miss: it shows ~2.0-2.4 s and is gone (the boss out
-//   of reach) when qiExecAfter comes, back once we are near again. 5 of the 7 windows with a dodge before 2.6 s were
-//   late against 5 of 71 without; the dodges are flare tells, and in 120 windows no hit landed (衰弱 strikes nothing).
-//   So before the tap all unpressed plan items are dropped (tell ones too), and a button not seen for QP_LOST_MS
-//   walks us in (QP_CHASE_MS pushes, every-frame matching) and is tapped at once when it shows again.
-const QP_LOST_MS = 300, QP_CHASE_MS = 500;
-const QP_PENDING_MS = 300; // a tell / combo item this close: no 轻击 now
-const CLR_EVERY_MS = 400, CLR_LOW_PX = 38, CLR_LOW_READS = 3, CLR_FULL_PX = 378, CLR_FULL_READS = 2, CLR_GAP = 12;
-/** @type {Box} */ const CLR_LAST_ROI = [349, 27, 16, 6]; // the bar used up: its left end pale lilac (combat.js)
-const CLR_LAST = { lower: [150, 140, 200], upper: [225, 225, 255] };
-const QUEST_WHITE = { lower: [0, 0, 190], upper: [180, 70, 255], method: 40 };
-/** @type {Box} */ const PHASE2_TOP = [222, 140, 12, 4]; // 二: >= 8 px
-/** @type {Box} */ const PHASE2_BOTTOM = [220, 147, 16, 4]; // >= 10 px
-/** @type {Box} */ const PHASE1_MID = [220, 144, 16, 3]; // 一: <= 2 px
-// v8 offense part 2 (offense_plan.md §2 hysteresis, §3 T1-T3, §4 distance; args all default OFF).
-// Gate hysteresis (offQuietOff / offMinOpenMs): live 303-320 shadow gates were 452 ms median, 8.6/min, ~all closed by
-//   m30. Offline (gate_hyst.py, 263-324, 62 rounds 216 min, a state machine like offGateWhy/offAbortNow): th 0.10
-//   alone 13.6 opens/min, median 400 ms, 1 s / 2 s clean after the open 0.976 / 0.874, an open frame 1 s clean 0.983;
-//   off 0.20 + min 500 ms: 10.3/min, median 867 ms, 0.976 / 0.880, open frame 0.977, contacts in the open 0.06/min
-//   (unchanged). Once open, only m30 > offQuietOff after offMinOpenMs closes it on m30 (the other offGateWhy terms and
-//   the offenseGuard aborts as before). {"offQuietOff":0.10,"offMinOpenMs":0} = the part-1 shadow gate.
-// Actions (contact offContact, self-managed lift): each needs the gate open AND its own horizon clear: no unpressed
-//   plan item within offNoCancelMs[a] + offAbortMs and fut1 mass over the contacts that would come before the action
-//   can be cut by a 卸势 (bins with lo < (offNoCancelMs[a] + issue lead) / 33 ms) below offQuietOff (offStrongTh for the
-//   strong ones). offNoCancelMs = how long after an action starts a 卸势 cannot cut it, from the E0 dummy test
-//   (data/tmp/dufu_breakthrough/e0/e0.md, 2026-10-16): 陌刀 轻击 / 横刀 突进 / 蓄力 (held or just let go) cut at any
-//   time (the 卸势 stance 2-4 f after the button flash) -> 0; 横刀 爆发 swallows 卸势 for its whole ~2.4 s; 伤害 cut
-//   from 300 ms (100 ms swallowed: still 爆发's tail) and any action inside 爆发's 2.4 s takes the rest of it as its
-//   own; 唤千军 cut until 600 ms, then the summon ~2 s is not (2000, conservative; a cut one does not cool down);
-//   switch / 燃此魂 untested (guesses). A 蓄力 finger held down restarts the 蓄力 after the 卸势, so every defense
-//   touch (tap / pressDodge) lets a held offContact go first (offYield).
-//   T1 offPoke: 轻击 every offLightMs, <= offLightMax per open / offBurstMs; offWhiffN 轻击 with no boss drop -> a
-//     OFF_WALK_MS forward step. T2 offSkill: 唤千军 (陌刀, strong), the 横刀 set (combat.js hengdaoPart: switch ->
-//     突进 -> 爆发 (strong) -> 突进 -> 伤害 -> back to 陌刀), each step gated alone; a step waiting > offSkillPauseMs for
-//     the gate gives the set up; 爆发 cools BURST_CD_MS. T3 offCharge: 热血难凉 (HOT_MS after 爆发), strong, 陌刀:
-//     蓄力 held offHotHoldMs; offenseGuard lets go (hit / tell / curtain / dodge / potion / a plan item within
-//     offAbortMs + offNoCancelMs.charge); nothing for OFF_SLASH_MS after letting go.
-//   qiSkill (qiPlan window): skills first, ordered by what fits the time left before 处决 (qiExecAfter) or, after it, the
-//     ~2 s of 衰弱 left (qiPostLeftMs; 323: 真气 back 1.9 s after the 处决 scene, combat.js 141: 2.1-2.3 s): hot 蓄力,
-//     cold 蓄力 (to red qiColdHoldMs), switch to 陌刀 for a hot one, 伤害, 爆发 (after 处决 only: it swallows taps),
-//     突进 / 燃此魂, 唤千军; 轻击 only as the filler. The 处决 tap lets any hold go first.
-//   qiFront (qiPlan window, 2026-10-19; teacher: the 轻击 in a 气竭 mostly whiff, the boss out of reach — use the window
-//     for 陌刀 唤千军 (its 安西军 then ride the post-处决 蓄力) or the 横刀 爆发, and 蓄力, which lands once the boss is
-//     down): at the window's start 唤千军 (陌刀, lit, safe; within qiFrontBuffMs so its ~2 s swallow ends by the 处决) ->
-//     else the 横刀 爆发 (off cooldown, lit, its tap within qiFrontBurstMs so offNoCancel.burst's 2.4 s ends by the 处决;
-//     陌刀 switches first, that switch's own cost out of the fit) -> else 蓄力 (hot first, else cold by qiColdHoldMs);
-//     after the 处决 蓄力 again, 轻击 only when none of these can go. The 处决 stays at qiExecAfter (a burst a switch
-//     pushed past the fit swallows taps: that 处决 waits it out, <= qiExecMax). qiApproach's walk-in still goes first;
-//     qiSkill is overridden while qiFront is on (@see qfPick).
-// Distance (offApproach / qiApproach): the boss gold-mask box height (dist.py box_of, ROI 240,30,600,600) < offStrikeH
-//   -> a forward push first (<= offApproachMs / qiApproachMaxMs), then act (gate: still far -> no action). v10
-//   curtainFlank's near signal too: offH >= curtainFlankNearH = near (@see flankTick). WARNING:
-//   on 323's recording the box is not a distance read: 26-56 px with the boss adjacent, 300-500 px on scenery / effects,
-//   15-98 px through the whole 衰弱 window where the boss stood in melee range (data/tmp/dufu_breakthrough/qi323/).
-const OFF_QUIET_OFF = 0.20, OFF_MIN_OPEN_MS = 500;
-const OFF_LIGHT_MS = 420, OFF_LIGHT_MAX = 4, OFF_BURST_MS = 1500, OFF_WHIFF_N = 6, OFF_WALK_MS = 300;
-const OFF_SKILL_PAUSE_MS = 2500, OFF_HOT_HOLD_MS = 1800, OFF_SLASH_MS = 500, OFF_EVAL_MS = 1200, OFF_SET_RETRY_MS = 5000;
+// the hit chain. The stagger follows the read drop ([maxDrop, ms], first row that fits). After a hit up to
+// HIT_ESC_MAX_DROP one 卸势 goes at the stagger's end (not in / just after the curtain, not while drinking, not when a
+// plan 卸势 goes within HIT_ESC_YIELD_F), else one post-hit insurance 卸势 there (skipped when the plan has a pending
+// item or pressed since the hit). A 卸势 within PARRY_RELOCK_MS of the last one, nothing back since and the same believed
+// contact (<= RELOCK_SAME_F apart, or a re-armed / insurance one) waits for the game's lock to end; with less than
+// RELOCK_MIN_LEAD_F lit lead left there it is dropped.
+const STAGGER_BY_DROP = [[0.04, 100], [0.065, 300], [1, 500]];
+const HIT_ESC_MAX_DROP = 0.065, HIT_ESC_WIN_F = 4, HIT_ESC_YIELD_F = 3;
+const PARRY_RELOCK_MS = 330, RELOCK_SAME_F = 8, RELOCK_MIN_LEAD_F = 2;
+const LATENCY_F = 5; // press -> on screen, frames
+
+// potion (2.3 patch): a tap within 500 ms of our 卸势, or ~0.6 s after a blow, is ignored; a 卸势 or a blow in the
+// first ~0.7 s cancels the drink. So the drink waits for a quiet moment (POTION_QUIET_MS after a hit, POTION_GAP_MS
+// after our own touch, no plan item within POTION_PLAN_MS, fut1 1-40 f mass < POTION_MASS_TH, no tell / curtain; at hp
+// <= POTION_URGENT or waiting POTION_WAIT_MAX_MS only the touch gap and POTION_URGENT_QUIET_MS stay) and counts only once
+// hp is up POTION_HEAL within POTION_CONFIRM_MS (a blow ends the wait; a heal still showing then counts late), else it
+// is tapped again POTION_RETRY_MS later (POTION_MAX_TAPS at most). The bar fills over ~0.5 s: no tap POTION_SETTLE_MS
+// after a heal.
+const POTION_HP = 0.35, POTION_URGENT = 0.15, POTION_HOLD_MS = 2000, POTION_YIELD_MS = 150, POTION_MAX_TAPS = 8;
+const POTION_QUIET_MS = 1200, POTION_GAP_MS = 550, POTION_PLAN_MS = 1200, POTION_MASS_TH = 0.3, POTION_MASS_BINS = 9;
+const POTION_HEAL = 0.08, POTION_CONFIRM_MS = 2000, POTION_RETRY_MS = 600, POTION_URGENT_QUIET_MS = 900;
+const POTION_SETTLE_MS = 2500, POTION_WAIT_MAX_MS = 2500;
+
+// offense. The offense finger is contact OFF_CONTACT (0 stick, 1 parry / tap, 2 dodge), lifted by offUp, never by
+// upDue; every defense touch lets a held 蓄力 go first (a finger still down restarts it).
+// m30 / m40 / m60: fut1 mass of a contact within 1-30 / 1-40 / 1-60 f.
+// The near gate: an ok within OFF_OK_MS or the boss bar down >= OFF_DROP_PX within OFF_DROP_WIN_MS (damage 0-5 s after
+//   an ok took boss px 95%, later 32%), m30 <= OFF_GATE_VETO_TH, no combo veto, not in curtain / dodge / stagger /
+//   potion / OFF_OK_AFTER_HIT_MS after a hit / OFF_AFTER_TELL_MS after a tell. In it: hot 蓄力 (热血难凉) first, else a
+//   cold one for the near time left (>= OFF_COLD_MIN_MS; a switch to 陌刀 only for that 蓄力), 唤千军 on a fresh ok,
+//   轻击 as the filler. A 蓄力 starts only with m60 < OFF_CHARGE_FREE (a 卸势 0-500 ms after the release leaves 0
+//   damage). Each action needs its own horizon: fut1 mass of the contacts before it can be cut < OFF_VETO_TH and no
+//   plan item within its no-cancel time + OFF_ABORT_MS. OFF_WHIFF_FAR actions in a row without boss px = far.
+// The committed 横刀 set (combat.js hengdaoPart: switch -> 突进 -> 爆发 -> 突进 -> 伤害) starts on a fresh ok with 爆发
+//   cool and plays through, waiting only for the defense's own states; a 金光 / curtain tell (outside 爆发's 2.4 s)
+//   gives it up. No switch back (the next 蓄力 switches).
+// Far (no ok for OFF_NEAR_OK_MS and no drop for OFF_NEAR_DROP_MS, or the whiffs) for OFF_FAR_MS: one close-in (燃此魂 /
+//   横刀 突进 when lit, else a forward push).
+// 气竭: 真气 read empty twice AND the 处决 button seen (it can show first). From its first sighting: 轻击 every
+//   QP_LIGHT_MS until QP_EXEC_AFTER_MS, then 处决 when seen (the unpressed plan items go, the boss strikes nothing);
+//   a button gone for QP_LOST_MS walks us in and is tapped as soon as it shows again; 轻击 until 真气 is back.
+// 奇术 (箫吟千浪) where safe (the opening before any contact, or within QS_OK_MS of an ok); a 卸势 cuts it only after
+//   ~2 s, so the horizon must be clear that long. Out only once the cooldown shows; else retried.
+// The 横刀 ok follow-up: a 横刀 ok turns 重击 into the blue 爆发 disc for ~3 s; tap it FOLLOW_DELAY_MS after the ok
+//   (sooner is swallowed); the rest of the offense waits for it meanwhile.
+// The run ends at the 成功 page (deadCheck) or 阶段二 in the quest line.
+const OFF_CONTACT = 3, OFF_TAP_MS = 40;
+const OFF_QUIET_BINS = 8, OFF_STRONG_BINS = 9;
+const OFF_GUARD_MS = 600, OFF_ABORT_MS = 150, OFF_AFTER_TELL_MS = 1500;
+const OFF_OK_MS = 3000, OFF_VETO_TH = 0.3, OFF_GATE_VETO_TH = 0.45, OFF_CHARGE_FREE = 0.7;
+const OFF_DROP_PX = 1.5, OFF_DROP_WIN_MS = 1200, OFF_DROP_MAX_PX = 80, OFF_BOSS_RING_MS = 4000, OFF_OK_AFTER_HIT_MS = 700;
+const OFF_NEAR_OK_MS = 5000, OFF_NEAR_DROP_MS = 3000, OFF_WHIFF_FAR = 2, OFF_FAR_MS = 8000, OFF_FAR_PUSH_MS = 450;
+const OFF_COLD_MIN_MS = 1500, OFF_COLD_HOLD_MS = 2300, OFF_HOT_HOLD_MS = 1800, OFF_LIGHT_MS = 420;
+const OFF_SWITCH_PEND_MS = 1500, OFF_FRESH_OK_MS = 1500, OFF_COMMIT_PAUSE_MS = 3000, OFF_SKILL_PAUSE_MS = 2500;
+const OFF_SLASH_MS = 500, OFF_EVAL_MS = 1200, OFF_SET_RETRY_MS = 5000;
+// how long after an action starts a 卸势 cannot cut it (E0 dummy test, 2026-10-16)
 /** @type {Record<string, number>} */
 const OFF_NO_CANCEL_MS = { light: 0, buff: 2000, switch: 400, dash: 0, burst: 2400, strike: 300, ranshi: 800, charge: 0 };
+/** @type {Record<string, number>} */ // press + animation (combat.js BUFF_COST_MS / SWITCH_COST_MS / WEAK_SWITCH_MS)
+const OFF_COST_MS = { light: 300, buff: 700, switch: 400, dash: 800, strike: 700, ranshi: 600, burst: 2400, follow: 900 };
 const OFF_ICON_EVERY = 250, OFF_ICON_TH = 0.7;
 const BURST_CD_MS = 20_000, HOT_MS = 13_000, BURST_TAP_MS = 350, BURST_TAPS = 4; // combat.js
 const DASH_GONE_MS = 600, DASH_AFTER_BURST_MS = 2000, DASH_BACK_MS = 3000, STRIKE_WAIT_MS = 3500, SWITCH_WAIT_MS = 1000, GLOW_MS = 200;
-/** @type {Record<string, number>} */ // press + animation (combat.js BUFF_COST_MS / SWITCH_COST_MS / WEAK_SWITCH_MS)
-const OFF_COST_MS = { light: 300, buff: 700, switch: 400, dash: 800, strike: 700, ranshi: 600, burst: 2400, follow: 900 };
-const QP_SLASH_MS = 600, QP_COLD_HOLD_MS = 2300, QP_POST_LEFT_MS = 2000;
-// qiFront (@see the qiSkill note above; default OFF): the teacher's 气竭 order — 唤千军 -> 横刀 爆发 -> 蓄力, 处决 at
-//   qiExecAfter, 蓄力 after it, 轻击 the filler only. QF_BUFF_MS / QF_BURST_MS: how late the buff's ~2 s / the burst's
-//   offNoCancel.burst 2.4 s may start and still end by the 处决 (2600 - 2000 / 2600 - 2400). QF_SWITCH_MS: the switch
-//   to 横刀 for the burst (measured ~310-700 ms, combat.js) is out of that fit; a burst whose tail still swallows the
-//   处决 holds that tap back (<= qiExecMax, then qiExecFix).
-const QF_BUFF_MS = 600, QF_BURST_MS = 200, QF_SWITCH_MS = 400;
-const OFF_STRIKE_H = 150, OFF_APPROACH_MS = 400, QP_APPROACH_MAX_MS = 600, OFF_DIST_EVERY = 250, OFF_DIST_MIN_PX = 40;
-// v8 offense part 3 (data/tmp/dufu_breakthrough/damage.md §3-§5; args all default OFF).
-// Offline (O arm 325-338, 161 gate actions): the m30 gate opens mostly with the boss away (a low m30 = it is not
-//   striking you); the time since the last 卸势 ok is the near signal: damage actions 0-5 s after an ok took boss px
-//   95% (36/38), later 32% (17/53); a boss drop within 3 s also (AUC 0.75, self-correlated: support only).
-// offOkGate: the gate = an ok within offOkMs OR the boss bar down >= offDropPx within OFF_DROP_WIN_MS (the
-//   "near" signals), m30 only vetoes (> offVetoTh), the combo veto stays, not in curtain / dodge / stagger / potion /
-//   offOkAfterHitMs after a hit / offAfterTellMs after a tell, hp >= offHpMin. In it: hot 蓄力 (热血难凉) first,
-//   else a cold one of min(qiColdHoldMs, the near time left) when >= offColdMinMs, 唤千军 when lit, 轻击 as the
-//   filler; a switch only for a 蓄力 right after it (then OFF_SWITCH_PEND_MS to take it without the near signal).
-//   Each action still needs its own horizon (fut mass before it can be cut < offVetoTh, no plan item within
-//   offNoCancelMs + offAbortMs). Whiff loop: an action whose 1.2 s boss drop < offDropPx is a whiff; offWhiffFar in
-//   a row -> far until the next ok / drop.
-// offCommit (with offOkGate): the 横刀 set starts on a fresh ok (<= OFF_FRESH_OK_MS) with 爆发 cool and then plays
-//   through: its steps wait only for curtain / dodge / stagger / potion / busy (no gate, 爆发 no strong gate; a 卸势
-//   in 爆发's 2.4 s is swallowed: a known cost); a 金光 / curtain tell (outside 爆发's 2.4 s) gives it up. No switch
-//   back to 陌刀 after it (the next 蓄力 switches).
-// offFar: far = no ok within OFF_NEAR_OK_MS and no drop within OFF_NEAR_DROP_MS (or the whiff loop): no action;
-//   far for offFarMs straight -> one close-in (燃此魂 on 陌刀 / 突进 on 横刀 when lit, else a forward push of
-//   offFarPushMs under the lock), re-armed after it.
-// oldWindow: combat.js sched/buffWindow on top of the dufu defense: 爆发 cool + a fresh ok -> the committed 横刀 set
-//   -> switch to 陌刀 -> 唤千军 (lit) -> 燃此魂 (lit) -> 蓄力 after 蓄力 until OLD_WINDOW_MS from the switch (hot:
-//   offHotHoldMs, cold: qiColdHoldMs; 卸势 cancels the recovery OLD_CANCEL_MS after letting go; a hit waits
-//   OLD_AFTER_HIT_MS, after a lost one a quiet m30 <= offVetoTh for <= OLD_QUIET_WAIT_MS). Outside: defense only. The
-//   defense taps go on and let a hold go (offYield); a 爆发 not out retries OLD_RETRY_MS later.
-// Every action's mark carries sok (ms since the last ok), sdrop (since the last boss drop); its 1.2 s result the px.
-const OFF_OK_MS = 3000, OFF_VETO_TH = 0.3, OFF_DROP_PX = 1.5, OFF_DROP_WIN_MS = 1200, OFF_OK_AFTER_HIT_MS = 700;
-const OFF_NEAR_OK_MS = 5000, OFF_NEAR_DROP_MS = 3000, OFF_WHIFF_FAR = 2, OFF_FAR_MS = 8000, OFF_FAR_PUSH_MS = 450;
-const OFF_COLD_MIN_MS = 1500, OFF_SWITCH_PEND_MS = 1500, OFF_FRESH_OK_MS = 1500, OFF_COMMIT_PAUSE_MS = 3000;
-const OLD_WINDOW_MS = 8000, OLD_CANCEL_MS = 1000, OLD_AFTER_HIT_MS = 700, OLD_QUIET_WAIT_MS = 800, OLD_RETRY_MS = 5000;
-const OFF_BOSS_RING_MS = 4000, OFF_DROP_MAX_PX = 80;
-// v8 offense part 4 (offline, data/tmp/dufu_breakthrough/live/relax7.py / hold7.py on 263-347; args default OFF):
-// offGateVetoTh: the near gate's own m30 veto (okGateWhy only; default offVetoTh, which still sets the actions'
-//   horizons, the close-in and oldWindow). Replay 341-347: gate 13.3% of the fight at 0.30, 16.0% at 0.45, 29.7%
-//   with the combo veto only; a hit within 1 s of an open frame 4.5% / 5.6% / 8.9%.
-// offChargeFree: a near-gate 蓄力 (hot or cold) starts only with fut1 mass over all 10 bins (a contact within 2 s)
-//   below it, else the gate's filler goes (轻击) and the 蓄力 waits for a quieter frame. Live 341-347 (104 holds):
-//   a 蓄力 lands only when let go on time with no defense press for ~700 ms after (E0: a 卸势 0-500 ms after the
-//   release leaves 0 damage): 39/104; full + clear hot 15.9 px, cold 12.0, the rest ~1.2. Start m60 AUC 0.75 (m30
-//   0.69): N6 below 0.7 kept 46/73 with 26 of the 30 that landed. The let-go timing itself cannot help: the plan
-//   items show ~0.6 s before contact, the press goes out regardless (offYield), cutting the slash either way.
-const OFF_CHARGE_FREE = 0;
-// v8 offense part 5 (data/tmp/dufu_breakthrough/qi_mech.md; args default OFF). The boss 真气 never refills by itself
-//   (only after 气竭): 385 px are cumulative, a 卸势 ok takes 12.3, a landed 蓄力 ~14, the 横刀 set ~12, 轻击 /
-//   燃此魂 ~0; the first 气竭 time tracks the opening ok/min (r -0.79).
-// landTh: the near gate is also near when the v8 land probe (head8 out 131..132, P(boss px within 1.2 s)) is >= it
-//   (OR with the ok / drop signals; out of sample 380-395: land >= 0.55 landed 61% vs 36%, AUC 0.68; hit-in-1-s does
-//   not depend on it: the m30 veto keeps that job, offGateVetoTh 0.35 lines v8's m30 up with v6's veto rate).
-// landFloor: no near-gate action (蓄力 / switch / 唤千军 / 轻击 / the committed set's start) while land < it
-//   (land < 0.35 landed 25%).
-// qiFinish: 0 < 真气 <= qiFinish px (not in a window): the gate is near too (<= 40 px: 22% of the cycles died before
-//   the 气竭, median 9.5 s to empty), the cold 蓄力 gets its full hold.
-// oursTellTh: within oursTellMs of our own offense press a 金光 tell dodge needs tell p >= it (v8 false 金光 while we
-//   attack: 6.4/min offline); below it the episode waits (the fut 卸势 stays).
-const LAND_TH = 0, OURS_TELL_MS = 500;
-// v8 offense part 6 (teacher 2026-10-17, data/tmp/dufu_breakthrough/skills3.md; args default OFF).
-// offQishu: 奇术 (箫吟千浪, QISHU on both weapons; lit = qishu_ready + white strokes, combat.js qishuLit). README:
-//   a 卸势 cuts it only after ~2 s (qishuNoCancelMs; 1.5 s did worse, rounds 38-41), full ~7 s 66K on the dummy;
-//   its hits keep landing after the cut (dummy q_cut 2026-10-12: cut at 1.4-3.2 s -> 5 hits ~45K to ~6.7 s after
-//   the tap). Cast only where safe (README: just after an ok, or nothing coming): qishuWhere "qi" (the 气竭 window,
-//   after the 处决 scene or with qishuNoCancelMs left before it), "open" (boss bar up, no contact yet), "ok"
-//   (within QS_OK_MS of an ok); always no plan item within qishuNoCancelMs + offAbortMs and the fut1 mass before
-//   it can be cut below qishuTh, else "奇术 put off". Then nothing of ours for qishuNoCancelMs.
-//   Out only once the cooldown shows (428: the tap's white flash breaks the template ~0.2 s, and 2 of 3 taps in the
-//   气竭 window flashed and stayed lit): the template gone, cooldown digits (white >= QS_COOL_WHITE in the middle) on
-//   the dark disc (V < 35 >= QS_COOL_DARK), on 2 frames within QS_CONFIRM_MS; lit again QS_LIT_AGAIN_MS on or
-//   nothing by QS_CONFIRM_MS = not out: the hold ends, one retry QS_RETRY_SOON_MS on where still safe, then
-//   QS_RETRY_MS. qishuWhere defaults to ["open", "ok"] (the 气竭 window is the 处决's); "qi" casts only after the
-//   处决 scene.
-// ranshiStrikeMs: 燃此魂 starts a run (the body glows white) and turns 突进's button into 伤害
-//   (modao_ranshi_strike) for up to ~3 s (410-418: to +90 f unless a dodge ends it); only the second tap swings
-//   (荡八荒 ~13.8K; README: the opening's second tap 0.5 s after); without it the run ends at the boss (410-418:
-//   19 far close-ins, 0 px each). The second tap goes this long after the first, while the icon shows (500).
-// farSkill false: offFar closes in by the forward push only (no 燃此魂 / 横刀 突进).
-// parryFollow: a 横刀 ok turns 重击 (CHARGE) into the blue 爆发 disc (hengdao_swirl) with 重击派生 above, ~3 s
-//   median (410-418: 119 of 125 横刀 oks); tap it (followTap "heavy"; "diamond" = the 重击派生 diamond, the old
-//   okHeavy, ~0 px) followDelayMs after the ok (live pf1/pf2: taps 60-140 ms after the ok are swallowed, ~0.4-1 s
-//   ones slash: boss 7-16 px and a 真气 step ~10 in 6 of 22, 1 hit within 1.5 s), horizon clear (followTh,
-//   followNoCancelMs), within PF_WINDOW_MS; also in the qiPlan window on 横刀. followStay: on 陌刀 outside 热血难凉
-//   the near gate switches back to 横刀 instead of a cold 蓄力. After a 横刀 ok the other offense (near gate, gate,
-//   offFar, committed set) waits for it up to followDelayMs + PF_HOLD_EXTRA_MS (428: the near gate tapped 25-120
-//   ms after the ok, 108 follow-ups skipped busy); no disc by PF_DISC_WAIT_MS lets go.
-const QS_OK_MS = 1500, QS_OPEN_MS = 15_000, QS_RETRY_MS = 3000, QS_EVAL_MS = 7000;
-const QS_CONFIRM_MS = 1000, QS_LIT_AGAIN_MS = 350, QS_RETRY_SOON_MS = 300, QS_COOL_WHITE = 70, QS_COOL_DARK = 600;
-const PF_HOLD_EXTRA_MS = 400, PF_DISC_WAIT_MS = 400;
-// offTang (2026-10-18, data/tmp/dufu_breakthrough/live/report21.md, dummy e1; default OFF; needs offOkGate): in the
-//   near gate on 横刀 outside 热血难凉, 冢上霜 (LIGHT held tangHoldMs, let go: four slashes forward) then, once 重击
-//   turns into the blue 爆发 disc (hengdao_swirl, ~0.85 s after the release, ~1.5 s after the press for holds
-//   300-700 ms, ~1.7 s if unused), 重击 = 拨雪寻春; replaces the switch to 陌刀 for a cold 蓄力 there. Dummy (100级):
-//   冢上霜 ~19K, + 拨雪寻春 45-50K in ~2.4 s from the press; a 重击 tap before the disc shows is swallowed (not
-//   buffered). 卸势 cuts both at any time (stance 3-4 frames after the press; the hold too): 冢上霜 kept 0 / ~3K /
-//   ~7K / 8-17K / full at 0 / 200 / 400 / 700 / 1000 ms after the release, 拨雪寻春 lost when cut <= 500 ms after
-//   its tap, kept at 900. So the defense is never held up (offHoldAbort / offYield let the hold go, a defense 卸势
-//   cuts the slashes); the start wants tangMinLeftMs of near time and a clear horizon of offNoCancelMs.tang
-//   (tangNoCancelMs, 0 like 轻击 / 蓄力: round 561 with 1000 never started one, 66 vetoes). Not while 轻蓄力 shows 反击 (combat/counter.png, after a 横刀 ok: parryFollow's
-//   disc tap goes first). tangSwitch: on 陌刀 outside 热血难凉 the near gate switches to 横刀 instead of a cold 蓄力.
-const TG_DISC_WAIT_MS = 1600, TG_HEAVY_BUSY_MS = 900;
-// offBuff (teacher 2026-10-17: "why no 增益?"; data/tmp/dufu_breakthrough/buff19/an_buff.py; default OFF): 唤千军 (陌刀
-//   BUFF) was never cast in 380-496 (the near gate's buff branch sits behind its 蓄力 and needs fut1 2 s < 0.3).
-//   Dummy: the cast itself does 0, then 安西军 strikes ride on our hits (陌刀安西军 ~1 per 焚此心 hit, 横刀安西军 1 per
-//   冢上霜 hit: +18-22% of the hit damage) for >= ~30 s; the button has no long cooldown: a ~1 s countdown after each
-//   press, then lit again unless 刀势 < 2 (it costs 2: the icon goes dim, template 0.68-0.70, no white). E0: a 卸势
-//   cuts it until 600 ms (no summon, lit again), then ~2 s of summon swallow 卸势. So: cast on 陌刀, lit, at most every
-//   buffEveryMs, where safe (buffWhere): "open" (boss bar up, no contact yet, QS_OPEN_MS), "qi" (after the 处决 scene,
-//   fut items free; not by default: batch 19 had 5/5 qi taps not out on the video), "ok" (within QS_OK_MS of an ok, m40 < buffM40), "quiet" (m40 < buffM40 and fut1 over all bins,
-//   a contact within ~2.2 s, < buffTh); always the p6 busy states, a tell, no plan item within buffNoCancelMs +
-//   offAbortMs, fut1 before the cut point < buffTh, else "唤千军 put off". Out = the countdown (template < BF_OUT_TH:
-//   0.27-0.37 for > 3 s) or the dim icon on BF_OUT_FRAMES frames in a row within BF_CONFIRM_MS; lit again by
-//   QS_LIT_AGAIN_MS or neither = not out (one retry soon). Batch 19: the press ripple (white 150-470, template 0.44-0.76,
-//   <= 5 frames, also on taps that did nothing) passed the old 2-frame check: 26 outs logged, 12 real on the video;
-//   buffreplay20.py: 26/26 presses agree with the video (old 15/26). A defense 卸势 within BF_CUT_MS of the tap = cut
-//   (no summon: not counted as out). Then nothing of ours until the tap + buffNoCancelMs + OFF_COST_MS.buff.
-const BF_LIT_TH = 0.8, BF_LIT_PX = 50, BF_CD_TH = 0.6, BF_DIM_WHITE = 20, BF_CUT_MS = 600;
-const BF_EVERY_MS = 30_000, BF_RETRY_MS = 3000, BF_OUT_TH = 0.45, BF_OUT_FRAMES = 10, BF_CONFIRM_MS = 1500;
+const QP_EXEC_AFTER_MS = 2600, QP_EXEC_MAX_MS = 2900, QP_LIGHT_MS = 300, QP_POST_MS = 3500, QP_PENDING_MS = 300;
+const QP_EXEC_SCENE_MS = 1100, QP_EXEC_TAP_MS = 50, QP_MAX_MS = 9000, QP_CAND_MS = 8000, QP_EXEC_QI_MAX = 25;
+const QP_LOST_MS = 300, QP_CHASE_MS = 500, QI_EXEC_EVERY = 3;
+/** @type {Box} */ const EXEC_ROI = [815, 391, 75, 75];
+const EXEC_TH = 0.7;
+const QS_OK_MS = 1500, QS_OPEN_MS = 15_000, QS_RETRY_MS = 3000, QS_EVAL_MS = 7000, QS_NO_CANCEL_MS = 2000, QS_TH = 0.1;
+const QS_CONFIRM_MS = 1000, QS_LIT_AGAIN_MS = 350, QS_RETRY_SOON_MS = 300, QS_COOL_WHITE = 70, QS_COOL_DARK = 600, QS_LIT_PX = 30;
 /** @type {ColorOptions} */ const QS_DARK = { lower: [0, 0, 0], upper: [180, 255, 34], method: 40 };
-const RS_WINDOW_MS = 3000, RS_COST_MS = 900, PF_WINDOW_MS = 3000, PF_COST_MS = 900, PF_RETRY_MS = 350, PF_TRIES = 3, QS_LIT_PX = 30;
-/** @type {Point} */ const QISHU = [881, 525];
-/** @type {Point} */ const PF_DIAMOND = [860, 430];
-/** @type {Box} */ const DIST_ROI = [240, 30, 600, 600];
+const PF_DELAY_MS = 400, PF_NO_CANCEL_MS = 600, PF_TH = 0.3, PF_WINDOW_MS = 3000, PF_COST_MS = 900, PF_RETRY_MS = 350, PF_TRIES = 3;
+const PF_HOLD_EXTRA_MS = 400, PF_DISC_WAIT_MS = 400;
 /** @type {Box} */ const MDASH_LIT_ROI = [815, 575, 36, 36]; // 陌刀 突进's icon: white px, 107-111 lit, 0 grey (combat.js)
 const MDASH_LIT_PX = 40;
-const BOSS_GOLD = { lower: [15, 90, 90], upper: [35, 255, 255], method: 40 };
-/** @type {Point} */ const CHARGE = [1020, 478]; // 陌刀 蓄力 (横刀: 重击)
-/** @type {Point} */ const DASH = [833, 593]; // 陌刀 突进 = 燃此魂; 横刀 突进 -> 伤害
-/** @type {Point} */ const BUFF = [825, 668]; // 陌刀 唤千军; 横刀 爆发
-/** @type {Point} */ const SWITCH = [993, 320];
 /** @type {Record<string, [string, Box]>} combat.js T */
 const OFF_T = {
     modao: ["combat/modao_charge.png", [988, 446, 64, 68]],
@@ -554,10 +178,13 @@ const OFF_T = {
     mdash: ["combat/modao_dash.png", [801, 561, 64, 64]],
     burst: ["combat/hengdao_burst.png", [793, 635, 64, 64]],
     buff: ["combat/modao_buff.png", [793, 635, 64, 64]],
-    mstrike: ["combat/modao_ranshi_strike.png", [801, 561, 64, 64]], // 燃此魂's second tap (dummy.js)
     qishu: ["combat/qishu_ready.png", [848, 493, 64, 64]],
-    counter: ["combat/counter.png", [913, 560, 64, 64]], // 横刀 轻蓄力 shown as 反击 (after an ok; combat.js)
 };
+const CLR_EVERY_MS = 400;
+const QUEST_WHITE = { lower: [0, 0, 190], upper: [180, 70, 255], method: 40 };
+/** @type {Box} */ const PHASE2_TOP = [222, 140, 12, 4]; // 二: >= 8 px
+/** @type {Box} */ const PHASE2_BOTTOM = [220, 147, 16, 4]; // >= 10 px
+/** @type {Box} */ const PHASE1_MID = [220, 144, 16, 3]; // 一: <= 2 px
 
 // 重伤 (dead): the grey screen with both bars gone, or the 再次训练 panel (combat.js)
 /** @type {Box} */ const GREY_ROI = [100, 100, 880, 500];
@@ -565,384 +192,33 @@ const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
 /** @type {Box} */ const RETRY_ROI = [945, 668, 95, 24];
 const RETRY_WHITE = { lower: [0, 0, 170], upper: [180, 60, 255], method: 40 };
 const DEAD_MS = 500;
-// phase one cleared (2.3): the 成功 page (dark, 「成功」 + 「独夫·绝境·浴血.阶段一」, 退出 / 再次演练 (868,679) /
-// 演练下一阶段 (993,679)). 演练下一阶段 is a white button inside RETRY_ROI and the page is grey enough for GREY: before
-// this, deadCheck read it as 重伤 (rounds 508 / 516, 20261017-201832 f8325, -213317 f8160). Both templates (cut from
-// 20261017-201832 f8325) score >= 0.997 on the page, <= 0.30 on the 重伤 page (再次训练 text, no button) and <= 0.70 /
-// 0.50 elsewhere in 26 recordings (0.69: 镇守's 再次挑战; data/tmp/dufu_success/sweep.py): both must match, on two checks
-// in a row. The buttons show ~6 frames before 「成功」 fades in (>= 0.8): 再次演练 (drill) alone already holds off 重伤.
+// phase one cleared (2.3): the 成功 page (「成功」 + 再次演练 (868,679) / 演练下一阶段 (993,679)). 演练下一阶段 is a white
+// button inside RETRY_ROI and the page is grey enough for GREY, so deadCheck looks for it first. Both templates score
+// >= 0.997 on the page, <= 0.30 on the 重伤 page and <= 0.70 elsewhere in 26 recordings: both must match, on two checks
+// in a row. The buttons show ~6 frames before 「成功」 fades in: 再次演练 alone already holds off 重伤.
 /** @type {[string, Box][]} */ const WON_T = [["result_drill_again.png", [800, 650, 140, 60]], ["result_success.png", [440, 110, 200, 100]]];
 const WON_TH = 0.8;
 const HALT_ON_FRAMES = 2, HALT_OFF_FRAMES = 3; // @see haltCheck
 /** @type {Box} */ const PAGE_BTNS = [868, 640, 212, 60]; // 再次演练 / 演练下一阶段 (and LOCK, DODGE under them)
-// lock-on (combat.js): the arena auto-locks at the fight start, the game drops the lock at the phase change
-// (~80-90 s in) and the camera then stops tracking — the boss flanks and hits from the camera's side. combat.js
-// re-taps the lock button whenever the gold icon is gone; dufu.js never did (round 233: lock lost at ~87 s).
+// lock-on (combat.js): the arena auto-locks at the fight start, the game drops the lock at the phase change (~80-90 s
+// in) and the camera then stops tracking: re-tap the lock button whenever its gold icon is gone.
 /** @type {Point} */ const LOCK = [1021, 667];
 /** @type {Box} */ const LOCK_ROI = [1004, 648, 34, 39];
 const GOLD = { lower: [200, 180, 100], upper: [255, 245, 200] };
-const LOCK_MS = 2000; // between re-lock taps (combat.js)
-// round start: walk in (short bursts, never blocking) until the boss bar shows (armed only)
+const LOCK_MS = 2000; // between re-lock taps
+// round start: walk in (short bursts, never blocking) until the boss bar shows
 const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
-/** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut, land: number | null}} Pred */
-/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"combo"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, rearms?: number, noCd?: boolean, relocked?: boolean, threat?: boolean, ep?: number, noDropUntil?: number, waited?: number}} PlanItem */
+/** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
+/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, rearms?: number, relocked?: boolean}} PlanItem */
 
 /**
- * @param {{observe?: boolean, ms?: number, potions?: number, model?: string, backModel?: string, seqRing?: boolean, parry?: Point,
- *   dodgePoint?: Point, potionPoint?: Point, dodgeDir?: string, targetGlowLead?: number, latencyFrames?: number,
- *   issueLeadMs?: number, commitMs?: number, parryCd?: number, dodgeCd?: number, staggerMs?: number,
- *   dodgeLead?: Record<string, number>, nextMs?: number, predMs?: number, missGraceMs?: number, tellTh?: number,
- *   trigTh?: number, dodgeMinP?: number, tellDodgeP?: number, tellEpisodeMs?: number,
- *   slowEvery?: number, flareEvery?: number, curtain?: boolean, curtainEvery?: number, flareDodge?: boolean,
- *   potionHp?: number, potionHoldMs?: number, potionSafeFrames?: number, deadGrey?: boolean, s1Hi?: number,
- *   lockOn?: boolean, staggerHold?: boolean, holdMinLead?: number, presched?: boolean, preschedN?: number,
- *   comboV6?: boolean, keepPlanOnHit?: boolean, posthit?: number, posthitNarrow?: boolean,
- *   tellAnchor?: boolean, curtainImg?: boolean, curtainDark?: boolean, repress?: boolean, repressGap?: number, repressMax?: number,
- *   closeIn?: boolean, qiAttack?: boolean, qiExecWait?: number, execThreshold?: number,
- *   flareMode?: string, flareAnchor?: Record<string, number>, futDodgeLead?: number, flareGrabDodge?: boolean, grabParry?: boolean,
- *   grabContactDodge?: boolean, grabContactLeadF?: number, grabContactMinF?: number,
- *   grabClass?: boolean, grabClassModel?: string,
- *   curtainTimed?: boolean, sweepLead?: number, sweepPeriod?: number, curtainKeepParry?: boolean,
- *   flare2?: boolean, failEscape?: boolean, flareHoldFut?: boolean,
- *   flareSplit?: boolean, flareSplitTh?: number, flareFastAnchor?: number, curtainBeatEntry?: boolean, curtainBeatF?: number,
- *   flareThreat?: boolean, flareThreatKind?: string, flareThreatGrabDodge?: boolean, flareThreatParryLead?: number, flareThreatDodgeLead?: number,
- *   offShadow?: boolean, offQuietTh?: number, offQuietBins?: number, offQuietFrames?: number, offOkFast?: boolean,
- *   offComboVeto?: boolean, offGuardMs?: number, offAbortMs?: number, offAfterHitMs?: number, offAfterDodgeMs?: number,
- *   offAfterTellMs?: number, offHpMin?: number, offStrongTh?: number, offStrongBins?: number, offContact?: number,
- *   qiPlan?: boolean, qiExecAfter?: number, qiExecMax?: number, qiLightMs?: number, qiPostMs?: number, qiExecFix?: boolean,
- *   untilCleared?: boolean, telemetry?: boolean, offQuietOff?: number, offMinOpenMs?: number, offPoke?: boolean, offLightMs?: number,
- *   offLightMax?: number, offBurstMs?: number, offWhiffN?: number, offSkill?: boolean, offSkillPauseMs?: number,
- *   offCharge?: boolean, offHotHoldMs?: number, offNoCancelMs?: Record<string, number>, qiSkill?: boolean,
- *   qiColdHoldMs?: number, qiPostLeftMs?: number, qiFront?: boolean, qiFrontBuffMs?: number, qiFrontBurstMs?: number,
- *   qiFrontSwitchMs?: number, offApproach?: boolean, offStrikeH?: number, offApproachMs?: number,
- *   qiApproach?: boolean, qiApproachMaxMs?: number, offOkGate?: boolean, offOkMs?: number, offVetoTh?: number,
- *   offDropPx?: number, offOkAfterHitMs?: number, offWhiffFar?: number, offColdMinMs?: number, offCommit?: boolean,
- *   offFar?: boolean, offFarMs?: number, offFarPushMs?: number, oldWindow?: boolean, oldWindowMs?: number,
- *   offGateVetoTh?: number, offChargeFree?: number, potionSafe?: boolean, potionQuietMs?: number, potionGapMs?: number,
- *   potionPlanMs?: number, potionMassTh?: number, potionConfirm?: boolean, potionConfirmMs?: number,
- *   potionRetryMs?: number, potionMaxPresses?: number, potionCdMs?: number, potionWaitMaxMs?: number,
- *   landTh?: number, landFloor?: number, qiFinish?: number, oursTellTh?: number, oursTellMs?: number,
- *   staggerByDrop?: number[][], hitEscape?: string, hitEscapeMaxDrop?: number, parryRelockMs?: number,
- *   earlyRepress?: boolean, earlyRepressF?: number, earlyRepressTh?: number, curtainParryPlan?: boolean,
- *   curtainFlank?: boolean, curtainFlankMs?: number, curtainFlankNearMs?: number, curtainFlankNearH?: number,
- *   curtainFlankDir?: string, curtainFlankRelockMs?: number,
- *   spinGuard?: boolean, spinLeadF?: number, spinGapMs?: number, spinLateF?: number, spinAgeF?: number,
- *   offQishu?: boolean, qishuWhere?: string[], qishuNoCancelMs?: number, qishuTh?: number, ranshiStrikeMs?: number,
- *   farSkill?: boolean, parryFollow?: boolean, followTap?: string, followTh?: number, followNoCancelMs?: number, followDelayMs?: number, followStay?: boolean,
- *   offTang?: boolean, tangHoldMs?: number, tangMinLeftMs?: number, tangNoCancelMs?: number, tangSwitch?: boolean,
- *   offBuff?: boolean, buffWhere?: string[], buffNoCancelMs?: number, buffTh?: number, buffM40?: number, buffEveryMs?: number}} [args]
- *   observe: inference + logging only, no touches; ms: run length (default 300 s); potions: drinks allowed (0 = off);
- *   model / backModel: the frozen pair (default v2; pass the v1 names to go back); parry / dodgePoint / potionPoint:
- *   the buttons; dodgeDir: back | side | cycle | forward | backleft (the way dodges go); targetGlowLead /
- *   latencyFrames: the press lead; dodgeLead: tell dodge lead in frames per kind (grab/slam/other/sweep);
- *   seqRing: the no-image head pipeline (default off): every backbone call appends its 192-d feature + aux to the run's
- *   ring and the head (args model, e.g. dufu/unified_head9s.onnx) is called without an image on the ring's own seq; the
- *   device's ring numbers are checked against ours (soft: a mismatch logs + counts ringBad, never throws);
- *   staggerHold / presched: the v5 scheduler switches (@see HOLD_MIN_LEAD / COMBO_GAPS; both default off);
- *   comboV6: the v6 pair's combo slot is the gap-to-next-segment bins (presched/preschedN switch semantics);
- *   keepPlanOnHit / posthit / posthitNarrow: the v6 second-segment lifecycle switches (all default off).
- *   v8 (all default off, @see ANCHOR_LATE / SWEEP_PERIOD_F / FLARE2_MS / FAIL_ESCAPE_MS): flareMode dodge | late |
- *   parry, flareAnchor (overrides the mode's anchor table), futDodgeLead, flareGrabDodge; curtainTimed (sweepLead,
- *   sweepPeriod); curtainKeepParry; flare2; failEscape; flareHoldFut (@see FLARE_HOLD_F). grabContactDodge (default
- *   off, @see the args block): a slow flare_grab dodge at c1 - grabContactLeadF, dropping the same contact's fut dodge
- *   so the timed dodge owns the slot; fast grabs keep the anchor.
- *   v8 offense (all default off, @see OFF_QUIET_TH / QP_EXEC_AFTER_MS / CLR_LOW_PX): offShadow (+ the off* gate
- *   parameters; logs only, no touches); qiPlan (qiExecAfter / qiExecMax / qiLightMs / qiPostMs; replaces qiAttack);
- *   untilCleared. telemetry (default off; logs only, @see TEL_PRESS_DELAY_F): def1 p0-p4 + argmax in `pred`, a
- *   `press result` 5-10 f after each parry / dodge press, and `state` marks for curtain / stagger / off / hp / qi.
- *   Part 2 (@see OFF_QUIET_OFF): offQuietOff / offMinOpenMs (gate hysteresis); offPoke (offLightMs /
- *   offLightMax / offBurstMs / offWhiffN), offSkill (offSkillPauseMs), offCharge (offHotHoldMs), offNoCancelMs (per
- *   action: light buff switch dash burst strike ranshi charge); qiSkill (qiColdHoldMs / qiPostLeftMs), qiFront
- *   (qiFrontBuffMs / qiFrontBurstMs / qiFrontSwitchMs; @see QF_BURST_MS: 唤千军 -> 横刀 爆发 -> 蓄力, then the 处决,
- *   then 蓄力 again, 轻击 the filler only); offApproach
- *   (offStrikeH / offApproachMs), qiApproach (qiApproachMaxMs). Part 3 (@see OFF_OK_MS): offOkGate (offOkMs /
- *   offVetoTh / offDropPx / offOkAfterHitMs / offWhiffFar / offColdMinMs), offCommit, offFar (offFarMs /
- *   offFarPushMs); oldWindow (oldWindowMs). Part 4 (@see OFF_CHARGE_FREE): offGateVetoTh (the near gate's m30
- *   veto alone), offChargeFree (near-gate 蓄力 start: fut1 2 s mass below it; 0 = off). Part 5 (@see LAND_TH):
- *   landTh / landFloor (the v8 land probe in the near gate), qiFinish (真气 low: the gate is near), oursTellTh /
- *   oursTellMs (a 金光 dodge just after our own press needs a surer tell).
- *   v8 hit chain (all default off, @see HIT_ESC_MAX_DROP): staggerByDrop, hitEscape (hitEscapeMaxDrop), parryRelockMs,
- *   earlyRepress (earlyRepressF / earlyRepressTh), curtainParryPlan.
- *   v10 curtainFlank (default off, @see CURTAIN_FLANK_MS / CURTAIN_FLANK_NEAR_H): near at the curtain state's onset
- *   (the boss box height offH >= curtainFlankNearH; a failed read falls back to the ok signal at curtainFlankNearMs)
- *   -> tap LOCK (cancel the lock-on) and hold forward curtainFlankMs (curtainFlankDir forward | forward-left |
- *   forward-right; the timed sweep dodges stay on, and the hold is re-pressed after each one) to run through the boss;
- *   the gap / cover / first-sweep rules stay off for the rest of the episode, an `h` trace logs the box height during
- *   the run, the lockCheck re-lock is held back until curtainFlankRelockMs past the state's end and the offense gate
- *   stops vetoing on the curtain once the run is over (@see flankTick / curtainVeto; the return's flank counters carry
- *   walkResumes / sweepsDuring too).
- *   v11 spinGuard (default off, @see SPIN_DELAY_F / SPIN_ARM_WIN_F / SPIN_AGE_F): a 劈 hit inside SPIN_ARM_WIN_F of a
- *   flare episode's onset arms the spin timer (h1 = the drop - DROP_LAG frames, T = h1 + SPIN_DELAY_F) -> one side
- *   dodge at T - spinLeadF (0-14, default 1) and a second spinGapMs later (default 250; the late tier to T + spinLateF),
- *   the left/right alternation of dodgeDir "side" (any other dodgeDir flips left/right itself); while armed the slot's
- *   fut dodges wait and its fut 卸势 are dropped (def1 unknown -> parry is the default that ate 93% of the spins), the
- *   tell's flare at the slot (p >= tellTh) hands the CD back to the anchored flare dodge (skippedTell), and the
- *   curtain state / a stagger already running / a drink at the arm all skip it. v2 (the batch-25 live fit): the arm
- *   additionally needs the episode's flare label to be flare_grab (the tell head's label at the episode's onset; a
- *   flare_other episode armed 7.5 times/round for 0.02 precision) and an h1 age <= spinAgeF (20; skippedNotGrab /
- *   skippedAge count those; @see spinTick; the return's spin counters carry armed / skippedTell / skippedNotGrab /
- *   skippedAge / dodges / hitsAfter / hitsInWindow).
+ * @param {{ms?: number, potions?: number}} [args] ms: run length (default 10 min); potions: drinks allowed (default 1)
  */
 export default function (args = {}) {
-    const observe = args.observe ?? false;
-    const telemetry = args.telemetry ?? false; // logs only (@see TEL_PRESS_DELAY_F); no press / touch / plan change
-    const untilMs = args.ms ?? 300_000;
-    const model = args.model ?? "dufu/unified_head2.onnx";
-    const backModel = args.backModel ?? "dufu/unified_back2.onnx";
-    const seqRing = args.seqRing ?? false; // the no-image head pipeline (@see the run loop and checkRing)
-    const maxPotions = args.potions ?? 0;
-    const parryP = args.parry ?? PARRY;
-    const dodgeP = args.dodgePoint ?? DODGE;
-    const potionP = args.potionPoint ?? POTION;
-    const dodgeDir = args.dodgeDir ?? "side";
-    const issueLead = args.issueLeadMs ?? Math.round(((args.targetGlowLead ?? TARGET_GLOW_LEAD) + (args.latencyFrames ?? LATENCY_FRAMES)) * FRAME_MS);
-    const commitMs = args.commitMs ?? COMMIT_MS;
-    const parryCd = args.parryCd ?? PARRY_CD_MS;
-    const dodgeCd = args.dodgeCd ?? DODGE_CD_MS;
-    const staggerMs = args.staggerMs ?? STAGGER_MS;
-    const nextMs = args.nextMs ?? NEXT_MS;
-    const predMs = args.predMs ?? PRED_MS;
-    const missGraceMs = args.missGraceMs ?? MISS_GRACE_MS;
-    const tellTh = args.tellTh ?? TELL_TH;
-    const trigTh = args.trigTh ?? TRIG_TH;
-    const dodgeMinP = args.dodgeMinP ?? DODGE_MIN_P;
-    const tellDodgeP = args.tellDodgeP ?? TELL_DODGE_P;
-    const tellEpisodeMs = args.tellEpisodeMs ?? TELL_EPISODE_MS;
-    const slowEvery = args.slowEvery ?? SLOW_EVERY;
-    const flareEvery = args.flareEvery ?? FLARE_EVERY;
-    const curtainOn = args.curtain ?? true;
-    const curtainEvery = args.curtainEvery ?? CURTAIN_EVERY;
-    const flareDodge = args.flareDodge ?? true;
-    const potionHp = args.potionHp ?? POTION_HP;
-    const potionHoldMs = args.potionHoldMs ?? POTION_HOLD_MS;
-    const potionSafeFrames = args.potionSafeFrames ?? POTION_SAFE_FRAMES;
-    // v9 potion (@see POTION_QUIET_MS; all default off)
-    const potionSafe = args.potionSafe ?? false;
-    const potionQuietMs = args.potionQuietMs ?? POTION_QUIET_MS;
-    const potionGapMs = args.potionGapMs ?? POTION_GAP_MS;
-    const potionPlanMs = args.potionPlanMs ?? POTION_PLAN_MS;
-    const potionMassTh = args.potionMassTh ?? POTION_MASS_TH;
-    const potionConfirm = args.potionConfirm ?? false;
-    const potionConfirmMs = args.potionConfirmMs ?? POTION_CONFIRM_MS;
-    const potionRetryMs = args.potionRetryMs ?? POTION_RETRY_MS;
-    const potionMaxPresses = args.potionMaxPresses ?? (args.potions ?? 0) * 4;
-    const potionCdMs = args.potionCdMs ?? 0;
-    const potionWaitMaxMs = args.potionWaitMaxMs ?? POTION_WAIT_MAX_MS;
-    const deadGrey = args.deadGrey ?? true; // test-only: false disables the grey-screen branch (button path alone)
-    const s1Hi = args.s1Hi ?? 5; // S1 = fut1 bins 1..s1Hi (v4 window variant: 6 = 4-24 frames; recalibrate trigTh)
-    const lockOn = args.lockOn ?? true; // keep the boss locked on (camera tracking); false for A/B
-    const staggerHold = args.staggerHold ?? false; // v5: keep a press blocked by the hit stagger, retry at its end
-    const holdMinLead = args.holdMinLead ?? HOLD_MIN_LEAD;
-    const presched = args.presched ?? false; // v5/v6: pre-schedule the next contact from the combo head at a hit
-    const preschedN = args.preschedN ?? 1;
-    const comboV6 = args.comboV6 ?? false; // v6 pair: combo slot = gap-to-next-segment bins (COMBO6_*)
-    const keepPlanOnHit = args.keepPlanOnHit ?? false; // v6: a hit keeps unpressed items that target the future
-    const posthit = args.posthit ?? 0; // v6: K plan-free insurance parries after a hit (0=off)
-    const posthitNarrow = args.posthitNarrow ?? true; // only when no plan item is pending / no plan press since hit
-    const tellAnchor = args.tellAnchor ?? false; // v7 A1: flare dodges at the episode onset + anchor[kind]
-    const curtainImg = args.curtainImg ?? false; // v7 A2: image-rule curtain fallback (probe when not in curtain)
-    const curtainDark = args.curtainDark ?? false; // v7 A2: tell dark (arg 6) at the cover onset enters curtain mode
-    const repress = args.repress ?? false; // v7 A3: re-arm a pressed item when the estimated contact moves later
-    const repressMax = args.repressMax ?? REPRESS_MAX; // total re-arms per item (0 = none, default 2)
-    const closeIn = args.closeIn ?? false; // v7 B: keep melee range + chain bundle (hold/insure/presched v6)
-    const qiAttack = args.qiAttack ?? false; // v7 C: light attacks + 处决 in the 气竭 (qi == 0) window
-    const qiExecWait = args.qiExecWait ?? QI_EXEC_WAIT_MS; // ms of light attacks before the 处决 tap
-    const execThreshold = args.execThreshold ?? EXEC_THRESHOLD;
-    const repressGapMs = (args.repressGap ?? REPRESS_GAP_FRAMES) * FRAME_MS;
-    // closeIn turns the v6 chain switches on unless the caller pinned them explicitly
-    const holdOn = closeIn ? (args.keepPlanOnHit ?? true) : keepPlanOnHit;
-    const staggerOn = closeIn ? (args.staggerHold ?? true) : staggerHold;
-    const posthitN = closeIn ? (args.posthit ?? 1) : posthit;
-    const preschedOn = closeIn ? (args.presched ?? true) : presched;
-    /** @type {Record<string, number>} */
-    const dodgeLead = { grab: 5, slam: 4, other: 5, sweep: 5, ...(args.dodgeLead ?? {}) };
-    const leadMs = (/** @type {string} */ kind) => (dodgeLead[kind] ?? 0) * FRAME_MS;
-    // v8 A: flare handling. "dodge" = v7 (tellAnchor decides the anchoring); "late" = anchored dodges that show ~2 f
-    // before the contact + fut dodges at futDodgeLead; "parry" = flare tells press an anchored 卸势, fut dodges turn
-    // into parries while a flare is live (grabs keep the v7 anchor dodge while flareGrabDodge)
-    const flareMode = args.flareMode === "late" || args.flareMode === "parry" ? args.flareMode : "dodge";
-    const flareGrabDodge = args.flareGrabDodge ?? true; // parry mode: grab tells still dodge (anchor 4)
-    const grabParry = args.grabParry ?? false; // EXPERIMENTAL, default off: 742-744 pressed 23 live-grab labels, only 1/14 contacts ok; the labels include normal swings, so do not enable without a better grab classifier.
-    // grabContactDodge (default OFF, 2026-10-21): user confirmed the catch is the boss hand/weapon contact; the tell's
-    // fut contact c1 follows the delayed hp drop by ~9-10 f in the four labeled slow grabs (r752 66128/190014/282626,
-    // r750 96597). For a slow grab (c1 >= grabContactMinF) arm the dodge at c1 - grabContactLeadF and drop the fut
-    // dodge targeting the same contact so it does not take the dodge CD first. Fast grabs (c1 < 18 f) keep the old
-    // anchor: their catch is already at tell+1-2 f and a contact dodge would be late. Not a grab detector by itself;
-    // the tell label also fires on normal gold attacks, so this stays default off until a controlled A/B.
-    const grabContactDodge = args.grabContactDodge ?? false;
-    const grabContactLeadF = Math.min(20, Math.max(0, args.grabContactLeadF ?? 10)); // frames before c1
-    const grabContactMinF = Math.min(40, Math.max(0, args.grabContactMinF ?? 18)); // only slow grabs
-    // grabClass (default OFF, log-only, 2026-10-21): run the old dufu/flare3.onnx on the first sustained flare_grab
-    // tell of an episode and log p [other, grab, slam]. This tests whether the existing 3-class model can separate a
-    // real golden-hand/chain grab from the normal gold attacks that also carry the grab tell. No plan / press change.
-    const grabClass = args.grabClass ?? false;
-    const grabClassModel = args.grabClassModel ?? "dufu/flare3.onnx";
-    let grabClassFor = -1; // the episode already classified
-    let grabParryFor = -1; // the flare episode (onset ms) that already got its grabParry item
-    const grabS = { plans: 0, replacedDodges: 0 };
-    const gcS = { plans: 0, droppedFut: 0, fastKept: 0 };
-    const gclsS = { calls: 0, ready: 0, grab: 0, other: 0, slam: 0 };
-    /** @type {Record<string, number>} the anchor table of the mode (frames after the episode's first tell fire) */
-    const anchorTab = { ...(flareMode === "late" ? ANCHOR_LATE : flareMode === "parry" ? ANCHOR_PARRY : ANCHOR_FRAMES), ...(args.flareAnchor ?? {}) };
-    // fut-head dodge items: own target show lead (default = the parry's, i.e. the v7 issue lead; late mode 2 f)
-    const dodgeIssueLead = args.futDodgeLead != null || flareMode === "late"
-        ? Math.round(((args.futDodgeLead ?? FUT_DODGE_LEAD_LATE) + (args.latencyFrames ?? LATENCY_FRAMES)) * FRAME_MS) : issueLead;
-    const leadOf = (/** @type {string} */ kind) => (kind === "dodge" ? dodgeIssueLead : issueLead);
-    const curtainTimed = args.curtainTimed ?? false; // v8 B: timed back dodges at the 幕布 sweeps (65 f period)
-    const sweepLead = args.sweepLead ?? SWEEP_LEAD_F; // frames the timed sweep dodge shows before the sweep
-    const sweepPeriodMs = (args.sweepPeriod ?? SWEEP_PERIOD_F) * FRAME_MS;
-    const curtainKeepParry = args.curtainKeepParry ?? false; // v8 C: entering 幕布 drops only dodge-type plan items
-    const flare2 = args.flare2 ?? false; // v8 D: a second 金光 dodge FLARE2_MS after the first (combat.js flare2)
-    const failEscape = args.failEscape ?? false; // v8 D: side dodge after a model 卸势 with no ok (combat.js)
-    const flareHoldFut = args.flareHoldFut ?? false; // v8: fut dodges wait for the flare_other anchored dodge
-    // v8 flareSplit / curtainBeatEntry (@see FLARE_SPLIT_F): default off
-    const flareSplit = args.flareSplit ?? false; // fast flare_other (fut1 4-15 f mass) -> hold off + early anchor
-    const flareSplitTh = args.flareSplitTh ?? FLARE_SPLIT_TH;
-    const flareFastAnchor = args.flareFastAnchor ?? FLARE_FAST_ANCHOR; // frames after the first report
-    const flareThreat = args.flareThreat ?? false; // v12: one pending request per 金光 threat (@see FLARE_THREAT_PRIOR)
-    const flareThreatKind = args.flareThreatKind === "dodge" ? "dodge" : "parry"; // parry for other / slam by default
-    const flareThreatGrabDodge = args.flareThreatGrabDodge ?? true; // grab keeps the dodge (parry ~50% there)
-    const flareThreatParryLead = args.flareThreatParryLead ?? issueLead / FRAME_MS; // press lead, frames
-    const flareThreatDodgeLead = args.flareThreatDodgeLead ?? 3; // dodge show lead, frames
-    const curtainBeatEntry = (args.curtainBeatEntry ?? false) && curtainTimed; // sweep beat from the curtain entry
-    const curtainBeatF = args.curtainBeatF ?? CURTAIN_BEAT_F; // entry -> first sweep, frames
-    // v8 hit chain (@see HIT_ESC_MAX_DROP): all default off
-    const staggerByDrop = Array.isArray(args.staggerByDrop) && args.staggerByDrop.length ? args.staggerByDrop : null;
-    const hitEscape = args.hitEscape === "parry" || args.hitEscape === "dodge" || args.hitEscape === "both" ? args.hitEscape : "";
-    const hitEscapeMaxDrop = args.hitEscapeMaxDrop ?? HIT_ESC_MAX_DROP;
-    const parryRelockMs = args.parryRelockMs ?? 0;
-    const earlyRepress = args.earlyRepress ?? false;
-    const earlyRepressMs = (args.earlyRepressF ?? EARLY_REPRESS_F) * FRAME_MS;
-    const earlyRepressTh = args.earlyRepressTh ?? trigTh;
-    const curtainParryPlan = args.curtainParryPlan ?? false;
-    // v10 curtainFlank (default off, @see flankTick / curtainVeto)
-    const curtainFlank = args.curtainFlank ?? false; // 幕布 + near: cancel the lock-on, run through the boss
-    const curtainFlankMs = args.curtainFlankMs ?? CURTAIN_FLANK_MS; // the forward run's length
-    const curtainFlankNearMs = args.curtainFlankNearMs ?? CURTAIN_FLANK_NEAR_MS; // the ok fallback's near window
-    const curtainFlankNearH = args.curtainFlankNearH ?? CURTAIN_FLANK_NEAR_H; // near = the boss box height >= this
-    const curtainFlankDir = args.curtainFlankDir ?? "forward"; // forward | forward-left | forward-right
-    const curtainFlankRelockMs = args.curtainFlankRelockMs ?? CURTAIN_FLANK_RELOCK_MS; // the re-lock's extra wait
-    // v11 spinGuard (default off, @see spinTick)
-    const spinGuard = args.spinGuard ?? false; // 金光 + 劈命中: two side dodges at the 旋转's fixed slot, no 卸势
-    const spinLeadF = Math.min(14, Math.max(0, args.spinLeadF ?? SPIN_LEAD_F)); // the first dodge, frames before T (v2: 1)
-    const spinGapMs = args.spinGapMs ?? SPIN_GAP_MS; // the second dodge's delay after the first
-    const spinLateF = args.spinLateF ?? SPIN_LATE_F; // the second dodge's deadline / the arm's end, frames past T
-    const spinAgeF = args.spinAgeF ?? SPIN_AGE_F; // v2: the h1 age (the onset -> the 劈 hit) an arm may have
-    const spinTellF = Math.max(SPIN_TELL_F, spinLeadF + 2); // the slot protection watches the tell from T - this
-    const latencyF = args.latencyFrames ?? LATENCY_FRAMES;
-    const chainOn = !!staggerByDrop || !!hitEscape || parryRelockMs > 0 || earlyRepress || curtainParryPlan;
-    // v8 offense (offense_plan.md part 1, @see OFF_QUIET_TH): all default off
-    const offShadow = args.offShadow ?? false; // quietGate + offenseGuard judged and logged every frame, no touches
-    const offQuietTh = args.offQuietTh ?? OFF_QUIET_TH;
-    const offQuietBins = args.offQuietBins ?? OFF_QUIET_BINS;
-    const offQuietFrames = args.offQuietFrames ?? OFF_QUIET_FRAMES;
-    const offOkFast = args.offOkFast ?? true;
-    const offComboVeto = args.offComboVeto ?? true;
-    const offGuardMs = args.offGuardMs ?? OFF_GUARD_MS;
-    const offAbortMs = args.offAbortMs ?? OFF_ABORT_MS;
-    const offAfterHitMs = args.offAfterHitMs ?? OFF_AFTER_HIT_MS;
-    const offAfterDodgeMs = args.offAfterDodgeMs ?? OFF_AFTER_DODGE_MS;
-    const offAfterTellMs = args.offAfterTellMs ?? OFF_AFTER_TELL_MS;
-    const offHpMin = args.offHpMin ?? OFF_HP_MIN;
-    const offStrongTh = args.offStrongTh ?? OFF_STRONG_TH;
-    const offStrongBins = args.offStrongBins ?? OFF_STRONG_BINS;
-    const offContact = args.offContact ?? OFF_CONTACT; // the offense finger (0 stick, 1 parry/tap, 2 dodge)
-    const qiPlan = args.qiPlan ?? false; // 气竭 window v2 from the 处决 button's first sighting (replaces qiAttack)
-    const qiExecAfter = args.qiExecAfter ?? QP_EXEC_AFTER_MS;
-    const qiExecMax = args.qiExecMax ?? QP_EXEC_MAX_MS;
-    const qiLightMs = args.qiLightMs ?? QP_LIGHT_MS;
-    const qiPostMs = args.qiPostMs ?? QP_POST_MS;
-    const qiExecFix = qiPlan && (args.qiExecFix ?? true); // @see QP_LOST_MS
-    const untilCleared = args.untilCleared ?? false; // end with reason "cleared" at phase one's end (combat.js)
-    // v8 offense part 2 (@see OFF_QUIET_OFF): all default off
-    const offQuietOff = args.offQuietOff ?? OFF_QUIET_OFF; // an open gate closes on m30 only above this ...
-    const offMinOpenMs = args.offMinOpenMs ?? OFF_MIN_OPEN_MS; // ... and only once it has been open this long
-    const offPoke = args.offPoke ?? false; // T1 轻击 in the gate
-    const offLightMs = args.offLightMs ?? OFF_LIGHT_MS;
-    const offLightMax = args.offLightMax ?? OFF_LIGHT_MAX;
-    const offBurstMs = args.offBurstMs ?? OFF_BURST_MS;
-    const offWhiffN = args.offWhiffN ?? OFF_WHIFF_N;
-    const offSkill = args.offSkill ?? false; // T2 唤千军 + the 横刀 set
-    const offSkillPauseMs = args.offSkillPauseMs ?? OFF_SKILL_PAUSE_MS;
-    const offCharge = args.offCharge ?? false; // T3 hot 蓄力 under 热血难凉
-    const offHotHoldMs = args.offHotHoldMs ?? OFF_HOT_HOLD_MS;
-    /** @type {Record<string, number>} */
-    const offNoCancel = { ...OFF_NO_CANCEL_MS, ...(args.offNoCancelMs ?? {}) };
-    const qiSkill = args.qiSkill ?? false; // qiPlan window: skills first, 轻击 as the filler
-    const qiColdHoldMs = args.qiColdHoldMs ?? QP_COLD_HOLD_MS;
-    const qiPostLeftMs = args.qiPostLeftMs ?? QP_POST_LEFT_MS;
-    const qiFront = qiPlan && (args.qiFront ?? false); // qiPlan window by the teacher's order (@see QF_BURST_MS; overrides qiSkill)
-    const qiFrontBuffMs = args.qiFrontBuffMs ?? QF_BUFF_MS; // 唤千军 within this of the window's start (its ~2 s ends by the 处决)
-    const qiFrontBurstMs = args.qiFrontBurstMs ?? QF_BURST_MS; // the 爆发's tap within this (its offNoCancel.burst ends by the 处决)
-    const qiFrontSwitchMs = args.qiFrontSwitchMs ?? QF_SWITCH_MS; // a switch to 横刀 for it may take this long (out of the fit)
-    const offApproach = args.offApproach ?? false; // gate actions: far (box height < offStrikeH) -> walk in first
-    const offStrikeH = args.offStrikeH ?? OFF_STRIKE_H;
-    const offApproachMs = args.offApproachMs ?? OFF_APPROACH_MS;
-    const qiApproach = args.qiApproach ?? false; // qiPlan window: walk in first when far
-    const qiApproachMaxMs = args.qiApproachMaxMs ?? QP_APPROACH_MAX_MS;
-    // v8 offense part 3 (@see OFF_OK_MS): all default off
-    const offOkGate = args.offOkGate ?? false; // the near gate (ok / boss drop), m30 veto only
-    const offOkMs = args.offOkMs ?? OFF_OK_MS;
-    const offVetoTh = args.offVetoTh ?? OFF_VETO_TH;
-    const offDropPx = args.offDropPx ?? OFF_DROP_PX;
-    const offOkAfterHitMs = args.offOkAfterHitMs ?? OFF_OK_AFTER_HIT_MS;
-    const offWhiffFar = args.offWhiffFar ?? OFF_WHIFF_FAR;
-    const offColdMinMs = args.offColdMinMs ?? OFF_COLD_MIN_MS;
-    const offCommit = (args.offCommit ?? false) && offOkGate; // the committed 横刀 set
-    const offFar = (args.offFar ?? false) && offOkGate; // far: no action, a close-in after offFarMs
-    const offFarMs = args.offFarMs ?? OFF_FAR_MS;
-    const offFarPushMs = args.offFarPushMs ?? OFF_FAR_PUSH_MS;
-    const oldWindow = (args.oldWindow ?? false) && !offOkGate; // combat.js buffWindow on the dufu defense
-    const oldWindowMs = args.oldWindowMs ?? OLD_WINDOW_MS;
-    // v8 offense part 4 (@see OFF_CHARGE_FREE): default = part 3 as it was
-    const offGateVetoTh = args.offGateVetoTh ?? offVetoTh; // okGateWhy's m30 veto only
-    const offChargeFree = args.offChargeFree ?? OFF_CHARGE_FREE; // near-gate 蓄力: fut1 2 s mass below this (0 = off)
-    // v8 offense part 5 (@see LAND_TH): all default off
-    const landTh = args.landTh ?? LAND_TH; // near = land probe >= this (OR), 0 = off
-    const landFloor = args.landFloor ?? 0; // near-gate actions need land >= this, 0 = off
-    const qiFinish = args.qiFinish ?? 0; // 真气 <= this px: near, 0 = off
-    const oursTellTh = args.oursTellTh ?? 0; // 金光 dodge within oursTellMs of our press: tell p >= this, 0 = off
-    const oursTellMs = args.oursTellMs ?? OURS_TELL_MS;
-    // v8 offense part 6 (@see QS_OK_MS): all default off
-    const offQishu = args.offQishu ?? false; // 奇术 where safe (qishuWhere)
-    const qishuWhere = args.qishuWhere ?? ["open", "ok"]; // "qi": after the 处决 scene only
-    const qishuNoCancelMs = args.qishuNoCancelMs ?? 2000; // a 卸势 sooner than this after the tap is swallowed
-    const qishuTh = args.qishuTh ?? 0.1; // fut1 mass before it can be cut
-    const ranshiStrikeMs = args.ranshiStrikeMs ?? 0; // 燃此魂's second tap this long after the first (0 = off)
-    const farSkill = args.farSkill ?? true; // offFar may close in with 燃此魂 / 横刀 突进
-    const parryFollow = args.parryFollow ?? false; // 横刀 ok -> the 重击 follow-up
-    const followTap = args.followTap ?? "heavy"; // "heavy" (CHARGE, the blue 爆发 disc) | "diamond" (重击派生)
-    const followTh = args.followTh ?? 0.3; // fut1 mass before it can be cut
-    const followNoCancelMs = args.followNoCancelMs ?? 600;
-    const followStay = (args.followStay ?? false) && parryFollow && offOkGate; // stay on 横刀 (hot 蓄力 only on 陌刀)
-    const followDelayMs = args.followDelayMs ?? 400; // a tap right after the ok is swallowed (pf1: sok 60-140 ms)
-    const offBuff = args.offBuff ?? false; // 唤千军 where safe (buffWhere; @see BF_LIT_TH)
-    const buffWhere = args.buffWhere ?? ["open", "ok", "quiet"]; // "qi": 0/5 out in batch 19
-    const buffNoCancelMs = args.buffNoCancelMs ?? OFF_NO_CANCEL_MS.buff; // the summon swallows 卸势 this long
-    const buffTh = args.buffTh ?? 0.1; // fut1 mass before it can be cut
-    const buffM40 = args.buffM40 ?? 0.2; // "ok" / "quiet": m40 below this
-    const buffEveryMs = args.buffEveryMs ?? BF_EVERY_MS; // 安西军 rides >= ~30 s: no recast sooner
-    const offTang = (args.offTang ?? false) && offOkGate; // 冢上霜 -> 拨雪寻春 on 横刀 in the near gate (@see TG_DISC_WAIT_MS)
-    const tangHoldMs = args.tangHoldMs ?? 700;
-    const tangMinLeftMs = args.tangMinLeftMs ?? 1200; // near time left at the press
-    const tangNoCancelMs = args.tangNoCancelMs ?? 0; // horizon wanted clear (561: 1000 vetoed all 66 tries: the gate itself lets m30 up to 0.45)
-    const tangSwitch = (args.tangSwitch ?? false) && offTang; // 陌刀, not hot: switch to 横刀 instead of a cold 蓄力
-    offNoCancel.tang ??= tangNoCancelMs;
-    offNoCancel.qishu ??= qishuNoCancelMs;
-    offNoCancel.follow ??= followNoCancelMs;
-    const offActOn = offPoke || offSkill || offCharge;
-    const offGate = offShadow || offActOn; // the quietGate is judged
-    const offP6 = offQishu || ranshiStrikeMs > 0 || parryFollow || offBuff;
-    const offIconsOn = offSkill || offCharge || (qiPlan && qiSkill) || offOkGate || oldWindow || offP6;
-    const offDistOn = offApproach || (qiPlan && qiApproach) || curtainFlank; // v10: the flank's near signal is offH
-    /** v10 curtainFlank: whether the boss-box read (offH) is worth running now — the gate's own switches, or a flanked
-     * curtain episode and its tail (the 4 Hz read is not free; the flank's edge and end read on demand, @see flankTick).
-     * With curtainFlank off this is exactly offDistOn. */
-    const distNeeded = () => offApproach || (qiPlan && qiApproach)
-        || (curtainFlank && flankEp && (inCurtain || Date.now() - curtainLastAt < CURTAIN_GONE_MS));
-    const offOn = offShadow || qiPlan || untilCleared || offActOn || offOkGate || oldWindow || offP6;
+    const untilMs = args.ms ?? 600_000;
+    const maxPotions = args.potions ?? 1;
 
     const start = Date.now();
     const until = start + untilMs;
@@ -953,160 +229,6 @@ export default function (args = {}) {
         const t = Date.now();
         events.push([t, t - start, kind, detail]);
         log(`@${t} +${t - start} ${kind}${detail ? " " + detail : ""}`);
-    }
-
-    // --- telemetry (args.telemetry, default OFF): logs only. Nothing in the press / touch / plan paths reads this;
-    // `telTick` detects the press timestamps already written by every path (plan, posthit, hitEscape, early re-press,
-    // curtain, spin) and reads the button 5-10 f later, then a second time at 14-18 f. With it off every function
-    // here returns before any read.
-    /** @type {{kind: "parry" | "dodge", at: number, first: boolean, early: string, late: boolean, off: string, busy: number, grab: number}[]} */
-    let telProbes = [];
-    /** @type {null | {curtain: boolean, staggerOn: boolean, staggerUntil: number, hp: number | null, qi: number, off: string, parryAt: number, dodgeAt: number}} */
-    let telPrev = null;
-    let telWouldAt = 0, telWouldLast = "", telGoldOn = false;
-    /** The offense's current action ("" when offShadow etc. are off). @param {number} now */
-    function telOffState(now) {
-        if (!offOn) return "off";
-        if (offHold) return `hold:${offHold.a}`;
-        if (offWalking) return `walk:${offWalkWhy}`;
-        if (offUpAt > now) return "tap";
-        if (offOpenAt) return "gate";
-        return "idle";
-    }
-    /** @param {Box} roi */
-    function telGlow(roi) {
-        const h = color({ ...TEL_GLOW, image: img, roi, count: 1 });
-        return h.hit ? h.results[0]?.count ?? 0 : 0;
-    }
-    /** The first read (5-10 f); returns `lit` / `none`. @param {number} now
-     * @param {{kind: "parry" | "dodge", at: number, first: boolean, early: string, late: boolean, off: string, busy: number, grab: number}} p */
-    function telReadPress(now, p) {
-        const delayF = Math.round((now - p.at) / FRAME_MS);
-        if (p.kind === "parry") {
-            const n = telGlow(TEL_PARRY_GLOW_ROI);
-            const ok = match("combat/parry_ok.png", { image: img, roi: TEL_PARRY_OK_ROI, threshold: -1 }).score;
-            const state = n >= TEL_PARRY_GLOW_PX ? "lit" : "none";
-            mark("press result", `parry ${state} glow=${n}px ` +
-                `parry_ok=${ok == null ? "-" : ok.toFixed(2)} stance=unknown off=${p.off} busy=${p.busy}ms grab=${p.grab} ` +
-                `delay=${delayF}f press=+${Math.round(p.at - start)}ms`);
-            return state;
-        }
-        const n = telGlow(TEL_DODGE_GLOW_ROI);
-        const state = n >= TEL_DODGE_GLOW_PX ? "lit" : "none";
-        mark("press result", `dodge ${state} glow=${n}px off=${p.off} busy=${p.busy}ms grab=${p.grab} ` +
-            `delay=${delayF}f press=+${Math.round(p.at - start)}ms (execution unverified)`);
-        return state;
-    }
-    /** The second read (14-18 f): late glow after the first result. @param {number} now
-     * @param {{kind: "parry" | "dodge", at: number, first: boolean, early: string, late: boolean, off: string, busy: number, grab: number}} p */
-    function telReadLate(now, p) {
-        const n = telGlow(p.kind === "parry" ? TEL_PARRY_GLOW_ROI : TEL_DODGE_GLOW_ROI);
-        const state = n >= (p.kind === "parry" ? TEL_PARRY_GLOW_PX : TEL_DODGE_GLOW_PX) ? "lit" : "none";
-        mark("press late", `${p.kind} ${state} glow=${n}px early=${p.early} off=${p.off} busy=${p.busy}ms grab=${p.grab} ` +
-            `delay=${Math.round((now - p.at) / FRAME_MS)}f press=+${Math.round(p.at - start)}ms`);
-    }
-    /** Curtain shadow: what syncK would plan if the curtain did not suppress it. Log-only, no plan / press.
-     * @param {number} now */
-    function telWouldPlan(now) {
-        if (now - telWouldAt < 300) return;
-        telWouldAt = now;
-        /** @type {string[]} */
-        const out = [];
-        for (let k = 0; k < 3; k++) {
-            const t = targetOf(now, k);
-            if (!t) continue;
-            if (t.far) { out.push(`k${k} far`); continue; }
-            if (t.late) { out.push(`k${k} late`); continue; }
-            out.push(`k${k} ${t.kind} c+${Math.round((t.cMs - now) / FRAME_MS)}f` +
-                (t.branchMs ? ` br+${Math.round((t.branchMs - now) / FRAME_MS)}f` : ""));
-        }
-        const s = out.length ? out.join(" | ") : "none";
-        if (s !== telWouldLast) {
-            telWouldLast = s;
-            mark("would-plan", s);
-        }
-    }
-    /** Log-only: the golden grab line (a wide gold band), on/off. No press. @param {number} now */
-    function telGoldLine(now) {
-        const h = color({ ...TEL_GOLD, image: img, roi: TEL_GOLD_ROI, count: 150, connected: true });
-        const m = h.hit ? h.results.find((r) => (r.box?.[2] ?? 0) >= TEL_GOLD_W && (r.count ?? 0) >= TEL_GOLD_PX) : null;
-        const on = !!m;
-        if (on === telGoldOn) return;
-        telGoldOn = on;
-        mark("goldline", on ? `on w=${m.box[2]}px count=${m.count ?? 0} f${img.seq}` : "off");
-    }
-    /** End of each loop frame: press probes + state transitions. @param {number} now */
-    function telTick(now) {
-        if (!telemetry) return;
-        telGoldLine(now);
-        if (telPrev) {
-            // Every parry / dodge press writes lastParryAt / lastDodgeAt (plan press, posthit, hitEscape, early
-            // re-press, curtain sweeps, spin). Diffing them catches all paths without instrumenting each one.
-            const offNow = telOffState(now);
-            const busy = Math.max(0, offBusyUntil - now);
-            const grab = (flareLastArg === 2 && now - flareLastFireAt <= 800) || pred?.tell.arg === 2 ? 1 : 0;
-            if (!observe && lastParryAt && lastParryAt !== telPrev.parryAt) {
-                telProbes.push({ kind: "parry", at: lastParryAt, first: false, early: "", late: false, off: offNow, busy, grab });
-                if (telProbes.length > 16) telProbes.shift();
-            }
-            if (!observe && lastDodgeAt && lastDodgeAt !== telPrev.dodgeAt) {
-                telProbes.push({ kind: "dodge", at: lastDodgeAt, first: false, early: "", late: false, off: offNow, busy, grab });
-                if (telProbes.length > 16) telProbes.shift();
-            }
-        }
-        for (const p of [...telProbes]) {
-            if (!p.first) {
-                if (now < p.at + TEL_PRESS_DELAY_F * FRAME_MS) continue;
-                if (now - p.at > TEL_PRESS_LATE_F * FRAME_MS) {
-                    p.first = true;
-                    p.early = "unknown";
-                    mark("press result", `${p.kind} unknown delay=${Math.round((now - p.at) / FRAME_MS)}f (read window missed)`);
-                } else {
-                    p.early = telReadPress(now, p);
-                    p.first = true;
-                }
-            }
-            if (!p.late) {
-                if (now < p.at + TEL_PRESS_LATE2_F * FRAME_MS) continue;
-                if (now - p.at > TEL_PRESS_LATE2_MAX_F * FRAME_MS) {
-                    p.late = true;
-                    mark("press late", `${p.kind} unknown early=${p.early} delay=${Math.round((now - p.at) / FRAME_MS)}f (late window missed)`);
-                } else {
-                    telReadLate(now, p);
-                    p.late = true;
-                }
-                telProbes = telProbes.filter((x) => x !== p);
-            }
-        }
-        const offNow = telOffState(now);
-        if (!telPrev) {
-            telPrev = { curtain: inCurtain, staggerOn: now < staggerUntil, staggerUntil, hp: hpNow, qi: qiNow,
-                        off: offNow, parryAt: lastParryAt, dodgeAt: lastDodgeAt };
-            mark("state", `telemetry start curtain=${inCurtain ? "in" : "out"} ` +
-                `hp=${hpNow == null ? "-" : Math.round(hpNow * 100) + "%"} qi=${qiNow} off=${offNow}`);
-            return;
-        }
-        if (inCurtain !== telPrev.curtain) mark("state", `curtain ${inCurtain ? "in" : "out"}`);
-        const staggerOn = now < staggerUntil;
-        if (staggerOn !== telPrev.staggerOn) {
-            mark("state", staggerOn
-                ? `stagger on +${Math.round((staggerUntil - now) / FRAME_MS)}f (${staggerUntil - now} ms) control=unknown`
-                : "stagger over");
-        } else if (staggerOn && staggerUntil !== telPrev.staggerUntil) {
-            mark("state", `stagger moved to +${Math.round((staggerUntil - now) / FRAME_MS)}f`);
-        }
-        // hp / qi keep the last logged value as the baseline, so a slow drift also reports every 2 % / 8 px
-        if (hpNow != null && telPrev.hp != null && Math.abs(hpNow - telPrev.hp) >= TEL_HP_STEP) {
-            mark("state", `hp ${Math.round(telPrev.hp * 100)}% -> ${Math.round(hpNow * 100)}%`);
-            telPrev.hp = hpNow;
-        } else if (hpNow != null && telPrev.hp == null) telPrev.hp = hpNow;
-        if (qiNow >= 0 && telPrev.qi >= 0 && Math.abs(qiNow - telPrev.qi) >= TEL_QI_STEP) {
-            mark("state", `qi ${telPrev.qi} -> ${qiNow} px`);
-            telPrev.qi = qiNow;
-        } else if (qiNow >= 0 && telPrev.qi < 0) telPrev.qi = qiNow;
-        if (offNow !== telPrev.off) mark("state", `off ${telPrev.off} -> ${offNow}`);
-        Object.assign(telPrev, { curtain: inCurtain, staggerOn, staggerUntil, off: offNow,
-                                 parryAt: lastParryAt, dodgeAt: lastDodgeAt });
     }
 
     /** @type {{back: number[], head: number[], reads: number[], loop: number[]}} */
@@ -1140,7 +262,7 @@ export default function (args = {}) {
     };
     // halt (@see haltCheck): a 成功 page template on screen — no finger goes down (lock-on, defense, offense, walking)
     // until the templates are gone again or deadCheck ends the run. Ups still go. Apart from that, no down / move
-    // lands on the page's buttons (PAGE_BTNS: 再次演练 / 演练下一阶段) while either template hits this frame.
+    // lands on the page's buttons (PAGE_BTNS) while either template hits this frame.
     let halt = false, haltDowns = 0, pageHeld = 0;
     /** @param {Target} p */
     const onPage = (p) => Array.isArray(p) && p[0] >= PAGE_BTNS[0] && p[0] <= PAGE_BTNS[0] + PAGE_BTNS[2] &&
@@ -1177,7 +299,6 @@ export default function (args = {}) {
         memo.set(key, [im.seq, v]);
         return v;
     }
-    // reads (lib/dufu-reads.js: the masks/ROIs + health / readQi / litNow / bossPx / seeFlash / readMean / edgeParts / gapNow)
     const hpRead = () => perFrame("hp", health);
     const qiRead = () => perFrame("qi", readQi);
     const litRead = () => perFrame("lit", litNow);
@@ -1200,11 +321,11 @@ export default function (args = {}) {
     // like a fresh blow (737: seven hits for one drop). @see feedback
     /** @type {number | null} */
     let hpBase = null;
-    let qiNow = -1, litPx = 0, bossNow = 0, meanNow = -1, dark3 = 0, flare = 0;
+    let qiNow = -1, litPx = 0, bossNow = 0, meanNow = -1, dark3 = 0, flare = 0, qiEmpty = 0;
     /** @type {number[]} */
     const meanRing = [];
+    // potion: the tap waiting for its heal, counts, the last offense touch
     let potionsUsed = 0;
-    // v9 potion (@see POTION_QUIET_MS): the tap waiting for its heal, counts, the last offense touch
     /** @type {{at: number, hp0: number} | null} */
     let potionPend = null;
     /** @type {{at: number, hp0: number} | null} */
@@ -1215,40 +336,23 @@ export default function (args = {}) {
                    waitMs: /** @type {number[]} */ ([]), lateOks: 0 };
     let potionDueAt = 0; // the first frame the drink was due (wait time = due -> tap)
     let dodgeSeq = 0, inDodge = false, stickSide = 0;
-    let inCurtain = false, curtainLastAt = 0, curtainFirstAt = 0, curtainDodged = false, curtainDodgeAt = 0, lastFlareDodgeAt = 0, lastPotionHoldMark = 0;
-    let curtainDarkSeen = 0; // v7 A2: consecutive tell-dark frames at the cover onset
-    // v10 curtainFlank (@see flankTick): the episode's flank state + counters
-    let flankWasIn = false, flankEp = false, flankRunAt = 0, flankRunUntil = 0, flankSup = false, flankRelockPend = false;
-    let flankTilt = 0; // the side component the flank's stick currently carries (0 = straight forward, @see curtainFlankDir)
-    let flankWasPressed = false, flankHeld = false, flankDodgeSeen = 0, flankHAt = 0; // the hold's bookkeeping (@see flankTick)
-    const flankS = { runs: 0, skipsFar: 0, lockTaps: 0, relocks: 0, walkResumes: 0, sweepsDuring: 0 };
-    // v11 spinGuard (@see spinTick): the flare episode, the armed timer, the two dodges
-    let spinFlareAt = 0, spinFlareFrom = 0, spinFlareLabel = ""; // the last tell report / the episode's onset + label
-    let spinArmedAt = 0, spinAt = 0, spinEp = 0, spinDodges = 0, spinDodge1At = 0, spinSeq = 0, spinDropMarked = false;
-    /** @type {Set<PlanItem>} */
-    const spinHeld = new Set();
-    /** @type {{armed: number, skippedTell: number, skippedNotGrab: number, skippedAge: number, dodges: number, hitsAfter: number, hitsInWindow: number}} */
-    const spinS = { armed: 0, skippedTell: 0, skippedNotGrab: 0, skippedAge: 0, dodges: 0, hitsAfter: 0, hitsInWindow: 0 };
-    let weakSince = 0, qiZeroSeen = 0, qiEmpty = 0, lastLightAt = 0, lastExecTapAt = 0, lastExecMatchAt = 0; // v7 C
+    let inCurtain = false, curtainLastAt = 0, curtainFirstAt = 0, curtainDodged = false, curtainDodgeAt = 0, lastFlareDodgeAt = 0;
+    let curtainDarkSeen = 0; // consecutive tell-dark frames at the cover onset
     let lastAvoidDropAt = 0; // an "avoid" (curtain) item just handled: no new one for a moment
     let lastTellArg = -1, lastTellDodgeArg = -1, lastTellDodgeAt = 0; // tell continuity + one dodge per episode
-    let oursTellWaitAt = 0; // v8 part 5 oursTellTh
-    let flareLastFireAt = 0, flareFirstAt = 0, flareLastArg = -1; // v7 A1 anchor: the current flare episode's onset
-    let flareSeenAt = 0; // v8: the image flare rule's last hit (parry mode's "flare live")
-    let sweepAt = 0, sweepK = 1, sweepSrc = "", lastDarkAt = 0, timedSweeps = 0; // v8 curtainTimed
-    let lastPlanParryAt = 0, failEscapeFor = 0, failEscapes = 0, flare2s = 0, tellParries = 0; // v8 flare2 / failEscape
-    // v8 hit chain (@see HIT_ESC_MAX_DROP): the pending escape, the last 卸势's believed contact / plan press, counts
-    /** @type {{hitAt: number, at: number, dodged: boolean, parried: boolean} | null} */
+    let flareLastFireAt = 0, flareFirstAt = 0, flareLastArg = -1; // the current flare episode's onset
+    let flareSeenAt = 0; // the image flare rule's last hit
+    let sweepAt = 0, sweepK = 1, sweepSrc = "", lastDarkAt = 0, timedSweeps = 0; // the timed sweep dodges
+    // the hit chain: the pending escape, the last 卸势's believed contact / plan press, counts
+    /** @type {{hitAt: number, at: number} | null} */
     let esc = null;
-    let lastParryC = 0, lastItemParryAt = 0, earlyFor = 0, escDodges = 0, curtainSync = false;
+    let lastParryC = 0, lastItemParryAt = 0;
     const hcS = {
         stagger: /** @type {Record<string, number>} */ ({}),
-        esc: { scheduled: 0, parry: 0, dodge: 0, yieldPlan: 0, superseded: 0, late: 0, skip: /** @type {Record<string, number>} */ ({}) },
+        esc: { scheduled: 0, parry: 0, yieldPlan: 0, superseded: 0, late: 0, skip: /** @type {Record<string, number>} */ ({}) },
         relock: { delayed: 0, pressed: 0, gaveUp: 0, bySrc: /** @type {Record<string, number>} */ ({}) },
-        early: { fired: 0, resolved: 0, quiet: 0 },
-        curtainPlans: 0,
     };
-    // v8 flareHoldFut: the hold's start (0 = off), the last flare_other report, the episode's anchored item
+    // flareHold: the hold's start (0 = off), the last flare_other report, the episode's anchored item
     let foFrom = 0, foLastAt = 0;
     /** @type {PlanItem | null} */
     let foItem = null;
@@ -1272,7 +376,7 @@ export default function (args = {}) {
         else if (foItem && !foItem.pressedAt && !plan.includes(foItem)) foEnd("anchor dropped");
         else if (!foItem && now - foLastAt > FLARE_HOLD_GAP_F * FRAME_MS) foEnd("episode over");
     }
-    // v8 flareSplit: the current flare_other episode's first report (0 = none), its verdict, its anchored item
+    // flareSplit: the current flare_other episode's first report (0 = none), its verdict, its anchored item
     let fsFrom = 0;
     /** @type {boolean | null} */
     let fsFast = null;
@@ -1289,142 +393,20 @@ export default function (args = {}) {
         if (now - fsFrom < FLARE_SPLIT_F * FRAME_MS - 10) return;
         let near = 0;
         for (let i = 1; i <= 4; i++) near += futBin(0, i);
-        fsFast = near >= flareSplitTh;
+        fsFast = near >= FLARE_SPLIT_TH;
         fsS[fsFast ? "fast" : "slow"]++;
         mark("flaresplit", `${fsFast ? "fast" : "slow"} (fut1 4-15f ${near.toFixed(2)} at +${Math.round((now - fsFrom) / FRAME_MS)}f)`);
         if (!fsFast) return;
-        if (flareHoldFut && foFrom) {
+        if (foFrom) {
             fsS.holdEnds++;
             foEnd("split fast");
         }
         if (fsItem && !fsItem.pressedAt && plan.includes(fsItem)) {
-            const at = Math.max(now, fsFrom + flareFastAnchor * FRAME_MS);
+            const at = Math.max(now, fsFrom + FLARE_FAST_ANCHOR * FRAME_MS);
             fsItem.atMs = at;
-            fsItem.untilMs = Math.max(fsItem.cMs, at) + missGraceMs;
+            fsItem.untilMs = Math.max(fsItem.cMs, at) + MISS_GRACE_MS;
             fsItem.why += " split fast";
             fsS.moved++;
-        }
-    }
-    // v12 flareThreat (@see FLARE_THREAT_PRIOR): one request per 金光 threat, kept through a script CD until the
-    // contact's deadline. It is independent of flareSplit / flareMode and default off.
-    let ftEp = 0, ftLastOnset = 0, ftLabel = "", ftLastLog = 0;
-    /** @type {PlanItem | null} */
-    let ftItem = null;
-    const ftS = { armed: 0, updated: 0, waited: 0, pressed: 0, satisfied: 0, cancelled: 0, expired: 0,
-                  byKind: /** @type {Record<string, number>} */ ({}), byLabel: /** @type {Record<string, number>} */ ({}),
-                  waitBy: /** @type {Record<string, number>} */ ({}) };
-    /** @param {string} why */
-    function ftCancel(why) {
-        if (!ftItem) return;
-        if (plan.includes(ftItem) && !ftItem.pressedAt) dropItem(ftItem, `threat ${why}`);
-        ftS.cancelled++;
-        mark("flarethreat", `cancel (${why}) ${ftLabel} ep+${Math.round((Date.now() - ftEp) / FRAME_MS)}f`);
-        ftItem = null;
-        ftEp = 0;
-        ftLabel = "";
-    }
-    /**
-     * Arm / update the request for one image-flare episode. @param {number} now @param {number} onset
-     * @param {string} label flare_other | flare_grab | flare_slam @param {string} why
-     */
-    function ftArm(now, onset, label, why) {
-        if (!onset) onset = now;
-        // a new episode replaces the old request (a fresh label, or the old one already past its deadline)
-        if (ftItem && Math.abs(onset - ftEp) > 1) ftCancel("new episode");
-        if (ftItem && ftItem.pressedAt) return; // one press per threat; the hit / ok resolves it
-        if (ftItem && !plan.includes(ftItem)) ftItem = null;
-        // the same image episode after its request was pressed/cancelled: no second request (the 400 ms image rule)
-        if (!ftItem && ftLastOnset && Math.abs(onset - ftLastOnset) <= 20 * FRAME_MS && now - ftLastOnset < 40 * FRAME_MS) return;
-        const tab = why === "color" ? FLARE_THREAT_IMG_PRIOR : FLARE_THREAT_PRIOR;
-        const prior = label === "flare_grab" ? tab.grab : label === "flare_slam" ? tab.slam : tab.other;
-        let c = onset + prior * FRAME_MS;
-        const st = pred ? futStats(pred.fut[0]) : null;
-        if (st && st.none < 0.65 && st.sum > 0.01 && st.exp >= 4 && st.exp <= 35) {
-            const c2 = now + st.exp * FRAME_MS;
-            if (c2 >= c - 1 * FRAME_MS && c2 <= c + 6 * FRAME_MS) c = c2; // 710: the head moved the contact EARLIER by 5 f and the parry missed; only later refinements are allowed
-        }
-        if (c - now < LATE_FRAMES * FRAME_MS) {
-            mark("flarethreat", `skip (late ${Math.round((c - now) / FRAME_MS)}f) ${label} ${why}`);
-            return;
-        }
-        const kind = label === "flare_grab" && flareThreatGrabDodge ? "dodge" : flareThreatKind;
-        const leadF = kind === "parry" ? flareThreatParryLead : flareThreatDodgeLead;
-        const at = Math.max(now, c - leadF * FRAME_MS);
-        if (ftItem) { // same episode: move the request, do not duplicate it
-            ftItem.cMs = c;
-            ftItem.atMs = at;
-            ftItem.untilMs = c + FLARE_THREAT_END_F * FRAME_MS;
-            ftItem.noDropUntil = c - FLARE_THREAT_LATE_F * FRAME_MS;
-            ftS.updated++;
-            if (now - ftLastLog > 200) {
-                ftLastLog = now;
-                mark("flarethreat", `update ${label} c+${Math.round((c - now) / FRAME_MS)}f at+${Math.round((at - now) / FRAME_MS)}f ${why}`);
-            }
-            return;
-        }
-        // an existing plan press on this contact: if it already sits in the parry window, the threat is satisfied
-        // (one press per threat); otherwise the threat owns the slot and drops the unpressed items.
-        for (const it of [...plan]) {
-            if (it.threat || Math.abs(it.cMs - c) > 12 * FRAME_MS || it.kind !== "parry") continue;
-            if (it.pressedAt) {
-                const lead = (c - it.pressedAt) / FRAME_MS;
-                if (Math.abs(lead - flareThreatParryLead) <= 4) {
-                    ftS.satisfied++;
-                    mark("flarethreat", `satisfied by an existing parry at lead ${lead.toFixed(1)}f ${label}`);
-                    return;
-                }
-            } else {
-                dropItem(it, "threat owns the slot");
-            }
-        }
-        // the threat owns this contact's dodge slot too
-        for (const it of [...plan]) {
-            if (it.pressedAt || it.threat || it.kind !== "dodge") continue;
-            if (Math.abs(it.cMs - c) <= 12 * FRAME_MS) dropItem(it, "threat owns the slot");
-        }
-        ftEp = onset;
-        ftLastOnset = onset;
-        ftLabel = label;
-        ftItem = addItem({ kind, k: -1, src: "tell", cMs: c, atMs: at, untilMs: c + FLARE_THREAT_END_F * FRAME_MS,
-                           threat: true, ep: onset, noDropUntil: c - FLARE_THREAT_LATE_F * FRAME_MS,
-                           why: `threat ${label}${why ? ` ${why}` : ""}` });
-        ftS.armed++;
-        ftS.byKind[kind] = (ftS.byKind[kind] ?? 0) + 1;
-        ftS.byLabel[label] = (ftS.byLabel[label] ?? 0) + 1;
-        mark("flarethreat", `new ${label} -> ${kind} c+${Math.round((c - now) / FRAME_MS)}f at+${Math.round((at - now) / FRAME_MS)}f ep+${Math.round((now - onset) / FRAME_MS)}f ${why}`);
-    }
-    /** Per frame: refresh the request from the fresh fut estimate, cancel it on a resolving hit / ok or expiry. @param {number} now */
-    function ftTick(now) {
-        if (!ftItem) return;
-        if (!plan.includes(ftItem)) { ftItem = null; ftEp = 0; ftLabel = ""; return; }
-        if (ftItem.pressedAt) {
-            if (now > ftItem.untilMs) { ftItem = null; ftEp = 0; ftLabel = ""; }
-            return;
-        }
-        if (now > ftItem.untilMs) {
-            ftS.expired++;
-            mark("flarethreat", `expired ${ftLabel} c+${Math.round((ftItem.cMs - now) / FRAME_MS)}f`);
-            dropItem(ftItem, "threat expired");
-            ftItem = null; ftEp = 0; ftLabel = "";
-            return;
-        }
-        if ((lastHitAt && now - lastHitAt < 100 && lastHitAt >= ftItem.cMs - 4 * FRAME_MS)
-            || (lastOkAt && now - lastOkAt < 100 && lastOkAt >= ftItem.cMs - 4 * FRAME_MS)) {
-            ftCancel("resolved");
-            return;
-        }
-        if (now < ftItem.cMs - 4 * FRAME_MS && pred) {
-            const st = futStats(pred.fut[0]);
-            if (st.none < 0.65 && st.sum > 0.01 && st.exp >= 4 && st.exp <= 35) {
-                const c2 = now + st.exp * FRAME_MS;
-                if (c2 > ftItem.cMs + 0.5 * FRAME_MS && c2 - ftItem.cMs <= 5 * FRAME_MS) { // later only (710: early moves miss)
-                    ftItem.cMs = c2;
-                    ftItem.atMs = Math.max(now, c2 - (ftItem.kind === "parry" ? flareThreatParryLead : flareThreatDodgeLead) * FRAME_MS);
-                    ftItem.untilMs = c2 + FLARE_THREAT_END_F * FRAME_MS;
-                    ftItem.noDropUntil = c2 - FLARE_THREAT_LATE_F * FRAME_MS;
-                    ftS.updated++;
-                }
-            }
         }
     }
 
@@ -1435,7 +417,6 @@ export default function (args = {}) {
     let headCalls = 0, ready = 0, looks = 0, reason = "time";
     let hits = 0, oks = 0, misses = 0, late = 0, revisions = 0, branches = 0, branchDrops = 0;
     let holds = 0, holdPresses = 0, insurePresses = 0, pressedSinceHit = false, rerepresses = 0;
-    let weakWindows = 0, weakLights = 0, weakExecs = 0;
     const presses = { parry: 0, dodge: 0, potion: 0, walk: 0 };
     /** @type {Record<string, number>} */
     const blocked = {};
@@ -1452,16 +433,15 @@ export default function (args = {}) {
     /** @param {number} at */
     const sinceU = (at) => (at ? Math.min(10, (Date.now() - at) / FRAME_MS / 3) : 10);
 
-    // --- prediction decoding (lib/dufu-math.js: softmax / argmax / headOut / futStats)
+    // --- prediction decoding (lib/dufu-math.js)
     /** @param {number[]} out */
     function decode(out) {
         pred = {
-            combo: headOut(softmax(out, 0, 16), COMBO_LABELS),
+            combo: headOut(softmax(out, 0, 16), COMBO6_LABELS),
             stage: headOut(softmax(out, 16, 6), STAGE_LABELS),
             fut: [0, 1, 2].map((i) => softmax(out, 22 + i * 11, 11)),
             def: [0, 1, 2].map((i) => softmax(out, 55 + i * 5, 5)),
             tell: headOut(softmax(out, 70, 7), TELL_LABELS),
-            land: out.length >= 133 ? softmax(out, 131, 2)[1] : null, // v8 land probe (model_head8_report §五 3)
         };
     }
     const seqData = () => {
@@ -1475,17 +455,16 @@ export default function (args = {}) {
         }
         return data;
     };
-    // seqRing: the device assembles the head's seq from its own feature ring; check its numbers against ours. The app
-    // stores and feeds float32, so our values are rounded the same way before summing (same order, oldest first).
-    // Soft check only: a mismatch logs (first 10, then every 100th) and counts, it never throws.
+    // The device assembles the head's seq from its own feature ring; check its numbers against ours. The app stores
+    // and feeds float32, so our values are rounded the same way before summing (same order, oldest first). Soft check
+    // only: a mismatch logs (first 10, then every 100th) and counts, it never throws.
     let ringBad = 0, ringChecks = 0;
     /** @param {Inference} h */
     function checkRing(h) {
         ringChecks++;
         const len = h.ring ? h.ring.len : -1;
         let bad = len !== ring.length;
-        // the full sum costs a seqData() build, so it runs on a schedule (the first calls, then sparsely): the length
-        // check above stays every call
+        // the full sum costs a seqData() build: the first calls, then sparsely (the length check stays every call)
         if (!bad && (ringChecks <= 3 || ringChecks % 60 === 0)) {
             const data = seqData();
             let sum = 0;
@@ -1501,7 +480,7 @@ export default function (args = {}) {
         }
     }
 
-    // --- the 15 aux columns (unified_head2.json), frozen with each frame
+    // --- the 15 aux columns, frozen with each frame
     /** @param {number} dtMs @returns {number[]} */
     function buildAux(dtMs) {
         const aux = new Array(A).fill(0);
@@ -1524,9 +503,8 @@ export default function (args = {}) {
     }
 
     // --- the plan
-    const comboRunning = () => !pred ? false : comboV6
-        ? pred.combo.arg >= 2 && pred.combo.arg <= 7 && pred.combo.p >= 0.4 // chain continues: a next segment expected
-        : pred.combo.arg >= 2 && pred.combo.p >= 0.4 && pred.stage.arg >= 1 && pred.stage.arg <= 4;
+    /** The combo head (the gap to the next segment): the chain continues, a next segment expected. */
+    const comboRunning = () => !!pred && pred.combo.arg >= 2 && pred.combo.arg <= 7 && pred.combo.p >= 0.4;
     const comboDropped = () => !!pred && pred.combo.arg <= 1;
     /** @param {number} k @param {number} i */
     const futBin = (k, i) => pred?.fut[k]?.[i] ?? 0;
@@ -1536,15 +514,8 @@ export default function (args = {}) {
         for (let i = 1; i < 5; i++) if (p[i] > p[bi]) bi = i;
         if (bi === 0) return null;
         if (bi === 3) return /** @type {"avoid"} */ ("avoid");
-        if (bi === 2) return (p[2] ?? 0) >= dodgeMinP && !flareParryNow() ? /** @type {"dodge"} */ ("dodge") : /** @type {"parry"} */ ("parry");
+        if (bi === 2) return (p[2] ?? 0) >= DODGE_MIN_P ? /** @type {"dodge"} */ ("dodge") : /** @type {"parry"} */ ("parry");
         return /** @type {"parry"} */ ("parry");
-    }
-    /** v8 parry mode: a flare (tell class 1-3 or the image rule) is live and not a grab that keeps its dodge. */
-    function flareParryNow() {
-        if (flareMode !== "parry") return false;
-        const now = Date.now();
-        if (now - flareLastFireAt > FLARE_LIVE_MS && now - flareSeenAt > FLARE_LIVE_MS) return false;
-        return !(flareGrabDodge && flareLastArg === 2 && now - flareLastFireAt <= FLARE_LIVE_MS);
     }
     /** @param {Partial<PlanItem>} o */
     function addItem(o) {
@@ -1572,26 +543,18 @@ export default function (args = {}) {
         it.pressedAt = 0;
         it.kind = kind === "avoid" && !inCurtain ? "parry" : kind;
         it.cMs = cMs;
-        it.atMs = cMs - leadOf(it.kind);
-        it.untilMs = cMs + missGraceMs;
+        it.atMs = cMs - ISSUE_LEAD_MS;
+        it.untilMs = cMs + MISS_GRACE_MS;
         it.relocked = false;
         it.held = false;
         rerepresses++;
         mark("re-press", `k${it.k} ${it.kind} ${why} (#${it.rearms})`);
     }
-    /** @param {string} why */
-    function clearPlan(why) {
-        if (!plan.length) return;
-        mark("plan", `cancel all (${why})`);
-        plan = [];
-    }
-    /** @param {string} why */
+    /** Entering the curtain: the planned dodge-type items go (the 卸势 of plain blows stay). @param {string} why */
     function cancelFuture(why) {
         let n = 0;
         for (const it of [...plan]) {
-            // v8 curtainKeepParry: only the dodge-type items go (v7 also dropped the 卸势 of plain blows: A arm 4/8
-            // "predicted, not pressed" hits were planned parries cancelled by curtainImg/curtainDark entries)
-            if (it.src === "fut" && !it.committed && !it.pressedAt && !(curtainKeepParry && it.kind === "parry")) {
+            if (it.src === "fut" && !it.committed && !it.pressedAt && it.kind !== "parry") {
                 plan.splice(plan.indexOf(it), 1);
                 n++;
             }
@@ -1610,9 +573,9 @@ export default function (args = {}) {
         if (expMs > PLAN_FRAMES_MAX * FRAME_MS) return { far: true, late: false, kind: /** @type {"parry"} */ ("parry"), cMs: 0, branchMs: 0, covers: false };
         // the timing head is the trigger (S1-style); the defense head only picks the action (unknown / none -> parry)
         let s1 = 0;
-        for (let i = 1; i <= s1Hi; i++) s1 += futBin(k, i);
+        for (let i = 1; i <= 5; i++) s1 += futBin(k, i);
         const def = defAction(pred?.def[k] ?? []);
-        const trig = k === 0 ? s1 >= trigTh : comboRunning() || s1 >= trigTh * 0.6;
+        const trig = k === 0 ? s1 >= TRIG_TH : comboRunning() || s1 >= TRIG_TH * 0.6;
         if (!trig) return null;
         // def1 "curtain" without the actual curtain state is a favourite misread here: parry instead
         const kind = def === "avoid" && !inCurtain ? /** @type {"parry"} */ ("parry") : def ?? /** @type {"parry"} */ ("parry");
@@ -1625,18 +588,13 @@ export default function (args = {}) {
     }
     /** @param {number} now @param {number} k */
     function syncK(now, k) {
-        if (plan.some((x) => x.k === k && x.src === "combo")) return; // a pre-scheduled template item owns the slot
-        if (flareThreat && ftItem && !ftItem.pressedAt) { // v12: the pending 金光 request owns this contact's slot
-            const st0 = pred ? futStats(pred.fut[k]) : null;
-            if (st0 && st0.none < 0.65 && st0.sum > 0.01 && Math.abs(now + st0.exp * FRAME_MS - ftItem.cMs) <= 12 * FRAME_MS) return;
-        }
-        // v7 A3: a pressed item whose believed contact has passed without any ok/hit feedback, while the fresh fut
-        // still points at a real contact, is re-armed once. Bypasses the S1 trigger on purpose: after an early press
-        // the head is quiet until the arm's real contact approaches (r241 press@196 c=210: S1 0.04-0.18 until t225,
-        // real contact 243). The estimate may still be 30-45 f out here; re-pressing lands at c'-14.
+        // A pressed item whose believed contact has passed without any ok/hit feedback, while the fresh fut still
+        // points at a real contact, is re-armed once. Bypasses the S1 trigger on purpose: after an early press the head
+        // is quiet until the arm's real contact approaches (r241 press@196 c=210: S1 0.04-0.18 until t225, real
+        // contact 243). The estimate may still be 30-45 f out here; re-pressing lands at c'-14.
         const main0 = plan.find((x) => x.k === k && x.src === "fut" && !x.branch);
-        if (repress && main0 && main0.pressedAt && !main0.repressed && pred
-            && now - main0.pressedAt >= repressGapMs && now > main0.cMs + 3 * FRAME_MS
+        if (main0 && main0.pressedAt && !main0.repressed && pred
+            && now - main0.pressedAt >= REPRESS_GAP_FRAMES * FRAME_MS && now > main0.cMs + 3 * FRAME_MS
             && lastHitAt < main0.pressedAt - FRAME_MS && lastOkAt < main0.pressedAt - FRAME_MS) {
             const st2 = futStats(pred.fut[k]);
             if (st2.none < 0.65 && st2.sum > 0.01 && st2.exp >= LATE_FRAMES && st2.exp <= 45) {
@@ -1647,14 +605,11 @@ export default function (args = {}) {
             if (st2.sum > 0.05) {
                 // the head is unsure (none >= 0.65) but the contact is still coming (252 f4204: press 37 f early,
                 // sum 0.16-0.22 / none 0.80-0.89 while the real contact was 4241): a fixed short-delay second tap
-                rearmItem(main0, main0.kind,
-                          now + (REPRESS_DELAY_FRAMES + leadOf(main0.kind) / FRAME_MS) * FRAME_MS,
-                          `second tap +${REPRESS_DELAY_FRAMES}f`);
+                rearmItem(main0, main0.kind, now + (REPRESS_DELAY_FRAMES + ISSUE_LEAD_MS / FRAME_MS) * FRAME_MS, `second tap +${REPRESS_DELAY_FRAMES}f`);
                 return;
             }
         }
         const t = targetOf(now, k);
-        if (curtainSync && t && !t.far && t.kind !== "parry") return; // v8 curtainParryPlan: 卸势 targets only
         const main = plan.find((x) => x.k === k && x.src === "fut" && !x.branch);
         const br = plan.find((x) => x.k === k && x.src === "fut" && x.branch);
         if (!t) {
@@ -1679,8 +634,7 @@ export default function (args = {}) {
                 if (now - lastAvoidDropAt < 500) return;
                 lastAvoidDropAt = now;
             }
-            if (curtainSync) hcS.curtainPlans++;
-            addItem({ kind: t.kind, k, src: "fut", cMs: t.cMs, atMs: t.cMs - leadOf(t.kind), untilMs: t.cMs + missGraceMs, why: `pred k${k}${t.covers ? " covers both" : ""}${curtainSync ? " curtain" : ""}` });
+            addItem({ kind: t.kind, k, src: "fut", cMs: t.cMs, atMs: t.cMs - ISSUE_LEAD_MS, untilMs: t.cMs + MISS_GRACE_MS, why: `pred k${k}${t.covers ? " covers both" : ""}` });
         } else if (!main.committed && !main.pressedAt) {
             if (Math.abs(t.cMs - main.cMs) > REVISE_MOVE_MS || t.kind !== main.kind) {
                 revisions++;
@@ -1688,25 +642,24 @@ export default function (args = {}) {
                 main.kind = t.kind;
             }
             main.cMs = t.cMs;
-            main.atMs = t.cMs - leadOf(t.kind);
-            main.untilMs = t.cMs + missGraceMs;
-        } else if (repress && main.pressedAt && (main.rearms ?? 0) < repressMax
+            main.atMs = t.cMs - ISSUE_LEAD_MS;
+            main.untilMs = t.cMs + MISS_GRACE_MS;
+        } else if (main.pressedAt && (main.rearms ?? 0) < REPRESS_MAX
                    && t.cMs - main.cMs > REVISE_MOVE_MS
-                   && t.cMs - main.pressedAt >= repressGapMs && t.cMs - now >= LATE_FRAMES * FRAME_MS
-                   && now - main.pressedAt >= parryCd) {
-            // v7 A3: the contact moved later after the press (long wind-up): re-arm and press again at its window.
-            // Keep the original kind here (the old code did): a def-head dodge flip is only taken when the old
-            // believed contact has passed (@see the branch above), so a normal parry is not turned into a dodge
-            // by a transient def1 vote.
+                   && t.cMs - main.pressedAt >= REPRESS_GAP_FRAMES * FRAME_MS && t.cMs - now >= LATE_FRAMES * FRAME_MS
+                   && now - main.pressedAt >= PARRY_CD_MS) {
+            // the contact moved later after the press (long wind-up): re-arm and press again at its window. Keep the
+            // kind: a def-head dodge flip is only taken once the old believed contact has passed (above), so a normal
+            // parry is not turned into a dodge by a transient def1 vote.
             const moved = t.cMs - main.cMs;
             rearmItem(main, main.kind, t.cMs, `contact moved +${Math.round(moved / FRAME_MS)}f`);
         }
         if (t.branchMs) {
-            if (!br) addItem({ kind: t.kind, k, src: "fut", branch: true, cMs: t.branchMs, atMs: t.branchMs - leadOf(t.kind), untilMs: t.branchMs + missGraceMs, t1Ms: t.cMs, why: "branch (bimodal)" });
+            if (!br) addItem({ kind: t.kind, k, src: "fut", branch: true, cMs: t.branchMs, atMs: t.branchMs - ISSUE_LEAD_MS, untilMs: t.branchMs + MISS_GRACE_MS, t1Ms: t.cMs, why: "branch (bimodal)" });
             else if (!br.pressedAt) {
                 br.cMs = t.branchMs;
-                br.atMs = t.branchMs - leadOf(br.kind);
-                br.untilMs = t.branchMs + missGraceMs;
+                br.atMs = t.branchMs - ISSUE_LEAD_MS;
+                br.untilMs = t.branchMs + MISS_GRACE_MS;
                 br.t1Ms = t.cMs;
             }
         } else if (br) {
@@ -1732,43 +685,33 @@ export default function (args = {}) {
         const t = pred.tell;
         const sustained = t.arg === lastTellArg;
         lastTellArg = t.arg;
-        // v7 A1: track flare episodes for the onset anchor (first fire of a flare run of the same class)
+        // flare episodes for the onset anchor (the first fire of a flare run of the same class)
         if (t.arg >= 1 && t.arg <= 3) {
-            if (spinGuard && t.p >= tellTh) spinFlareSeen(now, t.arg); // v11 spinGuard: the episode's onset + label (@see spinArm)
             if (now - flareLastFireAt > 20 * FRAME_MS || t.arg !== flareLastArg) {
                 flareFirstAt = now;
-                if (flareHoldFut && !flareThreat && t.arg === 1) {
+                if (t.arg === 1) {
                     if (foFrom) foEnd("new episode");
                     foFrom = now;
                     foItem = null;
                     foS.holds++;
                     mark("flarehold", `start (flare_other first report p${Math.round(t.p * 100)})`);
                 }
-                if (flareSplit && !flareThreat) {
-                    fsFrom = t.arg === 1 ? now : 0; // v8 flareSplit: a new episode
-                    fsFast = null;
-                    fsItem = null;
-                }
+                fsFrom = t.arg === 1 ? now : 0;
+                fsFast = null;
+                fsItem = null;
             }
             flareLastFireAt = now;
             flareLastArg = t.arg;
             if (t.arg === 1) foLastAt = now;
         }
-        if (flareSplit) fsTick(now);
-        if (flareThreat && t.p >= tellTh && t.arg >= 1 && t.arg <= 3) {
-            // v12: one threat request owns the 金光 slot (no onset anchor, no dodge CD race)
-            ftArm(now, flareFirstAt, TELL_LABELS[t.arg], `tell p${Math.round(t.p * 100)}`);
-            return;
-        }
-        // v7 A2 fallback 2 (per-frame): the tell head's dark class fires at the curtain's black cover onset
-        // (233-252: 77/82 dark streaks p>=0.7 (>=2 f) sit at a real episode; 46/54 episodes covered). Sampling a
-        // 400 ms slow task would miss the short covers, so it lives here, in the per-frame tell path.
+        fsTick(now);
+        // The dark class fires at the curtain's black cover onset (233-252: 77/82 dark streaks p>=0.7 (>=2 f) sit at a
+        // real episode). A 400 ms slow task would miss the short covers, so it lives here, in the per-frame tell path.
         if (t.arg === 6 && t.p >= 0.7) {
-            // v8 curtainTimed: a dark run's first frame is a sweep (the cover onset or a later black sweep): sync
-            if (curtainTimed && now - lastDarkAt > SWEEP_DARK_GAP_MS) sweepSync(now - SWEEP_DARK_LAG_F * FRAME_MS, "dark");
+            // a dark run's first frame is a sweep (the cover onset or a later black sweep): sync the timed dodges
+            if (now - lastDarkAt > SWEEP_DARK_GAP_MS) sweepSync(now - SWEEP_DARK_LAG_F * FRAME_MS, "dark");
             lastDarkAt = now;
-            if (++curtainDarkSeen >= 2 && curtainDark && !inCurtain
-                && (t.p >= 0.85 || (meanNow >= 0 && meanNow < 30))) {
+            if (++curtainDarkSeen >= 2 && !inCurtain && (t.p >= 0.85 || (meanNow >= 0 && meanNow < 30))) {
                 inCurtain = true;
                 curtainFirstAt = 0;
                 curtainDodged = false;
@@ -1780,7 +723,7 @@ export default function (args = {}) {
         } else {
             curtainDarkSeen = 0;
         }
-        if (t.p < tellTh || t.arg === 0 || t.arg === 6) return;
+        if (t.p < TELL_TH || t.arg === 0 || t.arg === 6) return;
         if (t.arg === 5) {
             if (!inCurtain) {
                 inCurtain = true;
@@ -1793,20 +736,11 @@ export default function (args = {}) {
             return;
         }
         if (inCurtain) return;
-        // a one-frame blip is noise; one dodge per episode (the tell stays lit while the flare is on screen).
-        // GrabParry accepts the first frame of a grab label: the headline case is arg2 appearing exactly at the
-        // anchored dodge's dispatch, and waiting for a second frame would let the dodge fire first.
-        if (t.p < tellDodgeP || (!sustained && !(grabParry && t.arg === 2))) return;
-        if (t.arg === lastTellDodgeArg && now - lastTellDodgeAt < tellEpisodeMs) return;
-        // part 5 oursTellTh: our own press just went out (its effect looks like 金光 to v8): a surer tell first
-        if (oursTellTh > 0 && t.arg >= 1 && t.arg <= 3 && t.p < oursTellTh && lastOffDownAt && now - lastOffDownAt < oursTellMs) {
-            if (now - oursTellWaitAt > 300) okS.oursTellWaits++;
-            oursTellWaitAt = now;
-            return;
-        }
+        // a one-frame blip is noise; one dodge per episode (the tell stays lit while the flare is on screen)
+        if (t.p < TELL_DODGE_P || !sustained) return;
+        if (t.arg === lastTellDodgeArg && now - lastTellDodgeAt < TELL_EPISODE_MS) return;
         const st = futStats(pred.fut[0]);
-        // v8: the late / parry flare modes are onset-anchored whatever tellAnchor says
-        const anchored = (tellAnchor || flareMode !== "dodge") && t.arg >= 1 && t.arg <= 3;
+        const anchored = t.arg >= 1 && t.arg <= 3; // else the sweep (4)
         if (!anchored && (st.none >= 0.65 || st.sum <= 0.01)) return;
         const c1 = st.none >= 0.65 || st.sum <= 0.01 ? now + 350 : now + st.exp * FRAME_MS;
         if (c1 - now < LATE_FRAMES * FRAME_MS) {
@@ -1814,126 +748,44 @@ export default function (args = {}) {
             mark("late", `tell ${t.label}`);
             return;
         }
-        if (grabClass && t.arg === 2 && grabClassFor !== flareFirstAt) {
-            grabClassFor = flareFirstAt;
-            gclsS.calls++;
-            let p = null;
-            try {
-                const r = infer(grabClassModel, { ...GRAB_CLASS_OPTS, image: img });
-                if (r.ready && r.probs) p = r.probs;
-            } catch (e) { /* a missing model / bad frame is logged as not ready, not fatal */ }
-            if (p && p.length >= 3) {
-                gclsS.ready++;
-                const a = argmax(p);
-                if (a === 1) gclsS.grab++;
-                else if (a === 2) gclsS.slam++;
-                else gclsS.other++;
-                mark("grabclass", `p ${p.slice(0, 3).map((x) => x.toFixed(2)).join("/")} arg ${["other", "grab", "slam"][a]} ` +
-                    `tellp ${t.p.toFixed(2)} c1 +${Math.round((c1 - now) / FRAME_MS)}f`);
-            } else {
-                mark("grabclass", `not ready tellp ${t.p.toFixed(2)}`);
-            }
-        }
         const label = TELL_LABELS[t.arg];
-        if (grabParry && !flareThreat && flareGrabDodge && t.arg === 2 && anchored
-            && grabParryFor !== flareFirstAt && st.none < 0.65 && st.sum > 0.01
-            && now - lastParryAt >= parryCd && now - lastDodgeAt >= dodgeCd) {
-            // GrabParry (default off, negative on 742-744): a grab tell that is still live when its plan would go
-            // out replaces the anchored onset dodge (which the flare data shows is caught ~88% of the time) with a
-            // 卸势 at the fresh contact. The live tell often starts as flare_other and only turns grab later, so this
-            // is deliberately a reclassification of the same episode, not a second plan. 742-744: 23 presses,
-            // 14 contacts, 1 ok; the same label fires on normal swings / golden AoE, so it is not a grab detector.
-            for (const o of [...plan]) {
-                if (o.src === "tell" && o.kind === "dodge" && !o.pressedAt
-                    && o.atMs >= flareFirstAt - FRAME_MS && o.atMs <= flareFirstAt + 20 * FRAME_MS) {
-                    dropItem(o, "grabParry replaces dodge");
-                    grabS.replacedDodges++;
-                }
-            }
-            grabParryFor = flareFirstAt;
-            grabS.plans++;
-            lastTellDodgeArg = t.arg;
-            lastTellDodgeAt = now;
-            addItem({ kind: "parry", k: -1, src: "tell", cMs: c1, atMs: Math.max(now, c1 - issueLead),
-                      untilMs: c1 + missGraceMs, why: `tell flare_grab parry (grabParry) p${Math.round(t.p * 100)}` });
-            return;
-        }
-        let at, contact = false;
-        if (anchored && t.arg === 2 && grabContactDodge && flareMode !== "parry"
-            && c1 - now >= grabContactMinF * FRAME_MS) {
-            // Slow grab: the boss hand/weapon contact is ~9-10 f before the delayed hp drop (c1). The fut dodge
-            // usually presses at c1-14 and would take the dodge CD first, so drop it for this contact and let the
-            // contact-timed dodge own the slot. Fast grabs (c1 < min) keep the old anchor.
-            contact = true;
-            for (const o of [...plan]) {
-                if (!o.pressedAt && o.src === "fut" && o.kind === "dodge"
-                    && Math.abs(o.cMs - c1) <= 12 * FRAME_MS) {
-                    dropItem(o, "grab contact owns the slot");
-                    gcS.droppedFut++;
-                }
-            }
-            at = Math.max(now, c1 - grabContactLeadF * FRAME_MS);
-            gcS.plans++;
-            mark("grab", `contact c+${Math.round((c1 - now) / FRAME_MS)}f at+${Math.round((at - now) / FRAME_MS)}f lead=${grabContactLeadF}f`);
-        } else if (anchored && flareMode === "parry" && !(flareGrabDodge && t.arg === 2)) {
-            // v8 parry mode: the flare gets a 卸势 lit ~5-6 f before its contact (one per episode, like the dodge)
-            const pat = Math.max(now, flareFirstAt + (anchorTab[label] ?? ANCHOR_PARRY.flare_other) * FRAME_MS);
-            if (plan.some((x) => x.src === "tell" && x.kind === "parry" && Math.abs(x.atMs - pat) < TELL_DEDUP_MS)) return;
-            lastTellDodgeArg = t.arg;
-            lastTellDodgeAt = now;
-            tellParries++;
-            addItem({ kind: "parry", k: -1, src: "tell", cMs: pat + issueLead, atMs: pat, untilMs: pat + issueLead + missGraceMs, why: `tell ${label} parry anchor p${Math.round(t.p * 100)}` });
-            return;
-        } else if (anchored) {
-            // v7 A1: press at the episode onset + anchor frames (the appearance lands ~5 f later); the head's first
-            // fire is the image onset +-3 f (tells head vs flares_ds onsets, 233-252: p50 0 / p90 +3). v8: the
-            // mode's table (late: show ~2 f before the contact); parry mode's grab dodge keeps the v7 table
-            at = flareFirstAt + ((flareMode === "parry" ? ANCHOR_FRAMES[label] : anchorTab[label]) ?? 4) * FRAME_MS;
-            if (flareSplit && t.arg === 1 && fsFast === true && fsFrom === flareFirstAt) at = flareFirstAt + flareFastAnchor * FRAME_MS;
+        let at;
+        if (anchored) {
+            at = flareFirstAt + (ANCHOR[label] ?? 4) * FRAME_MS;
+            if (t.arg === 1 && fsFast === true && fsFrom === flareFirstAt) at = flareFirstAt + FLARE_FAST_ANCHOR * FRAME_MS;
             if (at < now) at = now;
-        } else if (t.arg === 4) {
-            if (st.mode < 0) return;
-            at = now + FUT_CENTER[st.mode] * FRAME_MS - leadMs("sweep");
         } else {
-            at = c1 - leadMs(label);
+            if (st.mode < 0) return;
+            at = now + FUT_CENTER[st.mode] * FRAME_MS - DODGE_LEAD.sweep * FRAME_MS;
         }
-        if (now - lastDodgeAt < dodgeCd) return;
+        if (now - lastDodgeAt < DODGE_CD_MS) return;
         if (plan.some((x) => x.src === "tell" && x.kind === "dodge" && Math.abs(x.atMs - at) < TELL_DEDUP_MS)) return;
         lastTellDodgeArg = t.arg;
         lastTellDodgeAt = now;
-        if (t.arg === 2 && grabContactDodge && !contact) gcS.fastKept++;
-        const tit = addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: at, untilMs: Math.max(c1, at) + missGraceMs, why: `tell ${label}${contact ? " contact" : anchored ? " anchor" : ""} p${Math.round(t.p * 100)}` });
-        if (flareHoldFut && foFrom && anchored && t.arg === 1 && !foItem) {
+        const tit = addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: at, untilMs: Math.max(c1, at) + MISS_GRACE_MS, why: `tell ${label}${anchored ? " anchor" : ""} p${Math.round(t.p * 100)}` });
+        if (foFrom && t.arg === 1 && !foItem) {
             foItem = tit;
             foS.anchorPlans++;
         }
-        if (flareSplit && anchored && t.arg === 1 && fsFrom && fsFrom === flareFirstAt && !fsItem) fsItem = tit;
+        if (t.arg === 1 && fsFrom && fsFrom === flareFirstAt && !fsItem) fsItem = tit;
     }
     /** @param {string} dir @returns {Point} */
     function dirPoint(dir) {
-        return dir === "left" ? LEFT : dir === "right" ? RIGHT : dir === "forward" ? FORWARD : BACKWARD;
+        return dir === "left" ? LEFT : dir === "right" ? RIGHT : BACKWARD;
     }
+    /** Dodges go to the side, left / right in turn. */
     function nextDir() {
-        const n = dodgeSeq++;
-        if (dodgeDir === "side") return n % 2 ? "right" : "left";
-        if (dodgeDir === "forward") return "forward";
-        if (dodgeDir === "backleft") return n % 2 ? "left" : "back";
-        if (dodgeDir === "cycle") return ["back", "left", "right"][n % 3];
-        return "back";
+        return dodgeSeq++ % 2 ? "right" : "left";
     }
     /** @param {string} dir */
     function pressDodge(dir) {
-        if (observe) {
-            lastDodgeAt = Date.now();
-            return;
-        }
         offYield("dodge");
         inDodge = true;
         walkOff();
         try {
             tdown(STICK, 0);
             tmove(dirPoint(dir), 0);
-            tdown(dodgeP, 2);
+            tdown(DODGE, 2);
             sleep(50);
             tup(2);
         } finally {
@@ -1945,68 +797,52 @@ export default function (args = {}) {
     /** @param {PlanItem} it @param {number} now */
     function press(it, now) {
         if (it.kind === "parry") {
-            if (!observe) tap(parryP);
+            tap(PARRY);
             lastParryAt = Date.now();
             pressFrame(frameIdx);
             presses.parry++;
             it.pressedAt = lastParryAt;
-            lastParryC = it.cMs; // v8 parryRelockMs / hitEscape
+            lastParryC = it.cMs;
             lastItemParryAt = lastParryAt;
             if (it.src !== "insure") pressedSinceHit = true;
-            if (it.src === "fut" || it.src === "combo") lastPlanParryAt = lastParryAt; // v8 failEscape's timer
-            mark("press", `parry${observe ? " sim" : ""} k${it.k} ${it.src} c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f ${it.why}`);
+            mark("press", `parry k${it.k} ${it.src} c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f ${it.why}`);
         } else if (it.kind === "dodge") {
-            // Fut/combo and grab-threat plans have no explicit direction. Resolve it at dispatch so they honor
-            // dodgeDir, and cancelled plans do not consume a side. An empty direction otherwise means back.
+            // fut plans have no direction yet: resolve it at dispatch, so a cancelled plan does not consume a side
             if (!it.dir) it.dir = nextDir();
             const tapAt = Date.now();
             pressDodge(it.dir);
             pressFrame(frameIdx);
             presses.dodge++;
             it.pressedAt = Date.now();
-            mark("press", `dodge${observe ? " sim" : ""} ${it.dir} k${it.k} ${it.src} c+${Math.round((it.cMs - it.pressedAt) / FRAME_MS)}f ${it.why}`);
-            if (flareHoldFut) {
-                if (it === foItem) {
-                    foS.anchorPressed++;
-                    foS.pressMsAfterFirst.push(tapAt - foFrom);
-                    foEnd("anchor pressed");
-                } else if (it.src === "fut" && foHeld.has(it)) foS.heldPressedAfter++;
-            }
-            if (flare2 && it.src === "tell" && it.why.includes("flare") && !it.why.startsWith("flare2")) {
-                // v8 flare2 (combat.js): the second 金光 dodge goes whatever happened, same way, past the dodge CD
-                flare2s++;
-                addItem({ kind: "dodge", dir: it.dir, k: -1, src: "tell", cMs: it.cMs, atMs: tapAt + FLARE2_MS,
-                          untilMs: tapAt + FLARE2_MS + missGraceMs, noCd: true, why: "flare2 (second 金光 dodge)" });
-            }
+            mark("press", `dodge ${it.dir} k${it.k} ${it.src} c+${Math.round((it.cMs - it.pressedAt) / FRAME_MS)}f ${it.why}`);
+            if (it === foItem) {
+                foS.anchorPressed++;
+                foS.pressMsAfterFirst.push(tapAt - foFrom);
+                foEnd("anchor pressed");
+            } else if (it.src === "fut" && foHeld.has(it)) foS.heldPressedAfter++;
         } else if (it.kind === "potion") {
-            if (!observe) tap(potionP);
+            tap(POTION);
             lastPotionAt = Date.now();
-            potionHoldUntil = lastPotionAt + potionHoldMs;
+            potionHoldUntil = lastPotionAt + POTION_HOLD_MS;
             pressFrame(frameIdx);
             presses.potion++;
             it.pressedAt = lastPotionAt;
             if (potionDueAt) potS.waitMs.push(lastPotionAt - potionDueAt);
             potionDueAt = 0;
-            if (potionConfirm) { // v9: counted at the heal (potionTick)
-                potionTaps++;
-                potionPend = { at: lastPotionAt, hp0: hpNow ?? 0 };
-                mark("potion", `tap hp ${Math.round((hpNow ?? 0) * 100)}% (tap ${potionTaps}, ${potionsUsed}/${maxPotions} healed)`);
-            } else {
-                potionsUsed++;
-                mark("potion", `hp ${Math.round((hpNow ?? 0) * 100)}% (${potionsUsed}/${maxPotions})`);
-            }
+            potionTaps++; // counted at the heal (potionTick)
+            potionPend = { at: lastPotionAt, hp0: hpNow ?? 0 };
+            mark("potion", `tap hp ${Math.round((hpNow ?? 0) * 100)}% (tap ${potionTaps}, ${potionsUsed}/${maxPotions} healed)`);
         }
     }
     /** @param {PlanItem} it @param {number} now @returns {string} */
     function pressBlocked(it, now) {
-        // `off` is deliberately absent: offBusyUntil / offHold / offAct only gate offense (offCan / offActTick). A
-        // defense plan press goes regardless; tap() only calls offYield to let a held 蓄力 go. Do not "fix" r748
-        // #2806 here: that plan was never created (the curtain state skips syncK, @see syncPlan).
+        // the offense is deliberately absent: offBusyUntil / offHold only gate offense. A defense press goes regardless;
+        // tap() only lets a held 蓄力 go first (offYield).
         if (now < staggerUntil) return "stagger";
-        if (now < potionHoldUntil && !(potionSafe && it.kind === "dodge")) return "potion"; // v9: a dodge keeps the drink
+        if (now < potionHoldUntil && it.kind !== "dodge") return "potion"; // a dodge keeps the drink
         if (inDodge) return "dodge";
-        if (it.kind === "parry" && now - lastParryAt < parryCd) return "parry cd";
-        if (it.kind === "dodge" && now - lastDodgeAt < dodgeCd && !it.noCd) return "dodge cd";
+        if (it.kind === "parry" && now - lastParryAt < PARRY_CD_MS) return "parry cd";
+        if (it.kind === "dodge" && now - lastDodgeAt < DODGE_CD_MS) return "dodge cd";
         return "";
     }
     /** @param {number} now */
@@ -2014,14 +850,6 @@ export default function (args = {}) {
         const items = [...plan].sort((a, b) => a.atMs - b.atMs);
         for (const it of items) {
             if (!plan.includes(it) || it.pressedAt) continue;
-            if (grabContactDodge && it.src === "fut" && it.kind === "dodge"
-                && plan.some((x) => x.src === "tell" && !x.pressedAt && x.why.includes(" contact ")
-                    && Math.abs(x.cMs - it.cMs) <= 12 * FRAME_MS)) {
-                // a fut dodge added after the grab tell must not take the contact dodge's CD
-                dropItem(it, "grab contact owns the slot");
-                gcS.droppedFut++;
-                continue;
-            }
             if (now < it.atMs) continue;
             if (it.branch) {
                 if (now < it.t1Ms + 3 * FRAME_MS) continue;
@@ -2042,7 +870,7 @@ export default function (args = {}) {
             }
             if (it.kind === "potion" && plan.some((o) => o !== it && o.kind !== "potion" && !o.pressedAt && o.atMs <= now + POTION_YIELD_MS)) continue;
             if (foFrom && it.src === "fut" && it.kind === "dodge") {
-                // v8 flareHoldFut: the flare_other anchored dodge owns the dodge CD; keep the item for after the hold
+                // flareHold: the flare_other anchored dodge owns the dodge CD; keep the item for after the hold
                 foS.blockedFrames++;
                 if (!foHeld.has(it)) {
                     foHeld.add(it);
@@ -2051,66 +879,36 @@ export default function (args = {}) {
                 }
                 continue;
             }
-            if (spinArmedAt && it.kind === "dodge" && (it.src === "fut" || it.src === "tell")
-                && Math.abs(it.cMs - spinAt) <= SPIN_SLOT_F * FRAME_MS) {
-                // v11 spinGuard: the spin's own side dodges own this contact's dodge CD; keep the item (it can still
-                // expire or go after the disarm, @see spinTick)
-                if (!spinHeld.has(it)) {
-                    spinHeld.add(it);
-                    mark("spin", `hold ${it.src} dodge k${it.k} c+${Math.round((it.cMs - now) / FRAME_MS)}f (the slot's CD is the spin's)`);
-                }
-                continue;
-            }
             if (it.src === "insure") {
-                // v6 post-hit insurance (dufu.js arg posthit): fires at the stagger's end; blocked -> retry (until
-                // expiry); narrow -> skipped when the plan already has a pending item or a plan press since the hit
+                // post-hit insurance: fires at the stagger's end; blocked -> retry (until expiry); skipped when the
+                // plan already has a pending item or pressed since the hit
                 if (pressBlocked(it, now)) continue;
-                if (parryRelockMs > 0 && relockAt(now, it.cMs, true)) continue; // v8: retried until it expires
+                if (relockAt(now, it.cMs, true)) continue; // retried until it expires
                 if (pressedSinceHit) {
                     dropItem(it, "posthit: plan pressed");
                     continue;
                 }
-                if (posthitNarrow && plan.some((o) => o !== it && o.src !== "insure" && !o.pressedAt)) {
+                if (plan.some((o) => o !== it && o.src !== "insure" && !o.pressedAt)) {
                     dropItem(it, "posthit: plan live");
                     continue;
                 }
-                if (!observe) tap(parryP);
+                tap(PARRY);
                 lastParryAt = Date.now();
                 pressFrame(frameIdx);
                 presses.parry++;
                 insurePresses++;
                 it.pressedAt = lastParryAt;
                 lastParryC = it.cMs;
-                mark("press", `parry${observe ? " sim" : ""} posthit c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f`);
+                mark("press", `parry posthit c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f`);
                 dropItem(it, "posthit done");
                 continue;
             }
-            if (it.threat) { // v12: the request waits out a script CD until its contact deadline, then gives up
-                const tw = pressBlocked(it, now);
-                if (tw) {
-                    if (now <= (it.noDropUntil ?? it.cMs)) {
-                        if (!it.waited || now - it.waited > 150) {
-                            it.waited = now;
-                            ftS.waited++;
-                            ftS.waitBy[tw] = (ftS.waitBy[tw] ?? 0) + 1;
-                            mark("flarethreat", `wait ${tw} c+${Math.round((it.cMs - now) / FRAME_MS)}f (deadline +${Math.round(((it.noDropUntil ?? it.cMs) - now) / FRAME_MS)}f)`);
-                        }
-                        continue;
-                    }
-                    blocked[tw] = (blocked[tw] ?? 0) + 1;
-                    ftS.waitBy[`drop:${tw}`] = (ftS.waitBy[`drop:${tw}`] ?? 0) + 1;
-                    mark("flarethreat", `drop (${tw}) past deadline c+${Math.round((it.cMs - now) / FRAME_MS)}f`);
-                    dropItem(it, `threat ${tw}`);
-                    if (ftItem === it) { ftItem = null; ftEp = 0; ftLabel = ""; }
-                    continue;
-                }
-            }
             const why = pressBlocked(it, now);
-            if (parryRelockMs > 0 && !it.threat && it.kind === "parry" && (why === "" || why === "parry cd")) {
-                // v8 parryRelockMs: a second 卸势 at the same believed contact inside the game's lock waits for its end
+            if (it.kind === "parry" && (why === "" || why === "parry cd")) {
+                // a second 卸势 at the same believed contact inside the game's lock waits for its end
                 const end = relockAt(now, it.cMs, !!it.repressed);
                 if (end) {
-                    const lead = (it.cMs - end) / FRAME_MS - latencyF;
+                    const lead = (it.cMs - end) / FRAME_MS - LATENCY_F;
                     const src = it.src + (it.repressed ? "+re" : "");
                     if (lead < RELOCK_MIN_LEAD_F) {
                         hcS.relock.gaveUp++;
@@ -2127,7 +925,7 @@ export default function (args = {}) {
             }
             if (why) {
                 blocked[why] = (blocked[why] ?? 0) + 1;
-                if (staggerOn && why === "stagger" && !it.branch && it.cMs - now >= holdMinLead * FRAME_MS) {
+                if (why === "stagger" && !it.branch && it.cMs - now >= HOLD_MIN_LEAD * FRAME_MS) {
                     if (!it.held) {
                         it.held = true;
                         holds++;
@@ -2139,119 +937,57 @@ export default function (args = {}) {
                 dropItem(it, `blocked ${why}`);
                 continue;
             }
-            if (it.held && it.cMs - now < holdMinLead * FRAME_MS) {
+            if (it.held && it.cMs - now < HOLD_MIN_LEAD * FRAME_MS) {
                 dropItem(it, "held: too late");
                 continue;
             }
             press(it, now);
-            if (it.threat) {
-                ftS.pressed++;
-                const busy = offOn ? Math.max(0, offBusyUntil - Date.now()) : 0;
-                mark("flarethreat", `pressed ${it.kind} c+${Math.round((it.cMs - it.pressedAt) / FRAME_MS)}f busy+${busy}ms hold ${offHold ? offHold.a : "-"}`);
-            }
             if (it.held) holdPresses++;
             if (it.relocked) hcS.relock.pressed++;
         }
     }
     /**
-     * v8 parryRelockMs: when a 卸势 for believed contact cMs may go (0 = now): the last 卸势 is younger than
-     * parryRelockMs, nothing (ok / hit) came back since, and it is the same contact (same = a re-armed / insurance
-     * press, or believed contacts <= RELOCK_SAME_F apart; a different contact after an ok is never locked in-game).
+     * When a 卸势 for believed contact cMs may go (0 = now): the last 卸势 is younger than PARRY_RELOCK_MS, nothing (ok /
+     * hit) came back since, and it is the same contact (same = a re-armed / insurance press, or believed contacts <=
+     * RELOCK_SAME_F apart; a different contact after an ok is never locked in-game).
      * @param {number} now @param {number} cMs @param {boolean} same
      */
     function relockAt(now, cMs, same) {
-        if (!parryRelockMs || !lastParryAt) return 0;
-        const end = lastParryAt + parryRelockMs;
+        if (!lastParryAt) return 0;
+        const end = lastParryAt + PARRY_RELOCK_MS;
         if (now >= end || lastOkAt >= lastParryAt || lastHitAt >= lastParryAt) return 0;
         if (!same && Math.abs(cMs - lastParryC) > RELOCK_SAME_F * FRAME_MS) return 0;
         return end;
     }
-    /** v8 hitEscape: one tap of the parry button outside the plan (escape / early re-press). @param {number} c @param {string} what */
-    function extraParry(c, what) {
-        if (!observe) tap(parryP);
-        lastParryAt = Date.now();
-        lastParryC = c;
-        pressFrame(frameIdx);
-        presses.parry++;
-        mark("press", `parry${observe ? " sim" : ""} k-1 ${what} c+${Math.round((c - lastParryAt) / FRAME_MS)}f`);
-    }
-    /** v8 hitEscape dodge / both, before executePlan: the side dodge at the stagger end. @param {number} now */
-    function hitEscDodgeTick(now) {
-        if (!esc || esc.dodged || now < esc.at) return;
-        if (now > esc.at + HIT_ESC_WIN_F * FRAME_MS) {
-            esc.dodged = true;
-            hcS.esc.late++;
-            mark("escape", `dodge given up (+${now - esc.at} ms past the stagger end)`);
-            return;
-        }
-        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil || now - lastDodgeAt < dodgeCd) return;
-        esc.dodged = true;
-        const dir = escDodges++ % 2 ? "right" : "left";
-        pressDodge(dir);
-        pressFrame(frameIdx);
-        presses.dodge++;
-        hcS.esc.dodge++;
-        mark("press", `dodge${observe ? " sim" : ""} ${dir} k-1 hitEscape +${now - esc.hitAt}ms`);
-    }
-    /** v8 hitEscape parry / both, after executePlan: the 卸势 at the stagger end unless a plan 卸势 goes then. @param {number} now */
-    function hitEscParryTick(now) {
-        if (!esc) return;
-        if (esc.parried) {
-            if (esc.dodged) esc = null;
-            return;
-        }
-        if (hitEscape === "both" && !esc.dodged) return; // the dodge first
-        const at = esc.at + (hitEscape === "both" ? HIT_ESC_BOTH_GAP_F * FRAME_MS : 0);
-        if (now < at) return;
+    /** The escape 卸势 at the hit's stagger end, unless a plan 卸势 goes then. @param {number} now */
+    function hitEscTick(now) {
+        if (!esc || now < esc.at) return;
         const yieldF = HIT_ESC_YIELD_F * FRAME_MS;
-        if ((lastItemParryAt > esc.hitAt && lastItemParryAt >= at - yieldF)
+        if ((lastItemParryAt > esc.hitAt && lastItemParryAt >= esc.at - yieldF)
             || plan.some((o) => o.kind === "parry" && o.src !== "insure" && !o.pressedAt && !o.branch && o.atMs <= now + yieldF)) {
-            esc.parried = true;
+            esc = null;
             hcS.esc.yieldPlan++;
             mark("escape", "parry: a plan 卸势 goes now");
             return;
         }
-        if (now > at + HIT_ESC_WIN_F * FRAME_MS) {
-            esc.parried = true;
+        if (now > esc.at + HIT_ESC_WIN_F * FRAME_MS) {
             hcS.esc.late++;
-            mark("escape", `parry given up (+${now - at} ms past the stagger end)`);
+            mark("escape", `parry given up (+${now - esc.at} ms past the stagger end)`);
+            esc = null;
             return;
         }
-        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil || now - lastParryAt < parryCd) return;
-        if (parryRelockMs > 0 && relockAt(now, now + issueLead, true)) return;
-        esc.parried = true;
+        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil || now - lastParryAt < PARRY_CD_MS) return;
+        if (relockAt(now, now + ISSUE_LEAD_MS, true)) return;
+        const hitAt = esc.hitAt;
+        esc = null;
         hcS.esc.parry++;
-        extraParry(now + issueLead, `hitEscape +${now - esc.hitAt}ms`);
-    }
-    /**
-     * v8 earlyRepress: the last model 卸势 (fut / combo) got no ok / hit within earlyRepressF frames while S1 still sees
-     * a blow (>= earlyRepressTh, within EARLY_SPAN_F more frames): one more 卸势 (parryRelockMs applies).
-     * @param {number} now
-     */
-    function earlyRepressTick(now) {
-        if (!lastPlanParryAt || earlyFor === lastPlanParryAt || !pred) return;
-        const dt = now - lastPlanParryAt;
-        if (dt < earlyRepressMs) return;
-        if (lastOkAt >= lastPlanParryAt || lastHitAt >= lastPlanParryAt) {
-            earlyFor = lastPlanParryAt;
-            hcS.early.resolved++;
-            return;
-        }
-        if (dt > earlyRepressMs + EARLY_SPAN_F * FRAME_MS) {
-            earlyFor = lastPlanParryAt;
-            hcS.early.quiet++;
-            return;
-        }
-        if (inDodge || inCurtain || weakSince || now < staggerUntil || now < potionHoldUntil || now - lastParryAt < parryCd) return;
-        let s1 = 0;
-        for (let i = 1; i <= s1Hi; i++) s1 += futBin(0, i);
-        if (s1 < earlyRepressTh) return;
-        const st = futStats(pred.fut[0]);
-        const c = now + (st.sum > 0.01 && Number.isFinite(st.exp) ? st.exp : TARGET_GLOW_LEAD + latencyF) * FRAME_MS;
-        if (parryRelockMs > 0 && relockAt(now, c, true)) return;
-        earlyFor = lastPlanParryAt;
-        hcS.early.fired++;
-        extraParry(c, `early re-press +${Math.round(dt / FRAME_MS)}f S1 ${s1.toFixed(2)}`);
+        const c = now + ISSUE_LEAD_MS;
+        tap(PARRY);
+        lastParryAt = Date.now();
+        lastParryC = c;
+        pressFrame(frameIdx);
+        presses.parry++;
+        mark("press", `parry k-1 hitEscape +${now - hitAt}ms c+${Math.round((c - lastParryAt) / FRAME_MS)}f`);
     }
     /** @param {number} now */
     function expire(now) {
@@ -2259,11 +995,10 @@ export default function (args = {}) {
             if (!it.branch && !it.pressedAt && it.kind !== "potion" && now > it.untilMs) {
                 dropItem(it, "expired unpressed");
             } else if (!it.branch && it.pressedAt && it.kind !== "potion" && now > it.untilMs) {
-                // v7 A3: about to become a miss — if the fresh fut still points at a contact the press was too early
-                // for (the true contact has not happened yet), re-arm once and press again in its window. The trigger
-                // gate is deliberately bypassed here: after an early press the S1 trigger usually drops while the
-                // arm is still winding up (r241 press@196 c=210, S1 0.04-0.18 until t225, real contact 243).
-                if (repress && (it.rearms ?? 0) < repressMax && it.src === "fut" && it.k >= 0 && pred) {
+                // about to become a miss: if the fresh fut still points at a contact the press was too early for (the
+                // true contact has not happened yet), re-arm and press again in its window. The trigger gate is
+                // bypassed on purpose: after an early press S1 usually drops while the arm is still winding up.
+                if ((it.rearms ?? 0) < REPRESS_MAX && it.src === "fut" && it.k >= 0 && pred) {
                     const st2 = futStats(pred.fut[it.k]);
                     if (st2.none < 0.65 && st2.sum > 0.01 && st2.exp >= LATE_FRAMES && st2.exp <= REPRESS_LOOK_FRAMES) {
                         const kind = defAction(pred.def[it.k]) ?? /** @type {"parry"} */ ("parry");
@@ -2283,24 +1018,17 @@ export default function (args = {}) {
     /** @param {number} now */
     function syncPlan(now) {
         if (!pred) return;
-        if (flareThreat) ftTick(now);
-        for (const it of plan) if (!it.branch && !it.pressedAt) it.committed = it.atMs - now <= commitMs;
+        for (const it of plan) if (!it.branch && !it.pressedAt) it.committed = it.atMs - now <= COMMIT_MS;
         if (inCurtain) {
             if (now - curtainLastAt > CURTAIN_GONE_MS) {
                 inCurtain = false;
                 mark("curtain", "over");
-            } else if (curtainParryPlan) {
-                curtainSync = true;
-                for (let k = 0; k < 3; k++) syncK(now, k);
-                curtainSync = false;
-            } else if (telemetry) {
-                telWouldPlan(now); // log-only: what syncK would plan if the curtain did not suppress it
             }
         } else {
             for (let k = 0; k < 3; k++) syncK(now, k);
         }
         tellPlan(now);
-        if (flareHoldFut) foTick(now);
+        foTick(now);
         if (comboDropped()) {
             const st = futStats(pred.fut[0]);
             if (st.none >= 0.65 || st.exp > 30) {
@@ -2313,20 +1041,17 @@ export default function (args = {}) {
             }
         }
     }
+    let predMarkAt = 0;
     /** @param {number} now */
     function predMark(now) {
-        if (!pred || now - predMarkAt < predMs) return;
+        if (!pred || now - predMarkAt < PRED_MS) return;
         predMarkAt = now;
         const st = futStats(pred.fut[0]);
         let s1 = 0;
-        for (let i = 1; i <= s1Hi; i++) s1 += futBin(0, i);
-        const def1 = pred.def[0];
-        // telemetry: the full def1 distribution next to its argmax (the default `def1 <label>` stays untouched)
-        const def1Tel = telemetry ? ` def1 p ${def1.map((p) => p.toFixed(2)).join("/")} arg ${DEF_LABELS[argmax(def1)]}` : "";
+        for (let i = 1; i <= 5; i++) s1 += futBin(0, i);
         mark("pred", `S1 ${s1.toFixed(2)} bin ${st.mode}(${FUT_LABELS[st.mode] ?? "-"}) c1 +${st.sum > 0 ? Math.round(st.exp) : "-"}f ` +
-            `def1 ${DEF_LABELS[argmax(def1)]} tell ${pred.tell.label} combo ${(comboV6 ? COMBO6_LABELS : COMBO_LABELS)[pred.combo.arg]} ${pred.combo.p.toFixed(2)} stage ${pred.stage.label}${def1Tel}`);
+            `def1 ${DEF_LABELS[argmax(pred.def[0])]} tell ${pred.tell.label} combo ${COMBO6_LABELS[pred.combo.arg]} ${pred.combo.p.toFixed(2)} stage ${pred.stage.label}`);
     }
-    let predMarkAt = 0;
 
     // --- feedback (fast path): hp drop = hit, qi drop = ok
     /** @param {number} now @param {number} before @param {number} after */
@@ -2334,111 +1059,50 @@ export default function (args = {}) {
         hits++;
         lastHitAt = now;
         pressedSinceHit = false;
-        if (flareThreat && ftItem && !ftItem.pressedAt && now >= ftItem.cMs - 4 * FRAME_MS) ftCancel("hit");
-        // v8 staggerByDrop: the stagger by the read drop (off: staggerMs)
         const drop = before - after;
-        if (spinGuard) spinHit(now, drop); // v11 spinGuard: the 劈 hit arms the spin timer (@see spinTick)
-        let stg = staggerMs;
-        if (staggerByDrop) {
-            const row = staggerByDrop.find((x) => drop <= x[0] + 1e-9);
-            if (row) stg = row[1];
-            hcS.stagger[stg] = (hcS.stagger[stg] ?? 0) + 1;
-        }
+        let stg = STAGGER_BY_DROP[STAGGER_BY_DROP.length - 1][1];
+        const row = STAGGER_BY_DROP.find((x) => drop <= x[0] + 1e-9);
+        if (row) stg = row[1];
+        hcS.stagger[stg] = (hcS.stagger[stg] ?? 0) + 1;
         staggerUntil = Math.max(staggerUntil, now + stg);
+        // keep the unpressed items that still target a future contact (the fresh fut head often goes quiet during the
+        // stagger and never rebuilds them); only stale / consumed ones go
         const n = plan.length;
-        if (holdOn) {
-            // v6: keep the unpressed items that still target a future contact; only stale/consumed ones go
-            /** @type {PlanItem[]} */
-            const keep = [];
-            for (const it of plan) {
-                if (!it.pressedAt && it.cMs > now + 2 * FRAME_MS) keep.push(it);
-                else mark("plan", `- ${it.kind} k${it.k} hit ${it.pressedAt ? "pressed" : "stale"}`);
-            }
-            plan = keep;
-            mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n - keep.length}/${n} dropped, ${keep.length} kept)`);
-        } else {
-            clearPlan("hit");
-            mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n} planned cancelled)`);
+        /** @type {PlanItem[]} */
+        const keep = [];
+        for (const it of plan) {
+            if (!it.pressedAt && it.cMs > now + 2 * FRAME_MS) keep.push(it);
+            else mark("plan", `- ${it.kind} k${it.k} hit ${it.pressedAt ? "pressed" : "stale"}`);
         }
-        mark("stagger", `${stg} ms${staggerByDrop ? ` (drop ${Math.round(drop * 1000) / 10}%)` : ""}`);
-        // v8 curtainTimed: a hit in the curtain is a sweep (re-sync when unsynced or near a predicted sweep)
-        if (curtainTimed && (inCurtain || now - curtainLastAt < CURTAIN_GONE_MS)) {
+        plan = keep;
+        mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n - keep.length}/${n} dropped, ${keep.length} kept)`);
+        mark("stagger", `${stg} ms (drop ${Math.round(drop * 1000) / 10}%)`);
+        // a hit in the curtain is a sweep: re-sync when unsynced or near a predicted sweep
+        if (inCurtain || now - curtainLastAt < CURTAIN_GONE_MS) {
             const est = now - SWEEP_HIT_LAG_F * FRAME_MS;
-            const valid = sweepAt && est - sweepAt <= (SWEEP_N + 0.5) * sweepPeriodMs;
-            const j = valid ? Math.round((est - sweepAt) / sweepPeriodMs) : 0;
-            if (!valid || sweepSrc === "entry" || (j >= 1 && Math.abs(est - sweepAt - j * sweepPeriodMs) <= SWEEP_HIT_NEAR_F * FRAME_MS)) sweepSync(est, "hit");
+            const valid = sweepAt && est - sweepAt <= (SWEEP_N + 0.5) * SWEEP_PERIOD_MS;
+            const j = valid ? Math.round((est - sweepAt) / (SWEEP_PERIOD_MS)) : 0;
+            if (!valid || (j >= 1 && Math.abs(est - sweepAt - j * SWEEP_PERIOD_MS) <= SWEEP_HIT_NEAR_F * FRAME_MS)) sweepSync(est, "hit");
         }
-        let escaped = false;
-        if (hitEscape) {
-            // v8 hitEscape: one press at this hit's stagger end instead of posthit (a skipped hit keeps posthit as it
-            // was: heavy blows, curtain, potion); a newer hit supersedes a pending one
-            if (esc && !(esc.dodged && esc.parried)) {
-                hcS.esc.superseded++;
-                mark("escape", "superseded by a new hit");
-            }
-            esc = null;
-            const skip = inCurtain || now - curtainLastAt < CURTAIN_GONE_MS ? "curtain"
-                : now < potionHoldUntil || potionPend || plan.some((x) => x.kind === "potion") ? "potion"
-                : drop > hitEscapeMaxDrop ? "heavy" : "";
-            if (skip) {
-                hcS.esc.skip[skip] = (hcS.esc.skip[skip] ?? 0) + 1;
-                mark("escape", `skip (${skip})`);
-            } else {
-                escaped = true;
-                esc = { hitAt: now, at: staggerUntil, dodged: hitEscape === "parry", parried: hitEscape === "dodge" };
-                hcS.esc.scheduled++;
-                mark("escape", `${hitEscape} at +${staggerUntil - now} ms`);
-            }
+        // one escape 卸势 at this hit's stagger end, else the insurance one (heavy blows, curtain, potion); a newer hit
+        // supersedes a pending escape
+        if (esc) {
+            hcS.esc.superseded++;
+            mark("escape", "superseded by a new hit");
         }
-        if (posthitN > 0 && !escaped) {
+        esc = null;
+        const skip = inCurtain || now - curtainLastAt < CURTAIN_GONE_MS ? "curtain"
+            : now < potionHoldUntil || potionPend || plan.some((x) => x.kind === "potion") ? "potion"
+            : drop > HIT_ESC_MAX_DROP ? "heavy" : "";
+        if (skip) {
+            hcS.esc.skip[skip] = (hcS.esc.skip[skip] ?? 0) + 1;
+            mark("escape", `skip (${skip})`);
             addItem({ kind: "parry", k: -1, src: "insure", cMs: now + stg, atMs: now + stg,
-                      untilMs: now + stg + 30 * FRAME_MS, why: `posthit ${posthitNarrow ? "narrow" : "wide"}` });
-            if (posthitN > 1) {
-                addItem({ kind: "parry", k: -1, src: "insure", cMs: now + stg + 10 * FRAME_MS,
-                          atMs: now + stg + 10 * FRAME_MS, untilMs: now + stg + 40 * FRAME_MS, why: "posthit 2" });
-            }
-        }
-        if (preschedOn) comboPlan(now);
-    }
-    /**
-     * v5 presched: pre-schedule the following combo segments from the frozen template gaps after a hit. Uses the
-     * head output of the frame before the drop (the runtime sees the hit before it runs the head on the frame);
-     * contact = drop - DROP_LAG frames. Items are committed at birth and own their k slot (@see syncK).
-     * v6 (comboV6): the gap-to-next-bin head gives the next segment's gap directly (prob-weighted mean over the
-     * bins 2..7); one item per hit, no template table.
-     * @param {number} now
-     */
-    function comboPlan(now) {
-        if (!pred) return;
-        let kind = defAction(pred.def[0]);
-        if (!kind || (kind === "avoid" && !inCurtain)) kind = "parry";
-        if (comboV6) {
-            const p = pred.combo.probs;
-            let pb = 0, g = 0;
-            for (let i = 2; i <= 7; i++) {
-                pb += p[i] ?? 0;
-                g += (p[i] ?? 0) * COMBO6_CENTER[i - 2];
-            }
-            if (pb < 0.4) return;
-            g /= pb;
-            const c = now - DROP_LAG * FRAME_MS + g * FRAME_MS;
-            if (c - now > PLAN_FRAMES_MAX * FRAME_MS || c - now < LATE_FRAMES * FRAME_MS) return;
-            for (const o of [...plan]) if (o.src === "fut" && o.k === 0 && !o.pressedAt) dropItem(o, "combo owns slot");
-            addItem({ kind, k: 0, src: "combo", cMs: c, atMs: c - leadOf(kind), untilMs: c + missGraceMs, committed: true,
-                      why: `v6 gap ${g.toFixed(1)}f p${pb.toFixed(2)}` });
-            return;
-        }
-        if (pred.combo.arg < 2 || pred.combo.p < 0.4) return;
-        const gr = COMBO_GAPS[pred.combo.arg - 2];
-        const st = pred.stage.arg;
-        if (!gr || st < 2 || st > 4) return;
-        const idx = Math.min(st - 2, gr.length - 1);
-        let c = now - DROP_LAG * FRAME_MS;
-        const n = Math.min(preschedN, gr.length - idx);
-        for (let i = 0; i < n; i++) {
-            c += gr[idx + i] * FRAME_MS;
-            if (c - now > PLAN_FRAMES_MAX * FRAME_MS || c - now < LATE_FRAMES * FRAME_MS) break;
-            addItem({ kind, k: i, src: "combo", cMs: c, atMs: c - leadOf(kind), untilMs: c + missGraceMs, committed: true, why: `template T${pred.combo.arg - 1} seg${st + i}` });
+                      untilMs: now + stg + 30 * FRAME_MS, why: "posthit narrow" });
+        } else {
+            esc = { hitAt: now, at: staggerUntil };
+            hcS.esc.scheduled++;
+            mark("escape", `parry at +${staggerUntil - now} ms`);
         }
     }
     /** @param {number} now */
@@ -2451,7 +1115,6 @@ export default function (args = {}) {
             if (it.kind === "parry" && it.pressedAt && now - it.pressedAt <= 1500 && (!best || it.pressedAt > best.pressedAt)) best = it;
         }
         mark("ok", `真气 ${qiNow}->${qiRead()}${best ? ` (k${best.k})` : ""}`);
-        if (flareThreat && ftItem && !ftItem.pressedAt && now >= ftItem.cMs - 4 * FRAME_MS) ftCancel("ok");
         if (best) {
             plan.splice(plan.indexOf(best), 1);
             mark("plan", `- parry k${best.k} done ok`);
@@ -2469,9 +1132,9 @@ export default function (args = {}) {
                 if (h < hpBase - HIT_DROP && h > hpBase - 0.35) onHit(now, hpBase, h);
                 hpBase = h;
             } else if (h > hpBase) {
-                // An upward jump is a heal only when it reaches the drink's documented +POTION_HEAL (a +4% grey
-                // overread does not, even while the drink is pending), while the confirmed bar still fills
-                // (POTION_SETTLE_MS), or when it is a whole POTION_HEAL with no drink (the other heal sources).
+                // An upward jump is a heal only when it reaches the drink's +POTION_HEAL (a +4% grey overread does
+                // not, even while the drink is pending), while the confirmed bar still fills (POTION_SETTLE_MS), or
+                // when it is a whole POTION_HEAL with no drink (the other heal sources).
                 const drink = potionPend ?? potionLate;
                 const healing = (drink != null && h >= drink.hp0 + POTION_HEAL)
                     || (lastPotionOkAt > 0 && now - lastPotionOkAt <= POTION_SETTLE_MS)
@@ -2486,8 +1149,8 @@ export default function (args = {}) {
             qiNow = q;
             qiEmpty = 0;
         } else {
-            // v7 C: an exhausted qi bar has no light-blue pixels at all: the read fails (-1), NOT 0 (the dataset's
-            // f6.py reads 0 on the same frames). Track the empty streak so the 气竭 detector can fire.
+            // an exhausted qi bar has no light-blue pixels at all: the read fails (-1), NOT 0. Track the empty streak
+            // so the 气竭 detector can fire.
             qiEmpty++;
         }
         litPx = litRead();
@@ -2515,12 +1178,9 @@ export default function (args = {}) {
             greySeen = 0;
             return null;
         }
-        // The button is unmistakable (1980 px on the death panel). But white effect bursts also cross this ROI in
-        // fights (270p proxy >= 40 px, verified 1250-1430 px full-res: replay/deadcheck_sweep.py), so two checks in
-        // a row must ALSO see the boss bar gone, unless the count is death-panel-sized (>= 1600) — the count is
-        // the boss-bar-independent fallback for stale boss reads. The guard removes all battle-period false triggers
-        // (66/67 recorded rounds, all 187 check alignments, before this guard) while the real deaths in 219-225 all
-        // still fire (via the grey screen below).
+        // The button is unmistakable (1980 px on the death panel), but white effect bursts also cross this ROI in
+        // fights (1250-1430 px), so two checks in a row must ALSO see the boss bar gone, unless the count is
+        // death-panel-sized (>= 1600).
         const btn = countAtLeast(RETRY_WHITE, RETRY_ROI, 800, img);
         const again = btn && (bossNow <= 50 || countAtLeast(RETRY_WHITE, RETRY_ROI, 1600, img));
         deadSeen = again ? deadSeen + 1 : 0;
@@ -2528,10 +1188,8 @@ export default function (args = {}) {
             mark("dead", `the round is over (reset button${bossNow > 50 ? ", strong" : ""})`);
             return "dead";
         }
-        if (!deadGrey) return null;
         // a curtain blackout lasts ~1 s: only a grey screen of ~2.5 s counts (painting the death screen before its
-        // button). 8/8 terminal recordings fire here, 75-89 frames after the screen appears, with zero battle-period
-        // triggers in 74 rounds x 187 check alignments (replay/deadcheck_sweep.py).
+        // button). 8/8 terminal recordings fire here, with zero battle-period triggers in 74 rounds.
         const grey = countAtLeast(GREY, GREY_ROI, Math.round(0.85 * GREY_ROI[2] * GREY_ROI[3]), img);
         greySeen = grey ? greySeen + 1 : 0;
         if (greySeen >= 6) {
@@ -2541,15 +1199,13 @@ export default function (args = {}) {
         return null;
     }
 
-    // --- halt: phase one over. The 成功 page's 演练下一阶段 (993,679) covers LOCK, and its buttons show ~6 frames before
-    // 「成功」 and ~1 s before deadCheck's two reads: round 543's re-lock tap landed there and started phase two
-    // (20261018-012011 f8600-8640). Halt on HALT_ON_FRAMES frames in a row with either WON_T template (same threshold
-    // as deadCheck), lifted after HALT_OFF_FRAMES frames without. The boss bar plays no part: in round 566 it read
-    // 0-15 px over half full and the old bar rules (used up / gone in its last 10%) halted the defense into a death.
+    // --- halt: phase one over. The 成功 page's 演练下一阶段 covers LOCK, and its buttons show ~6 frames before 「成功」
+    // and ~1 s before deadCheck's two reads: round 543's re-lock tap landed there and started phase two. Halt on
+    // HALT_ON_FRAMES frames in a row with either WON_T template, lifted after HALT_OFF_FRAMES frames without. The boss
+    // bar plays no part (round 566: it read 0-15 px over half full).
     let wonRun = 0, wonMiss = 0, halts = 0;
     /** @param {number} now */
     function haltCheck(now) {
-        if (observe) return;
         const hit = wonAny();
         wonRun = hit ? wonRun + 1 : 0;
         wonMiss = hit ? 0 : wonMiss + 1;
@@ -2571,24 +1227,15 @@ export default function (args = {}) {
         return perFrame("won", () => WON_T.some(([t, roi]) => match(t, { image: img, roi, threshold: WON_TH }).hit));
     }
 
-    // --- lock-on: tap the lock button back on while the gold icon is gone (combat.js rule; no touches in observe)
+    // --- lock-on: tap the lock button back on while the gold icon is gone (combat.js rule)
     let lockWas = false, lockTaps = 0, lastLockTap = 0;
     /** @param {number} now */
     function lockCheck(now) {
-        if (observe || !lockOn || halt) return;
+        if (halt) return;
         const locked = color({ ...GOLD, image: img, roi: LOCK_ROI, count: 150 }).hit;
         if (locked !== lockWas) {
             lockWas = locked;
             mark("lock", locked ? "icon lit" : "icon dark");
-        }
-        // v10 curtainFlank: no auto re-lock while the curtain state is on (plus curtainFlankRelockMs past its end).
-        // The lift is detected here (lockCheck runs before flankTick) so the first tap after it is the re-lock itself
-        // and not a churn tap a frame before the flag is armed.
-        if (flankSupNow(now)) return;
-        if (flankSup) {
-            flankSup = false;
-            flankRelockPend = true;
-            mark("flank", "suppression off (curtain over)");
         }
         if (!locked && !upDue && now - lastLockTap >= LOCK_MS) {
             lastLockTap = now;
@@ -2599,19 +1246,14 @@ export default function (args = {}) {
             lockTaps++;
             tap(LOCK);
             mark("lock", `re-lock tap ${lockTaps}`);
-            if (flankRelockPend) { // v10 curtainFlank: the first re-lock after the flank's suppression
-                flankRelockPend = false;
-                flankS.relocks++;
-                mark("flank", "relock");
-            }
         }
     }
 
-    // --- round start (armed): walk in, in short bursts, until the boss bar shows
+    // --- round start: walk in, in short bursts, until the boss bar shows
     let bossSeen = false;
     /** @param {number} now */
     function approach(now) {
-        if (observe || bossSeen) return;
+        if (bossSeen) return;
         if (bossNow > 50) {
             bossSeen = true;
             strideF(0);
@@ -2623,11 +1265,11 @@ export default function (args = {}) {
         strideF(on ? 1 : 0);
     }
 
-    // --- slow rules (run on the frame budget's leftover, in priority order)
+    // --- the stick
     let stickF = 0; // the forward push (walking in); setSide is the horizontal one
     /** Push the joystick forward, 0/1 (@see setSide). @param {number} v */
     function strideF(v) {
-        if (observe || v === stickF || (halt && v !== 0)) return;
+        if (v === stickF || (halt && v !== 0)) return;
         if (v === 0) {
             tup(0);
             stickF = 0;
@@ -2647,7 +1289,6 @@ export default function (args = {}) {
     }
     /** @param {number} v */
     function setSide(v) {
-        if (observe) return;
         if (v === stickSide || (halt && v !== 0)) return;
         if (v === 0) tup(0);
         else {
@@ -2662,10 +1303,11 @@ export default function (args = {}) {
         }
         stickSide = v;
     }
+
+    // --- the curtain
     /**
-     * v8 curtainTimed: a sweep happened at press-clock time `at` (the moment a 卸势 tap would have lit at the sweep's
-     * frame): the next SWEEP_N sweeps (period sweepPeriod) get one back dodge each (@see sweepTick).
-     * @param {number} at @param {string} src
+     * A sweep happened at press-clock time `at` (the moment a 卸势 tap would have lit at the sweep's frame): the next
+     * SWEEP_N sweeps get one back dodge each (@see sweepTick). @param {number} at @param {string} src
      */
     function sweepSync(at, src) {
         sweepAt = at;
@@ -2675,13 +1317,12 @@ export default function (args = {}) {
     }
     /** The next timed sweep dodge's tap time, or 0 (none due: unsynced / done / not in the curtain). */
     function sweepPressAt() {
-        const sweepN = sweepSrc === "entry" ? SWEEP_N + 1 : SWEEP_N; // v8 curtainBeatEntry: entry + 3 beats
-        if (!curtainTimed || !sweepAt || !inCurtain || sweepK > sweepN) return 0;
-        if (Date.now() - sweepAt > (sweepN + 0.5) * sweepPeriodMs) return 0; // a stale sync (e.g. a dark blip long before)
-        // a dodge tapped at t shows DODGE_SHOW_F after a 卸势 tapped at t would light: show = sweep - sweepLead
-        return sweepAt + sweepK * sweepPeriodMs - (sweepLead + DODGE_SHOW_F) * FRAME_MS;
+        if (!sweepAt || !inCurtain || sweepK > SWEEP_N) return 0;
+        if (Date.now() - sweepAt > (SWEEP_N + 0.5) * SWEEP_PERIOD_MS) return 0; // a stale sync
+        // a dodge tapped at t shows DODGE_SHOW_F after a 卸势 tapped at t would light: show = sweep - SWEEP_LEAD_F
+        return sweepAt + sweepK * SWEEP_PERIOD_MS - (SWEEP_LEAD_F + DODGE_SHOW_F) * FRAME_MS;
     }
-    /** v8 curtainTimed, per frame: tap the timed back dodge when due (late by > SWEEP_LATE_MS: skip that sweep). @param {number} now */
+    /** Per frame: tap the timed back dodge when due (late by > SWEEP_LATE_MS: skip that sweep). @param {number} now */
     function sweepTick(now) {
         for (;;) {
             const at = sweepPressAt();
@@ -2696,66 +1337,22 @@ export default function (args = {}) {
             pressFrame(frameIdx);
             presses.dodge++;
             timedSweeps++;
-            if (flankRunUntil) flankS.sweepsDuring++; // v10 curtainFlank: a sweep dodge inside the flank's forward run
-            mark("curtain", `timed sweep ${sweepK} dodge${observe ? " sim" : ""} (${sweepSrc} sync +${Math.round((now - sweepAt) / FRAME_MS)}f)`);
+            mark("curtain", `timed sweep ${sweepK} dodge (${sweepSrc} sync +${Math.round((now - sweepAt) / FRAME_MS)}f)`);
             sweepK++;
             return;
         }
     }
-    /** v8 curtainTimed: keep the gap rule's own dodges away from a timed one that is about to go. @param {number} now */
+    /** Keep the gap rule's own dodges away from a timed one that is about to go. @param {number} now */
     const sweepQuiet = (now) => {
         const at = sweepPressAt();
         return !!at && at - now < SWEEP_QUIET_MS && at - now > -SWEEP_LATE_MS;
     };
-    // v8 curtainBeatEntry: the curtain state's last seen value, counters
-    let beatWasIn = false;
-    const beatS = { entries: 0, keptDark: 0 };
-    /** v8 curtainBeatEntry, per frame: on entering the curtain state, sync the first sweep curtainBeatF later. @param {number} now */
-    function beatEntryTick(now) {
-        if (inCurtain === beatWasIn) return;
-        beatWasIn = inCurtain;
-        if (!inCurtain) return;
-        if (sweepAt && sweepSrc === "dark" && now - sweepAt < SWEEP_DARK_GAP_MS + SWEEP_DARK_LAG_F * FRAME_MS) {
-            beatS.keptDark++; // the cover onset just synced (a sweep itself): keep it
-            return;
-        }
-        beatS.entries++;
-        sweepSync(now + curtainBeatF * FRAME_MS - sweepPeriodMs, "entry");
-    }
-    /**
-     * v8 failEscape (combat.js windupAct): the last model 卸势 (fut/combo) shows no ok FAIL_ESCAPE_MS after its press
-     * while the timing head still sees a blow (S1 >= trigTh): one side dodge (left / right in turn), only within
-     * FAIL_ESCAPE_SPAN_MS of that, never within FAIL_ESCAPE_QUIET_MS of a dodge, not in stagger / curtain / potion.
-     * @param {number} now
-     */
-    function failEscapeTick(now) {
-        if (!failEscape || !lastPlanParryAt || failEscapeFor === lastPlanParryAt || !pred) return;
-        const dt = now - lastPlanParryAt;
-        if (dt < FAIL_ESCAPE_MS) return;
-        if (dt >= FAIL_ESCAPE_MS + FAIL_ESCAPE_SPAN_MS || lastOkAt >= lastPlanParryAt || lastHitAt >= lastPlanParryAt) {
-            failEscapeFor = lastPlanParryAt; // window over, or it worked (ok), or it is already a hit (stagger)
-            return;
-        }
-        if (inDodge || inCurtain || weakSince || now < staggerUntil || now < potionHoldUntil || now - lastDodgeAt < FAIL_ESCAPE_QUIET_MS) return;
-        let s1 = 0;
-        for (let i = 1; i <= s1Hi; i++) s1 += futBin(0, i);
-        if (s1 < trigTh) return;
-        failEscapeFor = lastPlanParryAt;
-        failEscapes++;
-        const dir = failEscapes % 2 ? "left" : "right";
-        pressDodge(dir);
-        pressFrame(frameIdx);
-        presses.dodge++;
-        mark("press", `dodge${observe ? " sim" : ""} ${dir} k-1 failEscape 卸势没卸住 +${dt}ms S1 ${s1.toFixed(2)}`);
-    }
     /** @param {number} now */
     function slowCurtain(now) {
-        if (!curtainOn) return;
         if (!inCurtain) {
-            // v7 A2 fallback 1: the combat.js image rule itself (panels + orange edge) — the tell head caught only
-            // 1 of 252's 3 episodes (the other two it called "dark"); the full-res probe hits inside 52/54 episodes
-            // (curtain_probe.py) and nowhere else in the labelled rounds; one probe hit enters the curtain handler.
-            if (curtainImg && gapNow(img) !== null) {
+            // the combat.js image rule (panels + orange edge): the tell head misses curtains (252: 1 of 3); one probe
+            // hit enters the curtain handler
+            if (gapNow(img) !== null) {
                 inCurtain = true;
                 curtainFirstAt = 0;
                 curtainDodged = false;
@@ -2774,18 +1371,13 @@ export default function (args = {}) {
             if (meanNow >= 0 && meanNow < 22) {
                 curtainLastAt = now;
                 if (!curtainFirstAt) curtainFirstAt = now;
-                if (flankEp) return; // v10 curtainFlank: behind the boss: no walkOff / cover dodge
                 walkOff();
-                if (!curtainDodged && now - curtainDodgeAt > CURTAIN_DODGE_GAP_MS && now - lastDodgeAt > dodgeCd && !sweepQuiet(now)) {
+                if (!curtainDodged && now - curtainDodgeAt > CURTAIN_DODGE_GAP_MS && now - lastDodgeAt > DODGE_CD_MS && !sweepQuiet(now)) {
                     curtainDodged = true;
                     curtainDodgeAt = now;
                     mark("curtain", "cover: dodge");
-                    if (observe) {
-                        blocked.observe = (blocked.observe ?? 0) + 1;
-                    } else {
-                        pressDodge("back");
-                        presses.dodge++;
-                    }
+                    pressDodge("back");
+                    presses.dodge++;
                 }
                 return;
             }
@@ -2798,368 +1390,77 @@ export default function (args = {}) {
         }
         curtainLastAt = now;
         if (!curtainFirstAt) curtainFirstAt = now;
-        // v10 curtainFlank: behind the boss: no covered dodge, no first-sweep dodge, no gap station
-        if (flankEp) return;
         if (g === "covered") {
             walkOff();
-            if (now - curtainDodgeAt > CURTAIN_DODGE_GAP_MS && now - lastDodgeAt > dodgeCd && !sweepQuiet(now)) {
+            if (now - curtainDodgeAt > CURTAIN_DODGE_GAP_MS && now - lastDodgeAt > DODGE_CD_MS && !sweepQuiet(now)) {
                 curtainDodgeAt = now;
                 mark("curtain", "covered: dodge");
-                if (observe) {
-                    blocked.observe = (blocked.observe ?? 0) + 1;
-                    mark("blocked", "dodge curtain observe");
-                } else {
-                    pressDodge("back");
-                    presses.dodge++;
-                }
+                pressDodge("back");
+                presses.dodge++;
             }
             return;
         }
         const [a, b] = g;
         const inGap = a - GAP_IN <= ME_X && ME_X <= b + GAP_IN;
-        if (!curtainBeatEntry && !curtainDodged && now - curtainFirstAt >= CURTAIN_FIRST_DODGE_MS && !inGap && !sweepQuiet(now)) {
+        if (!curtainDodged && now - curtainFirstAt >= CURTAIN_FIRST_DODGE_MS && !inGap && !sweepQuiet(now)) {
             curtainDodged = true;
             walkOff();
             mark("curtain", "first sweep, not in the gap: dodge");
-            if (!observe) {
-                pressDodge((a + b) / 2 < ME_X ? "left" : "right");
-                presses.dodge++;
-            }
+            pressDodge((a + b) / 2 < ME_X ? "left" : "right");
+            presses.dodge++;
             return;
         }
         const dx = (a + b) / 2 - ME_X;
         const margin = Math.max(GAP_IN, (b - a) / 4);
         setSide(Math.abs(dx) <= margin ? 0 : Math.max(-1, Math.min(1, Math.round((dx / GAP_PUSH) * 4) / 4)) || 0);
     }
-
-    // ================================================================================================= v10 curtainFlank
-    // @see the args. Teacher 2026-10-18: 拼刀 / 近身 makes the black cover blind the reads and the gap rules cannot
-    // dodge the sweep; running through the boss to its back is outside the sweep's fan and keeps the offense up.
-    // Round 623: the ok-based "near" was wrong (the boss was still mid-range: 1 s of walking does not reach it), so
-    // the signal is the boss gold box height (@see offBossH; < 94 far, 94-154, 154-244, > 244 point blank, and 150 is
-    // the strike line), read on demand at the curtain state's rising edge (the 4 Hz read runs only around a flanked
-    // episode, @see distNeeded); a failed read (offH < 0) falls back to the old ok signal (curtainFlankNearMs). Near:
-    // one LOCK tap cancels the lock-on, the stick (contact 0) holds forward for curtainFlankMs — "forward-left" /
-    // "forward-right" tilt the same contact (@see curtainFlankDir) — and every break of that hold (a timed sweep's
-    // dodge, a plan press) is re-pressed on the next frame (walkResumes). Round 625: the timed sweeps stay ON (they are
-    // the baseline defense; suppressing them left the 1 s window bare and that run ate 5 hits), the gap / cover /
-    // first-sweep rules stay off for the rest of the episode, the h trace logs offH every OFF_DIST_EVERY ms during the
-    // run, the lockCheck re-lock is suppressed until curtainFlankRelockMs past the state's end (round 623: an episode
-    // re-entered 12 frames after "over" churned relock -> cancel), and the offense's curtain vetoes are lifted once the
-    // run is over (we are behind the boss). With curtainFlank off none of this runs: flankEp stays false and
-    // curtainVeto() is plain `inCurtain` (HEAD).
-    /** v10: the old ok-based near test (the fallback when the box read fails; @see okGateWhy). @param {number} now */
-    function flankOkNear(now) {
-        if (offOkGate) {
-            if (sinceOk(now) <= curtainFlankNearMs) return `ok ${Math.round(sinceOk(now))} ms`;
-            if (sinceDrop(now) <= OFF_DROP_WIN_MS) return `drop ${Math.round(sinceDrop(now))} ms`;
-            if (landNear()) return "land";
-            if (qiLow()) return "qi";
-            return "";
-        }
-        return lastOkAt > 0 && now - lastOkAt <= curtainFlankNearMs ? `ok ${now - lastOkAt} ms` : "";
-    }
-    /** v10: the flank's near decision at the curtain's onset. The boss box height first (offH >= curtainFlankNearH);
-     * offH < 0 (no read) falls back to the ok signal (@see flankOkNear). The `why` goes into the start mark.
-     * @param {number} now */
-    function flankNearWhy(now) {
-        if (offH >= 0) return { near: offH >= curtainFlankNearH, why: `h ${offH} ${offH >= curtainFlankNearH ? ">=" : "<"} ${curtainFlankNearH}` };
-        const ok = flankOkNear(now);
-        return { near: !!ok, why: `h -1 (no read), ${ok ? `ok ${ok}` : `ok ${lastOkAt ? Math.round(sinceOk(now)) + " ms" : "-"}`}` };
-    }
-    /** v10: lockCheck's re-lock is held back (the curtain state is still on, plus curtainFlankRelockMs past its end).
-     * @param {number} now */
-    const flankSupNow = (now) => curtainFlank && flankSup && (inCurtain || now - curtainLastAt < CURTAIN_GONE_MS + curtainFlankRelockMs);
-    /** v10: this episode flanked and its forward run is over: the offense treats the curtain as no veto. */
-    const flankPass = () => curtainFlank && flankEp && !flankRunUntil && inCurtain;
-    /** v10: the offense's curtain veto (plain `inCurtain` with curtainFlank off; @see flankPass). */
-    const curtainVeto = () => inCurtain && !flankPass();
-    /** v10: the stick's side component of curtainFlankDir (0 = straight forward). */
-    const flankSide = () => (curtainFlankDir === "forward-left" ? -1 : curtainFlankDir === "forward-right" ? 1 : 0);
-    /** v10: the flank's stick just went down (again): the resume count / mark and the tilt's re-arm. */
-    function flankPressed() {
-        if (flankWasPressed) {
-            flankS.walkResumes++;
-            mark("flank", `resumed walk #${flankS.walkResumes} h ${offH}`);
-        }
-        flankWasPressed = true;
-        flankTilt = 0;
-    }
-    /** v10: per frame (@see the args): the curtain state's rising edge, the forward run, the re-lock. @param {number} now */
-    function flankTick(now) {
-        if (!curtainFlank) return;
-        const edge = inCurtain && !flankWasIn;
-        flankWasIn = inCurtain;
-        if (edge) { // the curtain state just came on
-            offDistRead(); // the near signal is the boss box height: one read on demand (the 4 Hz one is not on yet)
-            const near = flankNearWhy(now);
-            if (!near.near) {
-                flankEp = false;
-                flankS.skipsFar++;
-                mark("flank", `start far (${near.why})`);
-            } else {
-                flankEp = true;
-                flankS.runs++;
-                flankRunAt = now;
-                flankRunUntil = now + curtainFlankMs;
-                flankSup = true;
-                flankRelockPend = false; // a stale re-lock from an earlier episode is superseded by this one
-                flankWasPressed = false;
-                flankHeld = false;
-                flankDodgeSeen = 0;
-                flankHAt = now;
-                mark("flank", `start near (${near.why}), ${curtainFlankDir} ${curtainFlankMs} ms`);
-                // 1. cancel the lock-on: one tap on LOCK (the icon already dark: nothing to cancel)
-                if (color({ ...GOLD, image: img, roi: LOCK_ROI, count: 150 }).hit) {
-                    flankS.lockTaps++;
-                    if (!observe) tap(LOCK);
-                    mark("flank", `lock tap (cancel)${observe ? " sim" : ""}`);
-                }
-            }
-        }
-        if (flankRunUntil && (now >= flankRunUntil || !inCurtain)) { // 3. the run's end: let go
-            flankRunUntil = 0;
-            flankTilt = 0;
-            walkOff();
-            offDistRead(); // the h in the end mark: did the run close the distance?
-            mark("flank", `end after ${now - flankRunAt} ms h ${offH}${inCurtain ? "" : " (curtain over)"}`);
-        }
-        if (flankRunUntil) { // 2. the hold: contact 0, the dir's tilt, re-asserted after every break (a dodge interrupts it)
-            if (now - flankHAt >= OFF_DIST_EVERY) { // the run's h trace: did the walk really get to the boss's side?
-                flankHAt = now;
-                offDistRead();
-                mark("flank", `h ${offH}`);
-            }
-            if (observe) { // observe: the hold is virtual (no touches): a dodge decision (pressDodge's lastDodgeAt) breaks it
-                if (lastDodgeAt > flankDodgeSeen) {
-                    flankDodgeSeen = lastDodgeAt;
-                    flankHeld = false;
-                }
-                if (!flankHeld) {
-                    flankHeld = true;
-                    flankPressed();
-                }
-            } else {
-                if (stickSide !== 0) setSide(0);
-                const wasF = stickF;
-                strideF(1);
-                if (wasF !== 1) flankPressed(); // (re)pressed: a resume once the run had pressed before
-                const side = flankSide();
-                if (side !== 0 && flankTilt !== side) {
-                    // The diagonal is one move of the same contact 0: a literal setSide would let the forward go (strideF
-                    // refuses while stickSide !== 0), so the curtain rule's own setSide state stays untouched (the flank
-                    // owns contact 0 in its window; the station is off meanwhile, @see flankEp).
-                    tmove([Math.round(STICK[0] + STICK_R * side), Math.round(STICK[1] - STICK_R)], 0);
-                    flankTilt = side;
-                }
-            }
-        }
-        if (observe && flankSup && !flankSupNow(now)) { // observe: count the re-lock lockCheck would tap (no touches)
-            flankSup = false;
-            if (lockOn) {
-                flankS.relocks++;
-                mark("flank", "relock sim");
-            }
-            mark("flank", "suppression off (curtain over)");
-        }
-    }
-
-    // ================================================================================================== v11 spinGuard
-    // @see the args / SPIN_DELAY_F. Teacher 2026-10-19: 金光 -> 劈 -> (a ~4 s pause) -> 旋转; the spin's contact is the
-    // 劈 hit + 119-120 frames and carries no flare of its own, so nothing in the scheduler ever dodged it: 93% of the
-    // 416 recorded spins had only a 卸势 planned (def1 unknown -> the parry default) and every one of those ate the full
-    // ~11.7%. The signal is the flare episode + the 劈 hit inside SPIN_ARM_WIN_F of its onset; the action is combat.js's
-    // pullGuard: two side dodges 250 ms apart, left/right alternating. The slot's own plan items step aside meanwhile
-    // (a fut/tell dodge waits for our CD, a fut 卸势 is dropped), and a flare tell at the slot hands the CD back to the
-    // anchored flare dodge (that +120 slot is a 金光 tier of its own, 116 of the report's 157).
-    // v2 (batch 25, live/report25_spin.md): T = h1 + 127 f (the measured contact is T + [-2, 0, +1.9]) and the arm
-    // needs a flare_grab episode (the label read at the episode's onset, @see spinFlareSeen) plus an h1 age <= spinAgeF
-    // (the v1 gate armed 7.5 times a round for 1.2 real spins; flare_grab alone is 0.69 precision / 0.92 recall).
-    /** v11 spinGuard: a flare report from the tell head (classes 1-3, p >= tellTh) opens or refreshes the current
-     * episode; a report SPIN_EP_GAP_F past the last one starts a new episode and records its label (round 620: the
-     * chain's second 金光 re-anchors the arm at its own 劈, @see spinArm). v2: this label is what the arm's gate reads
-     * — at the onset, where it is reliable (@see the constants; the 金光 is off screen by the arm). v2 also drops v1's
-     * image-rule hook (`slowFlare`): its episodes could only be labeled "image" and can never arm.
-     * @param {number} now @param {number} arg */
-    function spinFlareSeen(now, arg) {
-        if (now - spinFlareAt > SPIN_EP_GAP_F * FRAME_MS) {
-            spinFlareFrom = now;
-            spinFlareLabel = TELL_LABELS[arg] ?? "?";
-            mark("spin", `flare episode (${spinFlareLabel})`);
-        }
-        spinFlareAt = now;
-    }
-    /** v11 spinGuard: the 劈 hit landed (@see spinHit / onHit, called before the hit's own stagger is set) — arm the
-     * spin timer when it sits inside the current flare episode's SPIN_ARM_WIN_F. v2 gates, in order: the episode's
-     * label must be flare_grab and the h1 age (the onset -> this hit) <= spinAgeF; then the v1 ones — the curtain
-     * state, a stagger already running, a drink. One arm per episode (a newer episode's hit re-anchors, @see
-     * spinFlareSeen); observe arms and counts as well, it just never touches (@see pressDodge).
-     * @param {number} now @param {number} drop */
-    function spinArm(now, drop) {
-        if (!spinFlareFrom || (spinArmedAt && spinEp === spinFlareFrom)) return;
-        const age = now - spinFlareFrom;
-        if (age < 0 || age > SPIN_ARM_WIN_F * FRAME_MS) return;
-        if (spinFlareLabel !== "flare_grab") { // v2: only the grab 金光 carries the spin (@see the constants)
-            const t = pred?.tell;
-            spinS.skippedNotGrab++;
-            mark("spin", `arm skip (not grab): episode ${spinFlareLabel}, tell now ${t ? `${t.label} p${Math.round(t.p * 100)}` : "-"}, +${Math.round(age / FRAME_MS)}f after the flare`);
-            return;
-        }
-        if (age > spinAgeF * FRAME_MS) {
-            spinS.skippedAge++;
-            mark("spin", `arm skip (h1 age ${Math.round(age / FRAME_MS)}) > ${spinAgeF}f`);
-            return;
-        }
-        const why = inCurtain ? "curtain"
-            : now < staggerUntil ? "stagger"
-            : now < potionHoldUntil || potionPend || plan.some((x) => x.kind === "potion") ? "potion" : "";
-        if (why) {
-            mark("spin", `arm skip (${why}) +${Math.round(age / FRAME_MS)}f after the flare (drop ${Math.round(drop * 1000) / 10}%)`);
-            return;
-        }
-        spinArmedAt = now;
-        spinEp = spinFlareFrom;
-        spinAt = now - DROP_LAG * FRAME_MS + SPIN_DELAY_F * FRAME_MS; // h1 = the drop - DROP_LAG; T = h1 + 127 f
-        spinDodges = 0;
-        spinDodge1At = 0;
-        spinDropMarked = false;
-        spinHeld.clear();
-        spinS.armed++;
-        mark("spin", `armed h1 +${Math.round(age / FRAME_MS)}f after the flare (drop - ${DROP_LAG}f), T +${Math.round((spinAt - now) / FRAME_MS)}f`);
-    }
-    /** v11 spinGuard: end the arm (@see spinTick). @param {string} why */
-    function spinDisarm(why) {
-        if (!spinArmedAt) return;
-        spinArmedAt = 0;
-        spinDodges = 0;
-        spinHeld.clear();
-        mark("spin", `disarm (${why})`);
-    }
-    /** v11 spinGuard: the side dodge's direction — the existing left/right alternation (dodgeDir "side" -> nextDir),
-     * else a spin-local flip: the spin is dodged sideways whatever the run's default dodgeDir is (@see the args). */
-    function spinDir() {
-        const d = nextDir();
-        return d === "left" || d === "right" ? d : (spinSeq++ % 2 ? "right" : "left");
-    }
-    /** v11 spinGuard: can a press go through right now (@see hitEscDodgeTick's gates). The second tap of the pair skips
-     * the dodge CD: combat.js's dodge(2, 250 ms) presses its taps as a burst and spinGapMs is that gap.
-     * @param {number} now @param {boolean} first */
-    const spinPressable = (now, first) => !inDodge && now >= staggerUntil && now >= potionHoldUntil
-        && (!first || now - lastDodgeAt >= dodgeCd);
-    /** v11 spinGuard: one of the two side dodges (observe sims it). @param {number} now @param {number} n */
-    function spinDodge(now, n) {
-        const dir = spinDir();
-        pressDodge(dir);
-        pressFrame(frameIdx);
-        presses.dodge++;
-        spinS.dodges++;
-        spinDodges = n;
-        if (n === 1) spinDodge1At = now; // the second dodge's base (spinGapMs from this frame's press)
-        mark("spin", `dodge #${n} ${dir} T${now >= spinAt ? "+" : "-"}${Math.round(Math.abs(now - spinAt) / FRAME_MS)}f`);
-    }
-    /** v11 spinGuard: a hit landed (@see onHit, before the hit's own stagger is set): the 劈 hit that arms the timer,
-     * then the counters — hits inside the two dodges' window [T - spinLeadF, T + spinLateF] and hits at/after T (the
-     * spin still got us). @param {number} now @param {number} drop */
-    function spinHit(now, drop) {
-        spinArm(now, drop);
-        if (!spinArmedAt) return;
-        const rel = now - spinAt;
-        if (rel < -spinLeadF * FRAME_MS || rel > spinLateF * FRAME_MS) return;
-        spinS.hitsInWindow++;
-        if (rel >= 0) {
-            spinS.hitsAfter++;
-            mark("spin", `hit +${Math.round(rel / FRAME_MS)}f past T (drop ${Math.round(drop * 1000) / 10}%)`);
-        } else {
-            mark("spin", `hit ${Math.round(-rel / FRAME_MS)}f before T (drop ${Math.round(drop * 1000) / 10}%)`);
-        }
-    }
-    /** v11 spinGuard, per frame (after syncPlan, before executePlan): the slot's plan suppression, the two side dodges
-     * and the disarm rules (@see the args). @param {number} now */
-    function spinTick(now) {
-        if (!spinGuard || !spinArmedAt) return;
-        // 1. the slot is the spin's: a fut 卸势 for it is dropped as its press comes close (def1 unknown -> parry is
-        // exactly the 93% that ate the spin). Only items about to press (the same commitMs window syncPlan uses, but
-        // judged here too: a freshly added item is not flagged committed until the next frame): one mark per arm.
-        for (const it of [...plan]) {
-            if (it.kind !== "parry" || it.src !== "fut" || it.pressedAt) continue;
-            if (Math.abs(it.cMs - spinAt) > SPIN_SLOT_F * FRAME_MS || it.atMs - now > commitMs) continue;
-            dropItem(it, "spin: the slot's 卸势 does nothing");
-            if (!spinDropMarked) {
-                spinDropMarked = true;
-                mark("spin", `parry k${it.k} dropped (the slot's 卸势 does nothing)`);
-            }
-        }
-        // 2. the gates: the curtain state / a drink end the arm; the timeout is the second dodge's deadline
-        if (inCurtain) return spinDisarm("curtain");
-        if (now < potionHoldUntil || potionPend) return spinDisarm("potion");
-        if (now > spinAt + spinLateF * FRAME_MS) return spinDisarm("timeout");
-        // 3. the slot protection: a flare tell at the slot means that contact is a 金光 tier of its own — the anchored
-        // flare dodge (onset + 4-13 f) needs the dodge CD, so the spin hands it back (@see spinTellF)
-        const tell = pred?.tell;
-        if (tell && now >= spinAt - spinTellF * FRAME_MS && tell.arg >= 1 && tell.arg <= 3 && tell.p >= tellTh) {
-            spinS.skippedTell++;
-            mark("spin", `skip tell (${tell.label} p${Math.round(tell.p * 100)} at the slot): the anchored dodge keeps the CD`);
-            return spinDisarm("tell");
-        }
-        // 4. the two dodges: the first at T - spinLeadF, the second spinGapMs later (the late tier to T + spinLateF)
-        if (spinDodges === 0) {
-            if (now >= spinAt - spinLeadF * FRAME_MS && spinPressable(now, true)) spinDodge(now, 1);
-        } else if (spinDodges === 1 && now >= spinDodge1At + spinGapMs && spinPressable(now, false)) {
-            spinDodge(now, 2);
-        }
-    }
-    /** @param {number} now */
+    /** The image flare rule (gold + streak): the aux column, and a dodge when no tell planned one. @param {number} now */
     function slowFlare(now) {
         const seen = seeFlash(img);
         flare = seen ? 1 : 0;
         if (!seen) return;
-        flareSeenAt = now; // v8 parry mode: the flare is live
+        flareSeenAt = now;
         mark("flare", "gold + streak");
-        if (flareThreat) { // v12: the image rule arms the request only when no tell already owns this episode
-            if (!inCurtain && !(ftItem && ftItem.ep && Math.abs(now - ftItem.ep) < 40 * FRAME_MS)) ftArm(now, now, "flare_other", "color");
-            return;
-        }
-        if (!flareDodge || inCurtain) return;
-        if (flareMode === "parry") return; // v8: the fut items turn into parries meanwhile (@see flareParryNow)
-        if (now - lastDodgeAt < dodgeCd || now - lastFlareDodgeAt < 1000) return;
+        if (inCurtain) return;
+        if (now - lastDodgeAt < DODGE_CD_MS || now - lastFlareDodgeAt < 1000) return;
         if (plan.some((x) => x.kind === "dodge" && Math.abs(x.atMs - now) < TELL_DEDUP_MS * 2)) return;
         const st = pred ? futStats(pred.fut[0]) : null;
         const c1 = st && st.none < 0.65 && st.sum > 0.01 ? now + st.exp * FRAME_MS : now + 350;
         if (c1 - now < LATE_FRAMES * FRAME_MS) return;
         lastFlareDodgeAt = now;
-        addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: c1 - leadMs("other"), untilMs: c1 + missGraceMs, why: "flare color" });
+        addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: c1 - DODGE_LEAD.other * FRAME_MS, untilMs: c1 + MISS_GRACE_MS, why: "flare color" });
     }
-    /** v9 potionSafe: why the drink must wait now ("" = go). @param {number} now */
+
+    // --- potion (@see POTION_QUIET_MS)
+    /** Why the drink must wait now ("" = go). @param {number} now */
     function potionUnsafe(now) {
-        const urgent = (hpNow != null && hpNow <= POTION_URGENT) || (potionDueAt > 0 && now - potionDueAt >= potionWaitMaxMs);
+        const urgent = (hpNow != null && hpNow <= POTION_URGENT) || (potionDueAt > 0 && now - potionDueAt >= POTION_WAIT_MAX_MS);
         if (inCurtain) return "curtain";
         const own = Math.max(lastParryAt, lastDodgeAt, lastOffDownAt);
-        if (now - own < (urgent ? Math.min(potionGapMs, 400) : potionGapMs)) return "own press";
-        if (offOn && (offHold || offWalking || now < offBusyUntil)) return "offense";
-        if (now - lastHitAt < (urgent ? Math.min(potionQuietMs, POTION_URGENT_QUIET_MS) : potionQuietMs)) return "after-hit";
+        if (now - own < (urgent ? Math.min(POTION_GAP_MS, 400) : POTION_GAP_MS)) return "own press";
+        if (offHold || offWalking || now < offBusyUntil) return "offense";
+        if (now - lastHitAt < (urgent ? Math.min(POTION_QUIET_MS, POTION_URGENT_QUIET_MS) : POTION_QUIET_MS)) return "after-hit";
         if (urgent) return "";
-        if (plan.some((it) => !it.pressedAt && it.kind !== "potion" && it.atMs - now <= potionPlanMs)) return "plan";
+        if (plan.some((it) => !it.pressedAt && it.kind !== "potion" && it.atMs - now <= POTION_PLAN_MS)) return "plan";
         const t = pred?.tell;
-        if (t && t.arg !== 0 && t.p >= tellTh) return "tell";
+        if (t && t.arg !== 0 && t.p >= TELL_TH) return "tell";
         if (!pred) return "no pred";
         let m = 0;
         for (let i = 0; i < POTION_MASS_BINS; i++) m += futBin(0, i);
-        if (m >= potionMassTh) return "mass";
+        if (m >= POTION_MASS_TH) return "mass";
         return "";
     }
-    /** v9: the drink is due and waiting for a safe moment (offense / qiPlan lights hold off). */
+    /** The drink is due and waiting for a safe moment (the offense holds off meanwhile). */
     function potionDue() {
-        if (!potionSafe || maxPotions <= 0 || potionsUsed >= maxPotions || hpNow == null || hpNow > potionHp) return false;
-        if (potionConfirm && potionTaps >= potionMaxPresses) return false;
-        if (potionConfirm && lastPotionOkAt && Date.now() - lastPotionOkAt < POTION_SETTLE_MS) return false;
-        return !(potionCdMs && lastPotionOkAt && Date.now() - lastPotionOkAt < potionCdMs);
+        if (maxPotions <= 0 || potionsUsed >= maxPotions || hpNow == null || hpNow > POTION_HP) return false;
+        if (potionTaps >= POTION_MAX_TAPS) return false;
+        return !(lastPotionOkAt && Date.now() - lastPotionOkAt < POTION_SETTLE_MS);
     }
-    /** v9 potionConfirm, per frame: the tap counts once hp is up POTION_HEAL; a blow (live: it cancels the drink) or
-     * potionConfirmMs without the heal = not counted, the hold ends there (defense back on). A heal still showing
-     * within potionConfirmMs after a blow-fail is counted late. @param {number} now */
+    /** Per frame: the tap counts once hp is up POTION_HEAL; a blow or POTION_CONFIRM_MS without the heal = not
+     * counted, the hold ends there. A heal still showing within POTION_CONFIRM_MS after a blow counts late. @param {number} now */
     function potionTick(now) {
         if (potionLate) {
-            if (now - potionLate.at > potionConfirmMs) potionLate = null;
+            if (now - potionLate.at > POTION_CONFIRM_MS) potionLate = null;
             else if (hpNow != null && hpNow >= potionLate.hp0 + POTION_HEAL) {
                 potionsUsed++;
                 potS.oks++;
@@ -3174,7 +1475,7 @@ export default function (args = {}) {
         const p = potionPend;
         const healed = hpNow != null && hpNow >= p.hp0 + POTION_HEAL;
         const hit = lastHitAt > p.at;
-        if (!healed && !hit && now - p.at < potionConfirmMs) return;
+        if (!healed && !hit && now - p.at < POTION_CONFIRM_MS) return;
         potionPend = null;
         const it = plan.find((x) => x.kind === "potion");
         if (it) plan.splice(plan.indexOf(it), 1);
@@ -3192,120 +1493,43 @@ export default function (args = {}) {
             potS.failWhy[why] = (potS.failWhy[why] ?? 0) + 1;
             lastPotionFailAt = now;
             if (hit) potionLate = { at: p.at, hp0: hpNow ?? 0 };
-            mark("potion", `${hit ? `hit ${now - p.at} ms into the drink` : `no heal ${potionConfirmMs} ms after the tap`}, not counted`);
+            mark("potion", `${hit ? `hit ${now - p.at} ms into the drink` : `no heal ${POTION_CONFIRM_MS} ms after the tap`}, not counted`);
         }
     }
-    /** @param {number} now */
-    function slowPotion(now) {
+    /** Per frame: plan the drink at a safe moment. @param {number} now */
+    function planPotion(now) {
         if (maxPotions <= 0 || potionsUsed >= maxPotions) return;
-        if (hpNow == null || hpNow > potionHp) {
+        if (hpNow == null || hpNow > POTION_HP) {
             potionDueAt = 0;
             return;
         }
-        if (potionConfirm && (potionPend || now - lastPotionFailAt < potionRetryMs || potionTaps >= potionMaxPresses)) return;
-        if (potionCdMs && lastPotionOkAt && now - lastPotionOkAt < potionCdMs) return;
-        if (potionConfirm && lastPotionOkAt && now - lastPotionOkAt < POTION_SETTLE_MS) return; // the bar still fills
-        if (potionSafe && !potionDueAt) potionDueAt = now;
+        if (potionPend || now - lastPotionFailAt < POTION_RETRY_MS || potionTaps >= POTION_MAX_TAPS) return;
+        if (lastPotionOkAt && now - lastPotionOkAt < POTION_SETTLE_MS) return; // the bar still fills
+        if (!potionDueAt) potionDueAt = now;
         if (now < staggerUntil || now < potionHoldUntil || inDodge) return;
         if (plan.some((it) => it.kind === "potion")) return;
-        if (potionSafe) {
-            const why = potionUnsafe(now);
-            if (why) {
-                potS.waitWhy[why] = (potS.waitWhy[why] ?? 0) + 1;
-                if (now - lastPotionWaitMark > 1000) {
-                    lastPotionWaitMark = now;
-                    mark("plan", `potion wait: ${why} hp ${Math.round(hpNow * 100)}%`);
-                }
-                return;
-            }
-            addItem({ kind: "potion", k: -1, src: "potion", atMs: now, cMs: now, untilMs: now + 1500, why: `hp ${Math.round(hpNow * 100)}% safe` });
-            return;
-        }
-        const st = pred ? futStats(pred.fut[0]) : null;
-        const c1 = st && st.none < 0.65 && st.sum > 0.01 ? st.exp : Infinity;
-        if (hpNow > POTION_URGENT && c1 <= potionSafeFrames) {
-            if (now - lastPotionHoldMark > 1000) {
-                lastPotionHoldMark = now;
-                mark("plan", `potion held (contact +${Math.round(c1)}f)`);
+        const why = potionUnsafe(now);
+        if (why) {
+            potS.waitWhy[why] = (potS.waitWhy[why] ?? 0) + 1;
+            if (now - lastPotionWaitMark > 1000) {
+                lastPotionWaitMark = now;
+                mark("plan", `potion wait: ${why} hp ${Math.round(hpNow * 100)}%`);
             }
             return;
         }
-        addItem({ kind: "potion", k: -1, src: "potion", atMs: now, cMs: now, untilMs: now + 1500, why: `hp ${Math.round(hpNow * 100)}%` });
-    }
-    /**
-     * v7 C 气竭 (weak) window: qi == 0 for two consecutive frames. Light attacks (輕擊) whenever no press is
-     * imminent; the 处决 button (combat.js template) is tapped once qiExecWait ms into the window (the window is
-     * ~7 s in the 233-252 recordings and the button shows for its whole length: 处决 damage is ~94% of the weak
-     * window's damage, so waiting ~4 s then tapping keeps most of the light damage and still lands 处决).
-     * @param {number} now
-     */
-    function slowWeak(now) {
-        if (!qiAttack || observe) return;
-        // the bar is empty when the read says 0, or the read keeps failing while the boss bar is up and the last
-        // readable value was already tiny (the exhausted bar has no blue pixels -> readQi -1: all of 253-260's
-        // qi==0 windows, 96-190 s in, were missed by a qiNow === 0 test)
-        const empty = qiNow === 0 || (qiEmpty >= 2 && qiNow >= 0 && qiNow <= 25 && bossNow > 50);
-        if (empty) qiZeroSeen++;
-        else qiZeroSeen = 0;
-        if (!weakSince && qiZeroSeen >= 2) {
-            weakSince = now;
-            weakWindows++;
-            mark("qi", `weak: 真气 empty (read ${qiNow}, miss ${qiEmpty})`);
-        }
-        if (!weakSince) return;
-        if (qiEmpty === 0 && qiNow > 4) {
-            mark("qi", `weak over after ${Math.round((now - weakSince) / 1000)}s (${weakLights} light, ${weakExecs} exec)`);
-            weakSince = 0;
-            return;
-        }
-        if (now - lastExecMatchAt >= QI_EXEC_EVERY * FRAME_MS) {
-            lastExecMatchAt = now;
-            if (perFrame("exec", (im) => match("combat/execute.png", { image: im, roi: EXEC_ROI, threshold: execThreshold }).hit)) {
-                if (now - weakSince >= qiExecWait && now - lastExecTapAt > 1000) {
-                    lastExecTapAt = now;
-                    weakExecs++;
-                    tap(EXECUTE);
-                    pressFrame(frameIdx);
-                    mark("qi", `处决 tap (+${Math.round((now - weakSince) / 1000)}s)`);
-                    return;
-                }
-            }
-        }
-        const pending = plan.some((x) => !x.pressedAt && x.atMs - now < 500);
-        if (!pending && !inDodge && now >= staggerUntil && now >= potionHoldUntil && !inCurtain && !inDodge
-            && now - lastLightAt >= QI_LIGHT_MS && now - lastExecTapAt >= 400) {
-            lastLightAt = now;
-            weakLights++;
-            tap(LIGHT);
-        }
-    }
-    /** v7 B closeIn: forward bursts while nothing is about to be pressed, so the boss stays in melee range. @param {number} now */
-    function closeInWalk(now) {
-        if (!closeIn || observe) return;
-        if (offWalking) return; // v8 offense: its own forward step (approach / whiff) owns the stick meanwhile
-        if (flankRunUntil) return; // v10 curtainFlank: the flank's forward run owns the stick meanwhile
-        if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || weakSince) {
-            strideF(0);
-            return;
-        }
-        const pending = plan.some((x) => !x.pressedAt && x.atMs - now < 700);
-        const on = (now - start) % CI_CYCLE_MS < CI_ON_MS;
-        strideF(on && !pending && !inDodge ? 1 : 0);
+        addItem({ kind: "potion", k: -1, src: "potion", atMs: now, cMs: now, untilMs: now + 1500, why: `hp ${Math.round(hpNow * 100)}% safe` });
     }
 
-    // ===================================================================================================== v8 offense
-    // offense_plan.md part 1 (@see OFF_QUIET_TH). Reads plan / pred / lastHitAt / lastOkAt / staggerUntil / inDodge /
-    // inCurtain / potionHoldUntil / bossNow / qiNow / qiEmpty; writes only its own state, plus weakSince while a
-    // qiPlan window is on (so closeIn stops walking and failEscape stays quiet, as with qiAttack) and the unpressed
-    // fut items it drops in that window. Called from the main loop only when offOn.
-    let offUpAt = 0, offTouched = false; // offContact is down until offUpAt (0: up); lifted by offUp, never by upDue
-    let grabHoldAt = 0; // the first grab tell of the current held charge (the same-tick release fallback)
+    // ========================================================================================================= offense
+    // Reads plan / pred / lastHitAt / lastOkAt / staggerUntil / inDodge / inCurtain / potionHoldUntil / bossNow / qiNow /
+    // qiEmpty; writes its own state, plus the unpressed plan items it drops in a 气竭 window.
+    let offUpAt = 0, offTouched = false; // OFF_CONTACT is down until offUpAt (0: up)
+    let grabHoldAt = 0; // the first tell of the current held 蓄力 (@see offHoldAbort)
     /** Put the offense finger down on p for ms (the lift comes from offUp, every loop turn). @param {Point} p @param {number} ms */
     function offDown(p, ms) {
-        if (observe) return;
         if (heldBack(p)) return;
-        if (offUpAt) touch.up(offContact);
-        touch.down(p, offContact);
+        if (offUpAt) touch.up(OFF_CONTACT);
+        touch.down(p, OFF_CONTACT);
         lastOffDownAt = Date.now();
         offUpAt = Date.now() + ms;
         offTouched = true;
@@ -3317,214 +1541,88 @@ export default function (args = {}) {
     /** Lift the offense finger when due (or now). */
     function offUp(force = false) {
         if (!offUpAt || (!force && Date.now() < offUpAt)) return;
-        touch.up(offContact);
+        touch.up(OFF_CONTACT);
         offUpAt = 0;
     }
 
-    // --- quietGate shadow (offShadow)
-    let offRun = 0, offRunReady = -1, offM30 = 1, offM40 = 1, offM60 = 1, offTellAt = 0, offTickAt = 0;
-    let offOpenAt = 0, offHitSeen = 0, offOkSeen = 0;
-    const offS = { evalMs: 0, openMs: 0, strongMs: 0, opens: 0, closes: 0, aborts: 0, inOpenHit: 0, inOpenOk: 0 };
-    /** @type {Record<string, number>} */ const offCloseWhy = {};
-    /** @type {Record<string, number>} */ const offAbortWhy = {};
-    /** @type {number[]} */ const offLens = [];
-    /** @type {number[]} */ const offStarts = [];
-    /** @type {number[]} */ const offContactTs = [];
+    let offRunReady = -1, offM30 = 1, offM40 = 1, offM60 = 1, offTellAt = 0, offHitSeen = 0;
     /** fut1 mass in bins 0..n-1. @param {number} n */
     const offMass = (n) => {
         let s = 0;
         for (let i = 0; i < n; i++) s += futBin(0, i);
         return s;
     };
-    const offComboLabel = () => (pred ? `${(comboV6 ? COMBO6_LABELS : COMBO_LABELS)[pred.combo.arg]} ${pred.combo.p.toFixed(2)}` : "-");
-    const offState = () => `m30 ${offM30.toFixed(3)} m40 ${offM40.toFixed(3)} combo ${offComboLabel()}${pred?.land != null ? ` land ${pred.land.toFixed(2)}` : ""}`;
-    /** Why the gate is shut now ("" = open). @param {number} now */
-    function offGateWhy(now) {
-        if (!pred) return "no pred";
-        if (curtainVeto()) return "curtain"; // v10 curtainFlank: no veto once this episode's flank is past its run
-        if (inDodge) return "dodge";
-        if (now < staggerUntil) return "stagger";
-        if (now < potionHoldUntil) return "potion";
-        if (potionDue()) return "potion due"; // v9 potionSafe
-        if (now - lastHitAt < offAfterHitMs) return "after-hit";
-        if (now - lastDodgeAt < offAfterDodgeMs) return "after-dodge";
-        if (now - offTellAt < offAfterTellMs || now - flareSeenAt < offAfterTellMs
-            || (!flankPass() && (now - curtainLastAt < offAfterTellMs || now - lastDarkAt < offAfterTellMs))) return "after-tell";
-        if (!qp.shown && hpNow != null && hpNow < offHpMin) return "hp";
-        const near = plan.find((it) => !it.pressedAt && it.atMs - now <= offGuardMs);
-        if (near) return `plan(${near.kind} ${near.src})`;
-        if (offComboVeto && comboRunning()) return "combo";
-        if (offOpenAt) { // part 2 hysteresis: an open gate shuts on m30 only above offQuietOff, after offMinOpenMs
-            if (offM30 > offQuietOff && now - offOpenAt >= offMinOpenMs) return "m30";
-            return "";
-        }
-        if (offM30 >= offQuietTh) return "m30";
-        const need = offOkFast && now - lastOkAt < OFF_OK_FAST_MS ? 1 : offQuietFrames;
-        if (offRun < need) return "quiet-run";
-        return "";
-    }
-    /** offenseGuard's give-up rules while the (shadow) gate is open ("" = keep on). @param {number} now */
-    function offAbortNow(now) {
-        if (lastHitAt >= offOpenAt) return "hit";
-        if (curtainVeto()) return "curtain"; // v10 curtainFlank: @see curtainVeto
-        if (inDodge) return "dodge";
-        if (now < potionHoldUntil) return "potion";
-        const t = pred?.tell;
-        if (t && t.arg !== 0 && t.p >= tellTh) return `tell(${t.label})`;
-        const near = plan.find((it) => !it.pressedAt && it.atMs - now <= offAbortMs);
-        if (near) return `plan(${near.kind} ${near.src})`;
-        return "";
-    }
-    /** @param {number} now @param {string} why @param {boolean} abort */
-    function offClose(now, why, abort) {
-        const len = now - offOpenAt;
-        offLens.push(len);
-        const key = why.replace(/\(.*$/, "");
-        if (abort) {
-            offS.aborts++;
-            offAbortWhy[key] = (offAbortWhy[key] ?? 0) + 1;
-        } else {
-            offS.closes++;
-            offCloseWhy[key] = (offCloseWhy[key] ?? 0) + 1;
-        }
-        mark("off", `${abort ? "abort" : "close"} ${why} after ${len} ms, ${offState()}`);
-        offOpenAt = 0;
-    }
-    /** New hits / oks (onHit / onOk times): counted when they land while the gate is open. */
-    function offContacts() {
-        /** @param {number} t @param {string} kind */
-        const one = (t, kind) => {
-            offContactTs.push(t);
-            if (!offOpenAt || t < offOpenAt) return;
-            if (kind === "hit") offS.inOpenHit++;
-            else offS.inOpenOk++;
-            mark("off", `contact ${kind} in the open gate +${t - offOpenAt} ms`);
-        };
-        if (lastHitAt > offHitSeen) {
-            one((offHitSeen = lastHitAt), "hit");
-            offHitTs.push(lastHitAt);
-            if (offHitTs.length > 64) offHitTs.shift();
-        }
-        if (lastOkAt > offOkSeen) one((offOkSeen = lastOkAt), "ok");
-    }
-    /** Per frame, before executePlan: lifts, contact bookkeeping, the qiPlan fut filter, the shadow aborts. @param {number} now */
+    const offState = () => `m30 ${offM30.toFixed(3)} m40 ${offM40.toFixed(3)} combo ${pred ? `${COMBO6_LABELS[pred.combo.arg]} ${pred.combo.p.toFixed(2)}` : "-"}`;
+    /** Per frame, before executePlan: lifts, the 气竭 window's plan filter, hits for the action results, a held 蓄力's
+     * rules. @param {number} now */
     function offenseGuard(now) {
         offUp();
-        if (qiPlan && qp.shown) {
-            // the boss strikes nothing in 衰弱: the fut items would only eat the window (tell dodges stay; qiExecFix:
-            // they go too until the 处决 tap, a dodge takes us out of its reach)
+        if (qp.shown) {
+            // the boss strikes nothing in 衰弱: the plan items would only eat the window (until the 处决 tap, a dodge
+            // takes us out of its reach)
             for (const it of [...plan]) {
                 if (it.pressedAt) continue;
                 if (it.src === "fut") {
                     plan.splice(plan.indexOf(it), 1);
                     qp.futDrops++;
-                } else if (qiExecFix && !qp.tapAt) {
+                } else if (!qp.tapAt) {
                     plan.splice(plan.indexOf(it), 1);
                     qpS.preDrops++;
                     mark("qi", `qiPlan: ${it.kind} ${it.src} dropped before 处决 (${it.why ?? ""})`);
                 }
             }
         }
-        offContacts();
-        if (offHold) { // part 2: a held 蓄力 lets go on the guard's rules
+        if (lastHitAt > offHitSeen) {
+            offHitSeen = lastHitAt;
+            offHitTs.push(lastHitAt);
+            if (offHitTs.length > 64) offHitTs.shift();
+        }
+        if (offHold) {
             const hw = offHoldAbort(now);
             if (hw) offRelease(now, hw, true);
         }
-        if (!offGate || !offOpenAt) return;
-        const why = offAbortNow(now);
-        if (why) {
-            offClose(now, why, true);
-            if (offWalking && offWalkWhy !== "qi approach" && offWalkWhy !== "qi chase" && offWalkWhy !== "far push") offWalkStop(`abort ${why}`);
-            if (hd && !hd.tapAt) offStopWhy[`set wait:${why.replace(/\(.*$/, "")}`] = (offStopWhy[`set wait:${why.replace(/\(.*$/, "")}`] ?? 0) + 1;
-        }
     }
-    /** Per frame, after expire: the gate (shadow) and the qiPlan window. @param {number} now */
+    /** Per frame, after expire: the masses, a hold's end, walking, the results, 奇术 / follow-up, 气竭, the near gate.
+     * @param {number} now */
     function offenseTick(now) {
         offUp();
-        if (pred && ready !== offRunReady) { // a new head output: the run counts head frames
+        if (pred && ready !== offRunReady) { // a new head output
             offRunReady = ready;
-            offM30 = offMass(offQuietBins);
-            offM40 = offMass(offStrongBins);
+            offM30 = offMass(OFF_QUIET_BINS);
+            offM40 = offMass(OFF_STRONG_BINS);
             offM60 = offMass(10);
-            offRun = offM30 < offQuietTh ? offRun + 1 : 0;
-            if (pred.tell.arg !== 0 && pred.tell.p >= tellTh) offTellAt = now;
+            if (pred.tell.arg !== 0 && pred.tell.p >= TELL_TH) offTellAt = now;
         }
         if (offHold && now >= offHold.until) offRelease(now, "time", false);
         offWalkTick(now);
         offEvalTick(now);
-        if (offP6 && pred) p6Tick(now); // part 6 (before the qiPlan window's pick: 奇术 goes first)
-        if (qiPlan) qpTick(now);
-        if (offOkGate || oldWindow) bossRingTick(now); // part 3
-        if (offOkGate && pred && !qp.shown) okTick(now);
-        if (oldWindow && pred && !qp.shown) owTick(now);
-        if (!offGate || !pred) return;
-        const dt = offTickAt ? Math.min(200, now - offTickAt) : 0;
-        offTickAt = now;
-        const why = offGateWhy(now);
-        if (bossNow > 50) { // fight time only (the walk-in / cut scenes do not count)
-            offS.evalMs += dt;
-            if (offOpenAt) offS.openMs += dt;
-            if (!why && offM40 < offStrongTh) offS.strongMs += dt;
-        }
-        if (!why && !offOpenAt) {
-            offOpenAt = now;
-            offS.opens++;
-            offStarts.push(now);
-            mark("off", `open ${offState()} run ${offRun}${now - lastOkAt < OFF_OK_FAST_MS ? " (ok fast)" : ""}${offM40 < offStrongTh ? " strong" : ""}`);
-            offOpenLights = 0;
-            offOpenFirstLight = 0;
-            offOpenWalked = false;
-        } else if (why && offOpenAt) {
-            offClose(now, why, false);
-            if (offWalking && offWalkWhy !== "qi approach" && offWalkWhy !== "qi chase" && offWalkWhy !== "far push") offWalkStop(`gate ${why}`);
-        }
-        if (offActOn && !qp.shown) offActTick(now);
-    }
-    /** The shadow's return stats (rates per fight minute; the clean-after-open shares over opens >= 2 s old). */
-    function offSummary() {
-        const end = Date.now();
-        const min = offS.evalMs / 60000;
-        const sorted = [...offLens].sort((a, b) => a - b);
-        let n2 = 0, clean1 = 0, clean2 = 0;
-        for (const s of offStarts) {
-            if (s + 2000 > end) continue;
-            n2++;
-            if (!offContactTs.some((t) => t > s && t <= s + 1000)) clean1++;
-            if (!offContactTs.some((t) => t > s && t <= s + 2000)) clean2++;
-        }
-        const r = (/** @type {number} */ x, d = 3) => Math.round(x * 10 ** d) / 10 ** d;
-        return {
-            gateFrac: offS.evalMs ? r(offS.openMs / offS.evalMs) : 0, strongFrac: offS.evalMs ? r(offS.strongMs / offS.evalMs) : 0,
-            fightMin: r(min, 2), opens: offS.opens, opensPerMin: min ? r(offS.opens / min, 2) : 0,
-            openMsMedian: sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0,
-            inOpenHit: offS.inOpenHit, inOpenOk: offS.inOpenOk, inOpenPerMin: min ? r((offS.inOpenHit + offS.inOpenOk) / min, 2) : 0,
-            clean1s: n2 ? r(clean1 / n2) : 0, clean2s: n2 ? r(clean2 / n2) : 0, closes: offS.closes, aborts: offS.aborts,
-            closeWhy: offCloseWhy, abortWhy: offAbortWhy,
-        };
+        if (pred) p6Tick(now); // before the 气竭 window's pick: 奇术 goes first
+        qpTick(now);
+        bossRingTick(now);
+        if (pred && !qp.shown) okTick(now);
     }
 
-    // --- part 2: the actions (offPoke / offSkill / offCharge in the gate; qiSkill in the qiPlan window)
+    // --- actions
     /** @param {Record<string, number>} o @param {string} k @param {number} [d] */
     const inc = (o, k, d = 1) => { o[k] = (o[k] ?? 0) + d; };
     /** @type {{a: string, src: string, t: number, b0: number, done: boolean, evalAt: number, sok: number, sdrop: number}[]} */
     const offRecs = [];
     /** @type {{n: Record<string, number>, hit1s: Record<string, number>, dropPx: Record<string, number>, dropN: Record<string, number>}} */
     const offActS = { n: {}, hit1s: {}, dropPx: {}, dropN: {} };
-    /** @type {Record<string, number>} */ const offStopWhy = {}; // 收手: why an action / a set / a step stopped early
+    /** @type {Record<string, number>} */ const offStopWhy = {}; // why an action / a set / a step stopped early
     /** @type {{started: number, done: number, bursts: number, abandoned: Record<string, number>}} */
     const offSetS = { started: 0, done: 0, bursts: 0, abandoned: {} };
     const offHoldS = { n: 0, full: 0, early: 0, heldMs: /** @type {number[]} */ ([]) };
-    const offWalkS = { n: 0, ms: 0, far: 0, whiffs: 0 };
+    const offWalkS = { n: 0, ms: 0 };
     /** @type {number[]} */ const offHitTs = [];
-    let offBusyUntil = 0, offLastLight = 0, offOpenLights = 0, offOpenFirstLight = 0, offOpenWalked = false;
-    let offWhiff = 0, burstAt = 0, offSetRetryAt = 0;
+    let offBusyUntil = 0, burstAt = 0, offSetRetryAt = 0;
     let offWalking = false, offWalkUntil = 0, offWalkAt = 0, offWalkWhy = "";
     /** @type {{a: string, src: string, startAt: number, until: number} | null} */
     let offHold = null;
-    /** @type {{step: string, stepAt: number, readyAt: number, tapAt: number, tries: number, gone: boolean, goneAt: number, owner?: string} | null} */
-    let hd = null; // owner: undefined = part 2 (each step gated), "ok" = offCommit, "win" = oldWindow (committed)
-    /** @type {string | null} */ let offW = null; // the weapon (4 Hz read while offIconsOn)
-    let offBuffSeen = false, offH = -1; // 唤千军 lit (4 Hz); the boss box height (-1 = no read)
+    /** @type {{step: string, stepAt: number, readyAt: number, tapAt: number, tries: number, gone: boolean, goneAt: number} | null} */
+    let hd = null; // the committed 横刀 set
+    /** @type {string | null} */ let offW = null; // the weapon (4 Hz read)
+    let offBuffSeen = false; // 唤千军 lit (4 Hz)
 
     /** A combat.js template on this frame. @param {string} k */
     const offSeen = (k) => perFrame(`t:${k}`, (im) => match(OFF_T[k][0], { image: im, roi: OFF_T[k][1], threshold: OFF_ICON_TH }).hit);
@@ -3537,45 +1635,14 @@ export default function (args = {}) {
     /** slowQueue (4 Hz): the weapon and 唤千军's button. */
     function offIconsRead() {
         offW = offWeaponNow();
-        offBuffSeen = offW === "modao" && (offSkill || offOkGate || oldWindow) ? offSeen("buff") : false;
+        offBuffSeen = offW === "modao" ? offSeen("buff") : false;
     }
-    /** The boss gold-mask box height (dist.py box_of on the device: no morphology, nearby parts merged), -1 = none. */
-    function offBossH() {
-        const r = color({ ...BOSS_GOLD, image: img, roi: DIST_ROI, count: 20, connected: true });
-        if (!r.hit || !r.results.length) return -1;
-        const comps = r.results.map((m) => ({ b: m.box, n: m.count ?? 0 })).sort((p, q) => q.n - p.n);
-        if (comps[0].n < OFF_DIST_MIN_PX) return -1;
-        let [x0, y0, w0, h0] = comps[0].b;
-        let x1 = x0 + w0, y1 = y0 + h0;
-        for (const c of comps.slice(1)) {
-            const [X, Y, W, H] = c.b;
-            if (X < x1 + 15 && X + W > x0 - 15 && Y < y1 + 15 && Y + H > y0 - 15) {
-                x0 = Math.min(x0, X);
-                y0 = Math.min(y0, Y);
-                x1 = Math.max(x1, X + W);
-                y1 = Math.max(y1, Y + H);
-            }
-        }
-        return y1 - y0;
-    }
-    /** slowQueue (4 Hz) / per frame while walking in. */
-    const offDistRead = () => { offH = perFrame("bossH", () => offBossH()); };
     /** fut1 mass of the contacts that would come before an action of noCancel ms can be cut. @param {number} ms */
     function offHorizon(ms) {
-        const f = (ms + issueLead) / FRAME_MS;
+        const f = (ms + ISSUE_LEAD_MS) / FRAME_MS;
         let s = 0;
         for (let i = 0; i < 10; i++) if (FUT_LO[i] < f) s += futBin(0, i);
         return s;
-    }
-    /** The gate is open for action a now (strong: m40 too). @param {string} a @param {boolean} strong */
-    function offCan(a, strong) {
-        const now = Date.now();
-        if (!offOpenAt || offHold || offWalking || now < offBusyUntil || bossNow <= 50) return false;
-        if (strong && offM40 >= offStrongTh) return false;
-        // 爆发 swallows 卸势 for offNoCancel.burst: an action inside it is stuck until it is over (E0: 伤害 at +1.9 s)
-        const nc = Math.max(offNoCancel[a] ?? 0, burstAt > 0 ? burstAt + (offNoCancel.burst ?? 0) - now : 0);
-        if (offHorizon(nc) >= (strong ? offStrongTh : Math.max(offQuietTh, offQuietOff))) return false;
-        return !plan.some((it) => !it.pressedAt && it.atMs - now <= nc + offAbortMs);
     }
     /** Do action a (a tap of ms on p, or the hold's down) and log it. @param {string} a @param {string} src @param {Point} p @param {number} [ms] */
     function offAct(a, src, p, ms = OFF_TAP_MS) {
@@ -3583,54 +1650,44 @@ export default function (args = {}) {
         inc(offActS.n, a);
         const t = Date.now();
         const sok = lastOkAt ? t - lastOkAt : -1, sdrop = lastDropAt ? t - lastDropAt : -1;
-        const evalAt = a === "charge" || a === "coldCharge" || a === "tang" ? Infinity : t + (a === "qishu" ? QS_EVAL_MS : OFF_EVAL_MS);
+        const evalAt = a === "charge" || a === "coldCharge" ? Infinity : t + (a === "qishu" ? QS_EVAL_MS : OFF_EVAL_MS);
         offRecs.push({ a, src, t, b0: bossNow, done: false, evalAt, sok, sdrop });
-        mark("off", `act ${a} ${src}${observe ? " sim" : ""} ${offState()} boss ${bossNow} sok ${sok} sdrop ${sdrop}${offDistOn ? ` h ${offH}` : ""}`);
-        if (ranshiStrikeMs > 0 && (a === "ranshi" || a === "farRanshi")) rsPend = { at: t + ranshiStrikeMs, until: t + RS_WINDOW_MS, src, seen: 0 };
+        mark("off", `act ${a} ${src} ${offState()} boss ${bossNow} sok ${sok} sdrop ${sdrop}`);
     }
-    /** A held press (蓄力 on CHARGE; offTang: 冢上霜 on LIGHT). @param {string} a @param {string} src @param {number} ms @param {Point} [p] */
-    function offStartCharge(a, src, ms, p = CHARGE) {
-        offAct(a, src, p, ms);
+    /** A held 蓄力 on CHARGE. @param {string} a @param {string} src @param {number} ms */
+    function offStartCharge(a, src, ms) {
+        offAct(a, src, CHARGE, ms);
         const now = Date.now();
         offHold = { a, src, startAt: now, until: now + ms };
-        if (a !== "tang") offHoldS.n++;
+        offHoldS.n++;
     }
     /** The guard's rules for a held 蓄力 ("" = hold on). @param {number} now */
     function offHoldAbort(now) {
         if (!offHold) { grabHoldAt = 0; return ""; }
         const qi = offHold.src === "qi";
         if (lastHitAt > offHold.startAt) return "hit";
-        if (curtainVeto()) return "curtain"; // v10 curtainFlank: @see curtainVeto
+        if (inCurtain) return "curtain";
         if (inDodge) return "dodge";
         if (now < potionHoldUntil) return "potion";
         const t = pred?.tell;
-        if (!qi && t && t.arg >= 1 && t.arg <= 3 && t.p >= tellTh) {
-            // A flare that will be dodged keeps the charge until pressDodge's own offYield releases it in the
-            // dodge's tick (the combat.js order). Releasing here leaves the release recovery in front of the dodge:
-            // 726 grab 3291 / 3692 had the release 195 / 112 ms before the dodge and no dodge movement in the video.
-            // The live tell label misses grabs (729: 0 grab labels while the visual/plans were grabs), so the hold
-            // covers every tell that the current mode turns into a dodge, not arg 2 alone. Other tells (parry mode's
-            // other / slam) keep the early release. A 600 ms fallback still lets go when the dodge never comes.
-            const anyDodge = flareMode !== "parry" || (flareThreat && flareThreatKind === "dodge");
-            const grabDodge = t.arg === 2 && ((flareThreat && flareThreatGrabDodge) || flareGrabDodge);
-            if (anyDodge || grabDodge) {
-                if (!grabHoldAt) {
-                    grabHoldAt = now;
-                    mark("off", `flare tell: hold charge for the dodge (${t.label} p${Math.round(t.p * 100)})`);
-                }
-                if (now - grabHoldAt <= 600) return "";
+        if (!qi && t && t.arg >= 1 && t.arg <= 3 && t.p >= TELL_TH) {
+            // A flare that will be dodged keeps the 蓄力 until pressDodge's own offYield releases it in the dodge's tick
+            // (the combat.js order): releasing here leaves the release recovery in front of the dodge (726 grab
+            // 3291 / 3692: no dodge movement in the video). A 600 ms fallback still lets go when the dodge never comes.
+            if (!grabHoldAt) {
+                grabHoldAt = now;
+                mark("off", `flare tell: hold charge for the dodge (${t.label} p${Math.round(t.p * 100)})`);
             }
+            if (now - grabHoldAt <= 600) return "";
             grabHoldAt = 0;
             return `tell(${t.label})`;
         }
         grabHoldAt = 0;
-        if (offHold.src === "win") return ""; // oldWindow: held through, a defense tap lets it go (offYield)
-        const lim = offAbortMs + (offNoCancel.charge ?? 0);
+        const lim = OFF_ABORT_MS + OFF_NO_CANCEL_MS.charge;
         const near = plan.find((it) => !it.pressedAt && it.atMs - now <= lim && !(qi && it.src === "fut"));
         if (near && near.kind === "dodge") {
-            // The tell has gone quiet but the dodge plan is the next touch: pressDodge's offYield releases the
-            // charge in that same tick. Releasing here would put the release recovery in front of the dodge
-            // (730 t2379: plan(dodge tell) fired 7.1 f before the dodge and the dodge still ate the grab).
+            // the dodge plan is the next touch: pressDodge's offYield releases the 蓄力 in that same tick (730 t2379:
+            // releasing here put the recovery in front of the dodge and it still ate the grab)
             if (!grabHoldAt) {
                 grabHoldAt = now;
                 mark("off", `dodge plan: hold charge for the dodge (${near.src} c+${Math.round((near.cMs - now) / FRAME_MS)}f)`);
@@ -3644,30 +1701,26 @@ export default function (args = {}) {
         if (!offHold) return;
         offUp(true);
         const held = now - offHold.startAt;
-        if (offHold.a === "tang") tangReleased(now, why, early, held);
-        else offHoldS.heldMs.push(held);
-        if (offHold.a === "tang") {
-            if (early) inc(offStopWhy, `tang:${why.replace(/\(.*$/, "")}`);
-        } else if (early) {
+        offHoldS.heldMs.push(held);
+        if (early) {
             offHoldS.early++;
             inc(offStopWhy, `${offHold.a}:${why.replace(/\(.*$/, "")}`);
         } else offHoldS.full++;
         mark("off", `release ${offHold.a} ${offHold.src} (${why}) after ${held} ms`);
         for (const r of offRecs) if (r.evalAt === Infinity) { if (bossNow > 50) r.b0 = bossNow; r.evalAt = now + OFF_EVAL_MS; }
-        if (offHold.src === "win") owReleased(now, why, early);
         offHold = null;
         offBusyUntil = Math.max(offBusyUntil, now + OFF_SLASH_MS); // the slash comes out meanwhile
     }
     /** A forward push of ms (contact 0; never in curtain / with the side stick on). @param {number} now @param {number} ms @param {string} why */
     function offWalk(now, ms, why) {
-        if (curtainVeto() || stickSide !== 0 || inDodge) return false; // v10 curtainFlank: @see curtainVeto
+        if (inCurtain || stickSide !== 0 || inDodge) return false;
         strideF(1);
         offWalking = true;
         offWalkAt = now;
         offWalkUntil = now + ms;
         offWalkWhy = why;
         offWalkS.n++;
-        mark("off", `walk ${why} ${ms} ms${offDistOn ? ` h ${offH}` : ""}${observe ? " sim" : ""}`);
+        mark("off", `walk ${why} ${ms} ms`);
         return true;
     }
     /** @param {string} why */
@@ -3677,19 +1730,16 @@ export default function (args = {}) {
         strideF(0);
         offWalking = false;
         offWalkS.ms += now - offWalkAt;
-        mark("off", `walk over (${why}) after ${now - offWalkAt} ms${offDistOn ? ` h ${offH}` : ""}`);
-        if (why !== "time" && why !== "near") inc(offStopWhy, `walk:${why.replace(/\(.*$/, "")}`);
+        mark("off", `walk over (${why}) after ${now - offWalkAt} ms`);
+        if (why !== "time") inc(offStopWhy, `walk:${why.replace(/\(.*$/, "")}`);
     }
     /** @param {number} now */
     function offWalkTick(now) {
         if (!offWalking) return;
-        const dn = distNeeded(); // v10 curtainFlank: @see distNeeded (with curtainFlank off: offDistOn)
-        if (dn) offDistRead();
-        if (inDodge || curtainVeto() || now < staggerUntil || now < potionHoldUntil) offWalkStop("defense"); // v10: @see curtainVeto
-        else if (dn && offH >= offStrikeH) offWalkStop("near");
+        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil) offWalkStop("defense");
         else if (now >= offWalkUntil) offWalkStop("time");
     }
-    /** Each action's 1.2 s result: the boss px it took, a hit within 1 s; 轻击 whiffs walk in. @param {number} now */
+    /** Each action's 1.2 s result: the boss px it took, a hit within 1 s; the whiff loop. @param {number} now */
     function offEvalTick(now) {
         for (const r of offRecs) {
             if (r.done || now < r.evalAt) continue;
@@ -3702,18 +1752,12 @@ export default function (args = {}) {
                 inc(offActS.dropN, r.a);
             }
             mark("off", `result ${r.a} ${r.src}: boss ${r.b0} -> ${bossNow}${drop != null ? ` (${drop} px)` : ""}${hit ? ", hit within 1 s" : ""} sok ${r.sok} sdrop ${r.sdrop}`);
-            if (offOkGate || oldWindow) okResult(r, drop);
-            if (r.a === "light" && r.src === "gate" && drop != null) {
-                offWhiff = drop > 0 ? 0 : offWhiff + 1;
-                if (offWhiff >= offWhiffN) {
-                    offWhiff = 0;
-                    offWalkS.whiffs++;
-                    if (offOpenAt && !offHold && !offWalking) offWalk(now, OFF_WALK_MS, `${offWhiffN} 轻击 whiffed`);
-                }
-            }
+            okResult(r, drop);
         }
         while (offRecs.length && offRecs[0].done) offRecs.shift();
     }
+
+    // --- the committed 横刀 set (combat.js hengdaoPart), one step per frame
     const burstReady = (/** @type {number} */ now) => !burstAt || now - burstAt >= BURST_CD_MS;
     /** @param {number} now @param {string} why ("" = done) */
     function hdEnd(now, why) {
@@ -3723,21 +1767,19 @@ export default function (args = {}) {
             inc(offStopWhy, `set:${why.replace(/ at .*$/, "")}`);
             offSetRetryAt = now + OFF_SET_RETRY_MS;
         } else offSetS.done++;
-        mark("off", `横刀 set ${why ? `given up (${why})` : "done"} at ${hd.step}${hd.owner ? ` (${hd.owner})` : ""}`);
-        const owner = hd.owner;
+        mark("off", `横刀 set ${why ? `given up (${why})` : "done"} at ${hd.step}`);
         hd = null;
-        if (owner === "win") owSetOver(now, why);
     }
     /** @param {string} step @param {number} now */
     function hdNext(step, now) {
         if (!hd) return;
         Object.assign(hd, { step, stepAt: now, readyAt: 0, tapAt: 0, tries: 0, gone: false, goneAt: 0 });
     }
-    /** Ready but no gate: give the set up after offSkillPauseMs. @param {number} now */
+    /** Ready but held: give the set up after OFF_COMMIT_PAUSE_MS. @param {number} now */
     function hdWait(now) {
         if (!hd) return;
         if (!hd.readyAt) hd.readyAt = now;
-        else if (now - hd.readyAt > (hd.owner ? OFF_COMMIT_PAUSE_MS : offSkillPauseMs)) hdEnd(now, `pause at ${hd.step}`);
+        else if (now - hd.readyAt > OFF_COMMIT_PAUSE_MS) hdEnd(now, `pause at ${hd.step}`);
     }
     /** @param {string} a @param {Point} p @param {number} now */
     function hdTap(a, p, now) {
@@ -3747,27 +1789,24 @@ export default function (args = {}) {
         hd.tries++;
         hd.readyAt = 0;
     }
-    /** The 横刀 set (combat.js hengdaoPart), one step per frame, each tap gated alone. @param {number} now */
+    /** @param {number} now */
     function hdTick(now) {
         if (!hd) return;
         const s = hd;
-        if (s.owner) { // committed: a 金光 / curtain tell gives it up (not inside 爆发's 2.4 s: its own gold, swallowed anyway)
-            const tw = commitTell(now);
-            if (tw) return hdEnd(now, `tell ${tw} at ${s.step}`);
-            if (s.step === "back" && s.owner === "ok") return hdEnd(now, ""); // no switch back: the next 蓄力 switches
-        }
-        if (s.step === "switch" || s.step === "back") {
-            const want = s.step === "switch" ? "hengdao" : "modao";
+        // a 金光 / curtain tell gives it up (not inside 爆发's 2.4 s: its own gold, swallowed anyway)
+        const tw = commitTell(now);
+        if (tw) return hdEnd(now, `tell ${tw} at ${s.step}`);
+        if (s.step === "back") return hdEnd(now, ""); // no switch back: the next 蓄力 switches
+        if (s.step === "switch") {
             const w = offWeaponNow();
-            if (w === want) {
+            if (w === "hengdao") {
                 offW = w;
-                if (s.step === "switch") hdNext("dash1", now);
-                else hdEnd(now, "");
+                hdNext("dash1", now);
                 return;
             }
             if (s.tapAt && now - s.tapAt < SWITCH_WAIT_MS) return;
             if (s.tries >= 2) return hdEnd(now, `${s.step} failed`);
-            if (hdCan("switch", false)) hdTap("switch", SWITCH, now);
+            if (commitCan(Date.now())) hdTap("switch", SWITCH, now);
             else hdWait(now);
             return;
         }
@@ -3789,7 +1828,7 @@ export default function (args = {}) {
                 }
                 if (now - burstAt < DASH_AFTER_BURST_MS || !offSeen("dash")) return; // 爆发 still plays / no icon yet
             }
-            if (hdCan("dash", false)) hdTap("dash", DASH, now);
+            if (commitCan(Date.now())) hdTap("dash", DASH, now);
             else hdWait(now);
             return;
         }
@@ -3809,10 +1848,10 @@ export default function (args = {}) {
                 if (now - s.tapAt < BURST_TAP_MS) return;
                 if (s.tries >= BURST_TAPS) return hdEnd(now, "爆发 not out");
             } else if (!offSeen("burst")) {
-                if (now - s.stepAt > offSkillPauseMs) hdEnd(now, "no 爆发 icon");
+                if (now - s.stepAt > OFF_SKILL_PAUSE_MS) hdEnd(now, "no 爆发 icon");
                 return;
             }
-            if (hdCan("burst", true)) hdTap("burst", BUFF, now);
+            if (commitCan(Date.now())) hdTap("burst", BUFF, now);
             else hdWait(now);
             return;
         }
@@ -3835,86 +1874,24 @@ export default function (args = {}) {
                 }
                 return;
             }
-            if (hdCan("strike", false)) hdTap("strike", DASH, now);
+            if (commitCan(Date.now())) hdTap("strike", DASH, now);
             else hdWait(now);
         }
     }
-    /** Per frame (gate actions, not in a qiPlan window): the set, a hold, a walk, else the best action that fits. @param {number} now */
-    function offActTick(now) {
-        if (hd) hdTick(now);
-        if (offHold || offWalking || hd || now < offBusyUntil || !offOpenAt) return;
-        if (parryFollow && pfHold(now)) return; // part 6: the follow-up first
-        const hot = burstAt > 0 && now - burstAt < HOT_MS;
-        const w = offW;
-        /** @type {{a: string, p: Point, strong: boolean, melee: boolean} | null} */
-        let pick = null;
-        /** @param {string} a @param {Point} p @param {boolean} strong @param {boolean} melee */
-        const want = (a, p, strong, melee) => {
-            if (!pick && offCan(a, strong)) pick = { a, p, strong, melee };
-        };
-        if (offCharge && w === "modao" && hot) want("charge", CHARGE, true, true);
-        if (offSkill && w === "modao" && offBuffSeen) want("buff", BUFF, true, false);
-        if (!pick && offSkill && w && burstReady(now) && now >= offSetRetryAt) {
-            const first = w === "hengdao" ? "dash1" : "switch";
-            if (offCan(first === "switch" ? "switch" : "dash", false)) {
-                hd = { step: first, stepAt: now, readyAt: 0, tapAt: 0, tries: 0, gone: false, goneAt: 0 };
-                offSetS.started++;
-                mark("off", `横刀 set start (${w}) ${offState()}`);
-                hdTick(now);
-                return;
-            }
-        }
-        if (offSkill && w === "hengdao") want("switch", SWITCH, false, false); // back to 陌刀 (a set given up)
-        const lightOk = offPoke && now - offLastLight >= offLightMs && offOpenLights < offLightMax
-            && (!offOpenFirstLight || now - offOpenFirstLight <= offBurstMs);
-        if (lightOk) want("light", LIGHT, false, true);
-        const p = /** @type {{a: string, p: Point, strong: boolean, melee: boolean} | null} */ (pick);
-        if (!p) return;
-        if (offApproach && p.melee) { // too far: one forward push per open, then act only when near
-            offDistRead();
-            if (offH >= 0 && offH < offStrikeH) {
-                if (!offOpenWalked) {
-                    offOpenWalked = true;
-                    offWalk(now, offApproachMs, "approach");
-                } else offWalkS.far++;
-                return;
-            }
-        }
-        if (p.a === "charge") return offStartCharge("charge", "gate", offHotHoldMs);
-        offAct(p.a, "gate", p.p);
-        if (p.a === "light") {
-            offLastLight = now;
-            offOpenLights++;
-            if (!offOpenFirstLight) offOpenFirstLight = now;
-        } else offBusyUntil = now + (p.a === "switch" ? SWITCH_WAIT_MS : OFF_COST_MS[p.a] ?? 0);
-    }
-    /** The return stats of the actions. */
-    function offActSummary() {
-        const sorted = [...offHoldS.heldMs].sort((a, b) => a - b);
-        return {
-            n: offActS.n, hit1s: offActS.hit1s, dropPx: offActS.dropPx, dropN: offActS.dropN, stops: offStopWhy,
-            sets: offSetS, holds: { n: offHoldS.n, full: offHoldS.full, early: offHoldS.early, heldMsMedian: sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0 },
-            walks: offWalkS,
-        };
-    }
 
-    // --- part 3: the near gate (offOkGate / offCommit / offFar) and oldWindow (@see OFF_OK_MS)
+    // --- the near gate (@see OFF_OK_MS) and the far close-in
     /** @type {{t: number, b: number}[]} */ const bossRing = [];
     let lastDropAt = 0, okOpenAt = 0, okTickAt = 0, okWhiff = 0, okFarByWhiff = false, okWhiffAt = 0, okFarSince = 0;
-    let okSwitchPend = 0, okSwitchAt = 0, okLastLight = 0;
-    const DMG_ACTS = new Set(["light", "charge", "coldCharge", "dash", "strike", "burst", "ranshi", "farRanshi", "farDash", "ranshi2", "qishu", "follow", "tang", "tangHeavy"]);
+    let okSwitchPend = 0, okSwitchAt = 0, okLastLight = 0, okDeferAt = 0;
+    const DMG_ACTS = new Set(["light", "charge", "coldCharge", "dash", "strike", "burst", "farRanshi", "farDash", "qishu", "follow"]);
     /** @typedef {{n: number, hit: number, px: number}} OkRes */
     const okS = {
-        evalMs: 0, openMs: 0, farMs: 0, opens: 0, farByWhiff: 0, switchPend: 0, chargeDefers: 0, landSkips: 0,
-        landOpens: 0, qiOpens: 0, landMs: 0, qiMs: 0, oursTellWaits: 0,
+        evalMs: 0, openMs: 0, farMs: 0, opens: 0, farByWhiff: 0, switchPend: 0, chargeDefers: 0,
         /** @type {Record<string, number>} */ closeWhy: {}, /** @type {Record<string, number>} */ closeIns: {},
         /** @type {Record<string, OkRes>} */ res: { near: { n: 0, hit: 0, px: 0 }, far: { n: 0, hit: 0, px: 0 } },
         /** @type {Record<string, OkRes>} */ byAct: {},
     };
-    const ow = { phase: "", phaseAt: 0, winEnd: 0, n: 0, lost: false, waitFrom: 0, cancelAt: 0, tries: 0, tapAt: 0 };
-    const owS = { windows: 0, noBurst: 0, charges: 0, hot: 0, cancels: 0, cancelSkips: 0, buffs: 0, ranshi: 0,
-        /** @type {number[]} */ chargesPerWindow: [] };
-    /** The boss bar ring (fight reads) and lastDropAt: the bar down >= offDropPx within OFF_DROP_WIN_MS. @param {number} now */
+    /** The boss bar ring (fight reads) and lastDropAt: the bar down >= OFF_DROP_PX within OFF_DROP_WIN_MS. @param {number} now */
     function bossRingTick(now) {
         if (bossNow <= 50) return;
         const last = bossRing[bossRing.length - 1];
@@ -3926,7 +1903,7 @@ export default function (args = {}) {
         let peak = 0;
         for (const s of bossRing) if (now - s.t <= OFF_DROP_WIN_MS) peak = Math.max(peak, s.b);
         const d = peak - cur;
-        if (d >= offDropPx && d <= OFF_DROP_MAX_PX) lastDropAt = now;
+        if (d >= OFF_DROP_PX && d <= OFF_DROP_MAX_PX) lastDropAt = now;
     }
     const sinceOk = (/** @type {number} */ now) => (lastOkAt ? now - lastOkAt : Infinity);
     const sinceDrop = (/** @type {number} */ now) => (lastDropAt ? now - lastDropAt : Infinity);
@@ -3935,58 +1912,47 @@ export default function (args = {}) {
     /** Why the near gate is shut now ("" = open). @param {number} now */
     function okGateWhy(now) {
         if (!pred) return "no pred";
-        if (curtainVeto()) return "curtain"; // v10 curtainFlank: @see curtainVeto
+        if (inCurtain) return "curtain";
         if (inDodge) return "dodge";
         if (now < staggerUntil) return "stagger";
         if (now < potionHoldUntil) return "potion";
-        if (potionDue()) return "potion due"; // v9 potionSafe
-        if (now - lastHitAt < offOkAfterHitMs) return "after-hit";
-        if (now - offTellAt < offAfterTellMs || now - flareSeenAt < offAfterTellMs
-            || (!flankPass() && (now - curtainLastAt < offAfterTellMs || now - lastDarkAt < offAfterTellMs))) return "after-tell";
-        if (hpNow != null && hpNow < offHpMin) return "hp";
-        if (offComboVeto && comboRunning()) return "combo";
-        if (offM30 > offGateVetoTh) return "m30";
+        if (potionDue()) return "potion due";
+        if (now - lastHitAt < OFF_OK_AFTER_HIT_MS) return "after-hit";
+        if (now - offTellAt < OFF_AFTER_TELL_MS || now - flareSeenAt < OFF_AFTER_TELL_MS
+            || now - curtainLastAt < OFF_AFTER_TELL_MS || now - lastDarkAt < OFF_AFTER_TELL_MS) return "after-tell";
+        if (comboRunning()) return "combo";
+        if (offM30 > OFF_GATE_VETO_TH) return "m30";
         if (okFarByWhiff) return "whiffs";
-        if (sinceOk(now) > offOkMs && sinceDrop(now) > OFF_DROP_WIN_MS && !landNear() && !qiLow()) return "not near";
+        if (sinceOk(now) > OFF_OK_MS && sinceDrop(now) > OFF_DROP_WIN_MS) return "not near";
         return "";
     }
-    /** landTh: the land probe says an action now lands. */
-    const landNear = () => landTh > 0 && pred?.land != null && pred.land >= landTh;
-    /** landFloor: the land probe says an action now misses. */
-    const landLow = () => landFloor > 0 && pred?.land != null && pred.land < landFloor;
-    /** qiFinish: the last bit of 真气 (not empty, not in a window). */
-    const qiLow = () => qiFinish > 0 && qiEmpty === 0 && qiNow > 4 && qiNow <= qiFinish && bossNow > 50 && !qp.shown;
-    /** Why the gate is near by part 5 only ("" = by the ok / drop signals or not near). @param {number} now */
-    const nearBy = (now) => (sinceOk(now) <= offOkMs || sinceDrop(now) <= OFF_DROP_WIN_MS ? "" : qiLow() ? "qi" : landNear() ? "land" : "");
-    /** Action a fits now (no gate here): its horizon below offVetoTh, no plan item before it can be cut. @param {string} a @param {number} now */
+    /** Action a fits now (no gate here): its horizon below OFF_VETO_TH, no plan item before it can be cut. @param {string} a @param {number} now */
     function okCan(a, now) {
         if (offHold || offWalking || hd || now < offBusyUntil || bossNow <= 50) return false;
-        const nc = Math.max(offNoCancel[a] ?? 0, burstAt > 0 ? burstAt + (offNoCancel.burst ?? 0) - now : 0);
-        if (offHorizon(nc) >= offVetoTh) return false;
-        return !plan.some((it) => !it.pressedAt && it.atMs - now <= nc + offAbortMs);
+        const nc = Math.max(OFF_NO_CANCEL_MS[a] ?? 0, burstAt > 0 ? burstAt + OFF_NO_CANCEL_MS.burst - now : 0);
+        if (offHorizon(nc) >= OFF_VETO_TH) return false;
+        return !plan.some((it) => !it.pressedAt && it.atMs - now <= nc + OFF_ABORT_MS);
     }
     /** A committed step may tap now: only the defense's own states hold it. @param {number} now */
     function commitCan(now) {
-        if (curtainVeto() || inDodge || now < staggerUntil || now < potionHoldUntil || now < offBusyUntil || bossNow <= 50) return false; // v10 curtainFlank: @see curtainVeto
+        if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || now < offBusyUntil || bossNow <= 50) return false;
         if (offHold || offWalking || potionDue()) return false;
         return !plan.some((it) => !it.pressedAt && Math.abs(it.atMs - now) <= 100); // not on top of a defense press
     }
-    /** @param {string} a @param {boolean} strong */
-    const hdCan = (a, strong) => (hd?.owner ? commitCan(Date.now()) : offCan(a, strong));
     /** A 金光 / curtain tell that gives a committed set up ("" = none; not inside 爆发's 2.4 s). @param {number} now */
     function commitTell(now) {
         if (hd && hd.step === "burst" && hd.tapAt) return "";
-        if (burstAt && now - burstAt < (offNoCancel.burst ?? 0)) return "";
-        if (curtainVeto()) return "curtain"; // v10 curtainFlank: @see curtainVeto
+        if (burstAt && now - burstAt < OFF_NO_CANCEL_MS.burst) return "";
+        if (inCurtain) return "curtain";
         const t = pred?.tell;
-        if (t && t.arg !== 0 && t.p >= tellTh) return t.label;
+        if (t && t.arg !== 0 && t.p >= TELL_TH) return t.label;
         if (now - flareSeenAt < 300) return "flare image";
         return "";
     }
     /** An action's 1.2 s result: near / far tallies, the whiff loop. @param {{a: string, src: string, sok: number}} r @param {number | null} drop */
     function okResult(r, drop) {
         if (!DMG_ACTS.has(r.a) || drop == null) return;
-        const hit = drop >= offDropPx;
+        const hit = drop >= OFF_DROP_PX;
         const k = r.sok >= 0 && r.sok <= OFF_NEAR_OK_MS ? "near" : "far";
         const o = okS.res[k];
         o.n++;
@@ -3996,42 +1962,41 @@ export default function (args = {}) {
         b.n++;
         b.px += drop;
         if (hit) b.hit++;
-        if (!offOkGate || (r.src !== "ok" && r.src !== "far")) return;
+        if (r.src !== "ok" && r.src !== "far") return;
         okWhiff = hit ? 0 : okWhiff + 1;
-        if (okWhiff >= offWhiffFar && !okFarByWhiff) {
+        if (okWhiff >= OFF_WHIFF_FAR && !okFarByWhiff) {
             okFarByWhiff = true;
             okWhiffAt = Date.now();
             okS.farByWhiff++;
             mark("off", `far: ${okWhiff} whiffs in a row`);
         }
     }
-    /** offFar: one close-in when far for offFarMs (燃此魂 / 突进 when lit, else a forward push). @param {number} now */
+    /** Far for OFF_FAR_MS: one close-in (燃此魂 / 突进 when lit, else a forward push). @param {number} now */
     function farCloseIn(now) {
-        if (curtainVeto() || inDodge || now < staggerUntil || now < potionHoldUntil || bossNow <= 50 || potionDue()) return false; // v10: @see curtainVeto
-        if (offM30 > offVetoTh || plan.some((it) => !it.pressedAt && it.atMs - now <= offGuardMs)) return false;
+        if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || bossNow <= 50 || potionDue()) return false;
+        if (offM30 > OFF_VETO_TH || plan.some((it) => !it.pressedAt && it.atMs - now <= OFF_GUARD_MS)) return false;
         const far = now - okFarSince;
         okFarSince = now; // re-armed
         const w = offW;
-        if (farSkill && w === "modao" && mdashLit()) {
+        if (w === "modao" && mdashLit()) {
             inc(okS.closeIns, "ranshi");
             offAct("farRanshi", "far", DASH);
             offBusyUntil = now + OFF_COST_MS.ranshi;
-        } else if (farSkill && w === "hengdao" && offSeen("dash")) {
+        } else if (w === "hengdao" && offSeen("dash")) {
             inc(okS.closeIns, "dash");
             offAct("farDash", "far", DASH);
             offBusyUntil = now + OFF_COST_MS.dash;
-        } else if (offWalk(now, offFarPushMs, "far push")) inc(okS.closeIns, "push");
+        } else if (offWalk(now, OFF_FAR_PUSH_MS, "far push")) inc(okS.closeIns, "push");
         else return false;
         mark("off", `far ${far} ms: close-in (sok ${sinceOk(now)}, sdrop ${sinceDrop(now)})`);
         return true;
     }
-    let okDeferAt = 0, okLandSkipAt = 0, okOpenBy = "";
-    /** offChargeFree: a 蓄力 may start now (fut1 2 s mass below it); a deferral is counted / marked once per run of frames. @param {number} now @param {string} a */
+    /** A 蓄力 may start now (m60 below OFF_CHARGE_FREE); a deferral is counted / marked once per run of frames. @param {number} now @param {string} a */
     function okChargeFree(now, a) {
-        if (!offChargeFree || offM60 < offChargeFree) return true;
+        if (offM60 < OFF_CHARGE_FREE) return true;
         if (now - okDeferAt > 1000) {
             okS.chargeDefers++;
-            mark("off", `${a} deferred: m60 ${offM60.toFixed(3)} >= ${offChargeFree} ${offState()}`);
+            mark("off", `${a} deferred: m60 ${offM60.toFixed(3)} >= ${OFF_CHARGE_FREE} ${offState()}`);
         }
         okDeferAt = now;
         return false;
@@ -4041,102 +2006,29 @@ export default function (args = {}) {
         okSwitchPend = 0;
         offStartCharge(a, "ok", ms);
     }
-    // offTang (@see TG_DISC_WAIT_MS): 冢上霜 held on LIGHT, then 拨雪寻春 (重击) once the disc shows
-    let tgRelAt = 0, tgCounterAt = 0;
-    const tgS = { n: 0, early: 0, heldMs: /** @type {number[]} */ ([]), heavy: 0, heavyDelay: /** @type {number[]} */ ([]), noDisc: 0,
-        disc: 0, counterWaits: 0, switches: 0, /** @type {Record<string, number>} */ skip: {} };
-    /** offRelease of a 冢上霜 hold: now wait for the disc. @param {number} now @param {string} why @param {boolean} early @param {number} held */
-    function tangReleased(now, why, early, held) {
-        tgS.heldMs.push(held);
-        if (early) tgS.early++;
-        tgRelAt = now;
-    }
-    /** Can 冢上霜 start now (near gate open, on 横刀, not hot)? Counts why not (once a second). @param {number} now @param {number} left */
-    function tangCan(now, left) {
-        let why = "";
-        if (left < tangMinLeftMs) why = "left";
-        else if (offSeen("counter")) why = "counter";
-        else if (!okCan("tang", now)) why = "horizon";
-        if (!why) return true;
-        if (why === "counter" && now - tgCounterAt > 1000) {
-            tgS.counterWaits++;
-            tgCounterAt = now;
-        }
-        inc(tgS.skip, why);
-        return false;
-    }
-    /** @param {number} now */
-    function tangStart(now) {
-        okSwitchPend = 0;
-        tgS.n++;
-        offStartCharge("tang", "ok", tangHoldMs, LIGHT);
-    }
-    /** After a 冢上霜 release: 重击 (拨雪寻春) once the disc shows, up to TG_DISC_WAIT_MS ("true" = still waiting). @param {number} now */
-    function tangTick(now) {
-        if (!tgRelAt) return false;
-        if (now - tgRelAt > TG_DISC_WAIT_MS) {
-            tgS.noDisc++;
-            mark("off", `冢上霜: no disc ${now - tgRelAt} ms after the release`);
-            tgRelAt = 0;
-            return false;
-        }
-        if (curtainVeto() || inDodge || now < staggerUntil || now < potionHoldUntil || bossNow <= 50 || potionDue()) return true; // v10: @see curtainVeto
-        if (!offSeen("swirl")) return true;
-        tgS.heavy++;
-        tgS.heavyDelay.push(now - tgRelAt);
-        offAct("tangHeavy", "tang", CHARGE);
-        offBusyUntil = now + TG_HEAVY_BUSY_MS;
-        tgRelAt = 0;
-        return true;
-    }
     /** The near gate's action pick. @param {number} now @param {boolean} pend only the 蓄力 a switch was for */
     function okAct(now, pend) {
         const hot = burstAt > 0 && now - burstAt < HOT_MS;
         if (okSwitchPend && now < okSwitchPend) offW = offWeaponNow() ?? offW; // after a switch: per frame, not 4 Hz
         const w = offW;
         const so = sinceOk(now);
-        if (landLow()) {
-            if (now - okLandSkipAt > 1000) {
-                okS.landSkips++;
-                mark("off", `near-gate action skipped: land ${pred?.land?.toFixed(2)} < ${landFloor} ${offState()}`);
-            }
-            okLandSkipAt = now;
-            return;
-        }
-        const by = nearBy(now); // part 5: near by the probe / 真气 low only: the 蓄力 gets its full hold
-        const left = by ? qiColdHoldMs : Math.max(OFF_NEAR_OK_MS - so, OFF_NEAR_DROP_MS - sinceDrop(now), 0);
-        if (!pend && offCommit && w && burstReady(now) && now >= offSetRetryAt && so <= OFF_FRESH_OK_MS && commitCan(now)) {
-            hd = { step: w === "hengdao" ? "dash1" : "switch", stepAt: now, readyAt: 0, tapAt: 0, tries: 0, gone: false, goneAt: 0, owner: "ok" };
+        const left = Math.max(OFF_NEAR_OK_MS - so, OFF_NEAR_DROP_MS - sinceDrop(now), 0);
+        if (!pend && w && burstReady(now) && now >= offSetRetryAt && so <= OFF_FRESH_OK_MS && commitCan(now)) {
+            hd = { step: w === "hengdao" ? "dash1" : "switch", stepAt: now, readyAt: 0, tapAt: 0, tries: 0, gone: false, goneAt: 0 };
             offSetS.started++;
             mark("off", `横刀 set start (${w}, committed) sok ${so} ${offState()}`);
             hdTick(now);
             return;
         }
-        if (offTang && w === "hengdao" && !hot && !pend) { // offTang: 冢上霜 -> 拨雪寻春 instead of the switch for a cold 蓄力
-            if (offSeen("swirl") && okCan("follow", now)) { // a disc already up (an ok, parryFollow off / given up)
-                tgS.disc++;
-                offAct("tangHeavy", "disc", CHARGE);
-                offBusyUntil = now + TG_HEAVY_BUSY_MS;
-                return;
-            }
-            if (tangCan(now, left)) return tangStart(now);
-        }
-        if ((followStay || tangSwitch) && w === "modao" && !hot && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && okCan("switch", now)) {
-            if (tangSwitch) tgS.switches++;
-            offAct("switch", "stay", SWITCH); // part 6: back to 横刀 for the follow-ups instead of a cold 蓄力
-            okSwitchAt = now;
-            offBusyUntil = now + SWITCH_WAIT_MS;
-            return;
-        }
         if (w === "modao") {
             const can = okCan("charge", now);
             if (hot && can) {
-                if (okChargeFree(now, "charge")) return okCharge("charge", offHotHoldMs);
+                if (okChargeFree(now, "charge")) return okCharge("charge", OFF_HOT_HOLD_MS);
             } else {
-                const hold = Math.min(qiColdHoldMs, left);
-                if (hold >= offColdMinMs && can && okChargeFree(now, "coldCharge")) return okCharge("coldCharge", Math.round(hold));
+                const hold = Math.min(OFF_COLD_HOLD_MS, left);
+                if (hold >= OFF_COLD_MIN_MS && can && okChargeFree(now, "coldCharge")) return okCharge("coldCharge", Math.round(hold));
             }
-        } else if (w === "hengdao" && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && (hot || (!followStay && !offTang && left >= OFF_COST_MS.switch + offColdMinMs))
+        } else if (w === "hengdao" && !pend && now - okSwitchAt >= SWITCH_WAIT_MS && (hot || left >= OFF_COST_MS.switch + OFF_COLD_MIN_MS)
             && okCan("switch", now)) {
             offAct("switch", "ok", SWITCH); // only for the 蓄力 right after it
             okSwitchAt = now;
@@ -4146,18 +2038,18 @@ export default function (args = {}) {
             return;
         }
         if (pend) return;
-        if (!offBuff && w === "modao" && offBuffSeen && so <= OFF_FRESH_OK_MS && okCan("buff", now)) { // offBuff: part 6
+        if (w === "modao" && offBuffSeen && so <= OFF_FRESH_OK_MS && okCan("buff", now)) {
             offAct("buff", "ok", BUFF);
             offBusyUntil = now + OFF_COST_MS.buff;
             offBuffSeen = false;
             return;
         }
-        if (now - okLastLight >= offLightMs && okCan("light", now)) {
+        if (now - okLastLight >= OFF_LIGHT_MS && okCan("light", now)) {
             offAct("light", "ok", LIGHT);
             okLastLight = now;
         }
     }
-    /** Per frame (offOkGate, not in a qiPlan window): far state, the set, the gate, the action. @param {number} now */
+    /** Per frame (not in a 气竭 window): far state, the set, the gate, the action. @param {number} now */
     function okTick(now) {
         const dt = okTickAt ? Math.min(200, now - okTickAt) : 0;
         okTickAt = now;
@@ -4167,57 +2059,42 @@ export default function (args = {}) {
             okWhiff = 0;
             mark("off", `near again (${lastOkAt > okWhiffAt ? "ok" : "boss drop"})`);
         }
-        const far = (sinceOk(now) > OFF_NEAR_OK_MS && sinceDrop(now) > OFF_NEAR_DROP_MS && !landNear() && !qiLow()) || okFarByWhiff;
+        const far = (sinceOk(now) > OFF_NEAR_OK_MS && sinceDrop(now) > OFF_NEAR_DROP_MS) || okFarByWhiff;
         if (!far || !fight) okFarSince = 0;
         else if (!okFarSince) okFarSince = now;
-        if (hd && !offActOn) hdTick(now);
+        if (hd) hdTick(now);
         const why = okGateWhy(now);
-        const by = why ? "" : nearBy(now);
         if (fight) {
             okS.evalMs += dt;
             if (okOpenAt) okS.openMs += dt;
             if (far) okS.farMs += dt;
-            if (okOpenAt && by === "land") okS.landMs += dt;
-            if (okOpenAt && by === "qi") okS.qiMs += dt;
         }
         if (!why && !okOpenAt) {
             okOpenAt = now;
             okS.opens++;
-            okOpenBy = by;
-            if (by === "land") okS.landOpens++;
-            if (by === "qi") okS.qiOpens++;
-            mark("off", `ok-gate open sok ${sinceOk(now)} sdrop ${sinceDrop(now)}${by ? ` by ${by}` : ""}${by === "qi" ? ` 真气 ${qiNow}` : ""} ${offState()}`);
+            mark("off", `ok-gate open sok ${sinceOk(now)} sdrop ${sinceDrop(now)} ${offState()}`);
         } else if (why && okOpenAt) {
             inc(okS.closeWhy, why);
-            mark("off", `ok-gate close ${why} after ${now - okOpenAt} ms${okOpenBy ? ` (opened by ${okOpenBy})` : ""}`);
+            mark("off", `ok-gate close ${why} after ${now - okOpenAt} ms`);
             okOpenAt = 0;
         }
         if (hd || offHold || offWalking || now < offBusyUntil) return;
-        if (parryFollow && pfHold(now)) return; // part 6: the follow-up first
-        if (offTang && tangTick(now)) return; // after 冢上霜: 拨雪寻春 first
-        if (offFar && far && okFarSince && now - okFarSince >= offFarMs && farCloseIn(now)) return;
+        if (pfHold(now)) return; // the follow-up first
+        if (far && okFarSince && now - okFarSince >= OFF_FAR_MS && farCloseIn(now)) return;
         if (okOpenAt && !far) okAct(now, false);
-        else if (okSwitchPend && now < okSwitchPend && offM30 <= offVetoTh && !curtainVeto() && !inDodge) okAct(now, true); // v10: @see curtainVeto
+        else if (okSwitchPend && now < okSwitchPend && offM30 <= OFF_VETO_TH && !inCurtain && !inDodge) okAct(now, true);
     }
-    // --- part 6: 奇术 (offQishu), 燃此魂's second tap (ranshiStrikeMs), the 横刀 ok follow-up (parryFollow)
-    /** @type {{at: number, until: number, src: string, seen: number} | null} */ let rsPend = null;
+
+    // --- 奇术 and the 横刀 ok follow-up
     let qsLitAt = 0, qsLit = false, qsRetryAt = 0, qsTapAt = 0, qsOpenOk = true, qsBossAt = 0, qsPutOffAt = 0;
     let qsCoolN = 0, qsCoolSeq = -1, qsBusyTo = 0, qsSoon = true, qsWhereTap = "";
     let pfOkAt = 0, pfTapAt = 0, pfTries = 0, pfHeng = false, pfDiscAt = 0, pfHoldN = 0, pfHoldMarked = false;
     const p6S = {
         /** @type {Record<string, number>} */ qishu: {}, qishuNotOut: 0, /** @type {Record<string, number>} */ qishuPutOff: {},
         /** @type {Record<string, number>} */ qishuOut: {}, qishuRetry: 0, qishuUnknown: 0,
-        ranshi2: 0, ranshi2Lost: 0, follow: 0, followNotOut: 0, /** @type {Record<string, number>} */ followSkip: {}, followOks: 0,
+        follow: 0, followNotOut: 0, /** @type {Record<string, number>} */ followSkip: {}, followOks: 0,
         followHolds: 0, followHoldNoDisc: 0, followHoldFrames: 0,
-        ...(offBuff ? {
-            /** @type {Record<string, number>} */ buff: {}, /** @type {Record<string, number>} */ buffOut: {},
-            /** @type {Record<string, number>} */ buffPutOff: {}, buffNotOut: 0, buffCut: 0, buffRetry: 0, buffDim: 0,
-        } : {}),
     };
-    /** @type {{buff: Record<string, number>, buffOut: Record<string, number>, buffPutOff: Record<string, number>, buffNotOut: number, buffCut: number, buffRetry: number, buffDim: number}} */
-    const bfS = /** @type {any} */ (p6S);
-    let bfTapAt = 0, bfWhereTap = "", bfOutN = 0, bfOutSeq = -1, bfLastOut = 0, bfRetryAt = 0, bfSoon = true;
-    let bfBusyTo = 0, bfBossAt = 0, bfOpenOk = true, bfPutOffAt = 0, bfParry0 = 0, bfDimN = 0;
     /** combat.js qishuLit (4 Hz): the template and the white strokes in the middle. @param {number} now */
     function qsLitRead(now) {
         if (now - qsLitAt < OFF_ICON_EVERY) return qsLit;
@@ -4247,46 +2124,39 @@ export default function (args = {}) {
     }
     /** The defense's own states and our busy ones ("" = free). @param {number} now */
     function p6Busy(now) {
-        if (curtainVeto()) return "curtain"; // v10 curtainFlank: @see curtainVeto
+        if (inCurtain) return "curtain";
         if (inDodge) return "dodge";
         if (now < staggerUntil) return "stagger";
         if (now < potionHoldUntil || potionDue()) return "potion";
         if (offHold || offWalking || hd || now < offBusyUntil) return "busy";
         return "";
     }
-    /**
-     * Clear for an action that a 卸势 cannot cut for nc ms ("" = clear); futFree: the fut items do not count (气竭).
-     * @param {number} now @param {number} nc @param {number} th @param {boolean} futFree
-     */
-    function p6Clear(now, nc, th, futFree) {
+    /** Clear for an action that a 卸势 cannot cut for nc ms ("" = clear). @param {number} now @param {number} nc @param {number} th */
+    function p6Clear(now, nc, th) {
         const t = pred?.tell;
-        if (t && t.arg !== 0 && t.p >= tellTh) return "tell";
-        if (now - flareSeenAt < offAfterTellMs) return "after-tell";
-        if (!futFree && offHorizon(nc) >= th) return "horizon";
-        if (plan.some((it) => !it.pressedAt && it.atMs - now <= nc + offAbortMs && !(futFree && it.src === "fut"))) return "plan";
+        if (t && t.arg !== 0 && t.p >= TELL_TH) return "tell";
+        if (now - flareSeenAt < OFF_AFTER_TELL_MS) return "after-tell";
+        if (offHorizon(nc) >= th) return "horizon";
+        if (plan.some((it) => !it.pressedAt && it.atMs - now <= nc + OFF_ABORT_MS)) return "plan";
         return "";
     }
-    /** Where 奇术 may go now ("" = nowhere). @param {number} now */
+    /** Where 奇术 may go now ("" = nowhere): the opening (the bar up, no contact yet) or just after an ok. @param {number} now */
     function qsWhere(now) {
         if (!qsBossAt && bossNow > 50) qsBossAt = now;
-        if (qp.shown) {
-            if (!qishuWhere.includes("qi")) return "";
-            if (qp.tapAt && now - qp.tapAt >= QP_EXEC_SCENE_MS) return "qi"; // after the 处决 scene (the 处决 first)
-            return "";
-        }
-        if (qsOpenOk && qishuWhere.includes("open")) { // the opening: the bar up, no contact yet
+        if (qp.shown) return "";
+        if (qsOpenOk) {
             if (lastHitAt || lastOkAt || (qsBossAt && now - qsBossAt > QS_OPEN_MS)) qsOpenOk = false;
             else if (qsBossAt) return "open";
         }
-        if (qishuWhere.includes("ok") && sinceOk(now) <= QS_OK_MS) return "ok";
+        if (sinceOk(now) <= QS_OK_MS) return "ok";
         return "";
     }
-    /** The tap's end: out (the hold to qishuNoCancelMs) or not (the hold off, a retry). @param {number} now @param {string} how */
+    /** The tap's end: out (the hold to QS_NO_CANCEL_MS) or not (the hold off, a retry). @param {number} now @param {string} how */
     function qsDone(now, how) {
         const ms = now - qsTapAt;
         if (how === "cool") {
             inc(p6S.qishuOut, qsWhereTap);
-            offBusyUntil = Math.max(offBusyUntil, qsTapAt + qishuNoCancelMs);
+            offBusyUntil = Math.max(offBusyUntil, qsTapAt + QS_NO_CANCEL_MS);
             qsSoon = true;
             mark("off", `奇术 out (cooldown, ${ms} ms)`);
         } else {
@@ -4316,7 +2186,7 @@ export default function (args = {}) {
         if (!qsSoon && now - qsRetryAt > QS_RETRY_MS) qsSoon = true; // a long while on: a retry again
         const where = qsWhere(now);
         if (!where || !qsLitRead(now)) return;
-        const why = p6Busy(now) || p6Clear(now, qishuNoCancelMs, qishuTh, where === "qi");
+        const why = p6Busy(now) || p6Clear(now, QS_NO_CANCEL_MS, QS_TH);
         if (why) {
             inc(p6S.qishuPutOff, `${where}:${why}`);
             if (now - qsPutOffAt > 1000) mark("off", `奇术 put off (${where}: ${why}) ${offState()}`);
@@ -4333,27 +2203,9 @@ export default function (args = {}) {
         qsBusyTo = Math.max(offBusyUntil, now + QS_CONFIRM_MS); // nothing of ours until it is known
         offBusyUntil = qsBusyTo;
     }
-    /** 燃此魂's second tap (伤害, 荡八荒) ranshiStrikeMs after the first, while its icon shows. @param {number} now */
-    function rsTick(now) {
-        const r = rsPend;
-        if (!r) return;
-        const icon = offSeen("mstrike");
-        if (icon && !r.seen) r.seen = now;
-        if (now > r.until || (r.seen && !icon && now - r.seen > 200) || inDodge) {
-            p6S.ranshi2Lost++;
-            mark("off", `燃此魂 second tap lost (${inDodge ? "dodge" : r.seen ? "icon gone" : "no icon"}) +${now - r.at + ranshiStrikeMs} ms`);
-            rsPend = null;
-            return;
-        }
-        if (now < r.at || !icon || curtainVeto() || now < staggerUntil) return; // v10: @see curtainVeto
-        rsPend = null;
-        offAct("ranshi2", r.src, DASH);
-        p6S.ranshi2++;
-        offBusyUntil = Math.max(offBusyUntil, now + RS_COST_MS);
-    }
     /** The 横刀 ok follow-up: the blue 爆发 disc on 重击 within PF_WINDOW_MS of the ok. @param {number} now */
     function pfTick(now) {
-        if (qp.shown) return; // the window's own pick (qpPick)
+        if (qp.shown) return;
         if (lastOkAt > pfOkAt) { // a new ok
             pfOkAt = lastOkAt;
             pfTapAt = 0;
@@ -4364,7 +2216,7 @@ export default function (args = {}) {
             pfHoldMarked = false;
             if (pfHeng) p6S.followOks++;
         }
-        if (!pfOkAt || now - pfOkAt > PF_WINDOW_MS || now - pfOkAt < followDelayMs || pfTries >= PF_TRIES) return;
+        if (!pfOkAt || now - pfOkAt > PF_WINDOW_MS || now - pfOkAt < PF_DELAY_MS || pfTries >= PF_TRIES) return;
         if (pfTapAt && now - pfTapAt < PF_RETRY_MS) return;
         const swirl = offSeen("swirl");
         if (pfTapAt) { // tapped: out once the disc goes
@@ -4377,25 +2229,23 @@ export default function (args = {}) {
             p6S.followNotOut++;
         }
         if (!swirl) return;
-        const why = p6Busy(now) || p6Clear(now, followNoCancelMs, followTh, false);
+        const why = p6Busy(now) || p6Clear(now, PF_NO_CANCEL_MS, PF_TH);
         if (why) {
             inc(p6S.followSkip, why);
             return;
         }
-        offAct("follow", "ok", followTap === "diamond" ? PF_DIAMOND : CHARGE);
+        offAct("follow", "ok", CHARGE);
         p6S.follow++;
         pfTapAt = now;
         pfTries++;
         offBusyUntil = Math.max(offBusyUntil, now + PF_RETRY_MS);
     }
-    /**
-     * parryFollow: the rest of the offense waits for the follow-up after a 横刀 ok (to followDelayMs +
-     * PF_HOLD_EXTRA_MS, while the disc shows; no disc by PF_DISC_WAIT_MS lets go). @param {number} now
-     */
+    /** The rest of the offense waits for the follow-up after a 横刀 ok (to PF_DELAY_MS + PF_HOLD_EXTRA_MS, while the
+     * disc shows; no disc by PF_DISC_WAIT_MS lets go). @param {number} now */
     function pfHold(now) {
-        if (!parryFollow || !pfOkAt || pfTries > 0 || qp.shown) return false;
+        if (!pfOkAt || pfTries > 0 || qp.shown) return false;
         const s = now - pfOkAt;
-        if (s >= followDelayMs + PF_HOLD_EXTRA_MS) return false;
+        if (s >= PF_DELAY_MS + PF_HOLD_EXTRA_MS) return false;
         const disc = offSeen("swirl");
         if (disc && !pfDiscAt) pfDiscAt = now;
         if (!disc && (pfDiscAt || s >= PF_DISC_WAIT_MS || !pfHeng)) {
@@ -4410,440 +2260,28 @@ export default function (args = {}) {
         p6S.followHoldFrames++;
         return true;
     }
-    /** 唤千军's button now (per frame): "lit", "cd" (the countdown; the tap's ripple too for <= 5 frames), "dim"
-     * (刀势 < 2; the press darkening too for ~2 frames) or "". */
-    function bfState() {
-        return perFrame("buffState", (im) => {
-            /** @param {number} n */
-            const white = (n) => color({ ...ICON_WHITE, image: im, roi: [BUFF[0] - 22, BUFF[1] - 22, 44, 44], count: n }).hit;
-            if (match(OFF_T.buff[0], { image: im, roi: OFF_T.buff[1], threshold: BF_LIT_TH }).hit) return white(BF_LIT_PX) ? "lit" : "";
-            if (!match(OFF_T.buff[0], { image: im, roi: OFF_T.buff[1], threshold: BF_OUT_TH }).hit) return "cd";
-            if (!white(BF_DIM_WHITE + 1) && match(OFF_T.buff[0], { image: im, roi: OFF_T.buff[1], threshold: BF_CD_TH }).hit) return "dim";
-            return "";
-        });
-    }
-    /** Where 唤千军 may go now ("" = nowhere). @param {number} now */
-    function bfWhere(now) {
-        if (!bfBossAt && bossNow > 50) bfBossAt = now;
-        if (qp.shown) return buffWhere.includes("qi") && qp.tapAt && now - qp.tapAt >= QP_EXEC_SCENE_MS ? "qi" : "";
-        if (bfOpenOk && buffWhere.includes("open")) {
-            if (lastHitAt || lastOkAt || (bfBossAt && now - bfBossAt > QS_OPEN_MS)) bfOpenOk = false;
-            else if (bfBossAt) return "open";
-        }
-        if (buffWhere.includes("ok") && sinceOk(now) <= QS_OK_MS) return "ok"; // m40 judged with the rest (put off)
-        if (buffWhere.includes("quiet") && offM40 < buffM40 && offHorizon(Infinity) < buffTh) return "quiet"; // fut1: no contact within ~2.2 s
-        return "";
-    }
-    /** @param {number} now @param {string} how "out" | "dim" | "lit" | "none" | "cut" */
-    function bfDone(now, how) {
-        const ms = now - bfTapAt;
-        if (how === "out" || how === "dim") {
-            inc(bfS.buffOut, bfWhereTap);
-            if (how === "dim") bfS.buffDim++;
-            bfLastOut = bfTapAt;
-            bfSoon = true;
-            offBusyUntil = Math.max(offBusyUntil, bfTapAt + buffNoCancelMs + OFF_COST_MS.buff);
-            mark("off", `唤千军 out (${how === "dim" ? "刀势 spent" : "countdown"}, ${ms} ms)`);
-        } else {
-            if (how === "cut") bfS.buffCut++;
-            else bfS.buffNotOut++;
-            if (offBusyUntil === bfBusyTo) offBusyUntil = now;
-            bfRetryAt = now + (bfSoon || how === "cut" ? QS_RETRY_SOON_MS : BF_RETRY_MS);
-            if (bfSoon) bfS.buffRetry++;
-            mark("off", `唤千军 not out (${how === "cut" ? "cut by a 卸势" : how === "lit" ? "still lit" : "no countdown seen"}, ${ms} ms)`);
-            if (how !== "cut") bfSoon = !bfSoon;
-        }
-        bfTapAt = 0;
-    }
-    /** offBuff: 唤千军 on 陌刀 where safe (@see BF_LIT_TH). @param {number} now */
-    function bfTick(now) {
-        if (bfTapAt) { // out once the countdown (or the dim icon) shows on BF_OUT_FRAMES frames in a row (past the ripple)
-            if (lastParryAt > bfParry0 && lastParryAt - bfTapAt < BF_CUT_MS) return bfDone(now, "cut");
-            const st = bfState();
-            const ms = now - bfTapAt;
-            if (img.seq !== bfOutSeq) { // a new frame: the runs go on or reset
-                bfOutSeq = img.seq;
-                bfOutN = st === "cd" ? bfOutN + 1 : 0;
-                bfDimN = st === "dim" ? bfDimN + 1 : 0;
-            }
-            if (bfOutN >= BF_OUT_FRAMES || bfDimN >= BF_OUT_FRAMES) { // a cut one counts down too: decided past BF_CUT_MS
-                if (ms >= BF_CUT_MS) bfDone(now, bfDimN >= BF_OUT_FRAMES ? "dim" : "out");
-            } else if (st === "lit" && ms >= QS_LIT_AGAIN_MS) bfDone(now, "lit");
-            else if (ms > BF_CONFIRM_MS) bfDone(now, "none");
-            return;
-        }
-        if (now < bfRetryAt || bossNow <= 50 || offW !== "modao") return;
-        if (bfLastOut && now - bfLastOut < buffEveryMs) return;
-        if (!bfSoon && now - bfRetryAt > BF_RETRY_MS) bfSoon = true;
-        const where = bfWhere(now);
-        if (!where || bfState() !== "lit") return;
-        const why = p6Busy(now) || p6Clear(now, buffNoCancelMs, buffTh, where === "qi") || (where === "ok" && offM40 >= buffM40 ? "m40" : "");
-        if (why) {
-            inc(bfS.buffPutOff, `${where}:${why}`);
-            if (now - bfPutOffAt > 1000) mark("off", `唤千军 put off (${where}: ${why}) ${offState()}`);
-            bfPutOffAt = now;
-            return;
-        }
-        offAct("buff", where, BUFF);
-        inc(bfS.buff, where);
-        bfTapAt = now;
-        bfWhereTap = where;
-        bfOutN = 0;
-        bfOutSeq = -1;
-        bfDimN = 0;
-        bfParry0 = lastParryAt;
-        bfBusyTo = Math.max(offBusyUntil, now + BF_CONFIRM_MS); // nothing of ours until it is known
-        offBusyUntil = bfBusyTo;
-    }
-    /** Per frame (part 6 on): before the near gate, so a follow-up goes ahead of its switch. @param {number} now */
+    /** Per frame: before the near gate, so a follow-up goes ahead of its switch. @param {number} now */
     function p6Tick(now) {
-        if (ranshiStrikeMs > 0) rsTick(now);
-        if (parryFollow) pfTick(now);
-        if (offQishu) qsTick(now);
-        if (offBuff) bfTick(now);
-    }
-    /** oldWindow: the committed 横刀 set is over (burst out: the window goes on). @param {number} now @param {string} why */
-    function owSetOver(now, why) {
-        if (burstAt && now - burstAt < 10_000) {
-            Object.assign(ow, { phase: "switch", phaseAt: now, tries: 0, tapAt: 0 });
-            return;
-        }
-        owS.noBurst++;
-        ow.phase = "";
-        offSetRetryAt = now + OLD_RETRY_MS;
-        mark("off", `oldWindow: 爆发 not out (${why || "set done"}), again in ${OLD_RETRY_MS} ms`);
-    }
-    /** @param {number} now @param {string} why */
-    function owOver(now, why) {
-        owS.chargesPerWindow.push(ow.n);
-        mark("off", `oldWindow over (${why}): ${ow.n} 蓄力`);
-        Object.assign(ow, { phase: "", phaseAt: 0, winEnd: 0, n: 0, lost: false, waitFrom: 0, tries: 0, tapAt: 0 });
-    }
-    /** A window 蓄力 let go (offRelease). @param {number} now @param {string} why @param {boolean} early */
-    function owReleased(now, why, early) {
-        const hit = why === "hit";
-        ow.lost = early;
-        ow.waitFrom = 0;
-        if (!early) { // let go on time: 卸势 cuts the recovery OLD_CANCEL_MS later (combat.js CANCEL_MS)
-            ow.cancelAt = now + OLD_CANCEL_MS;
-            offBusyUntil = Math.max(offBusyUntil, now + OLD_CANCEL_MS + 100);
-        } else offBusyUntil = Math.max(offBusyUntil, now + (hit ? 200 : OFF_SLASH_MS));
-    }
-    /** @param {number} now */
-    function owCancelTap(now) {
-        ow.cancelAt = 0;
-        const soon = plan.some((it) => it.kind === "parry" && !it.pressedAt && it.atMs - now <= 300);
-        if (inDodge || now < staggerUntil || now - lastParryAt < 300 || soon) {
-            owS.cancelSkips++;
-            return;
-        }
-        if (!observe) tap(parryP);
-        lastParryAt = Date.now();
-        pressFrame(frameIdx);
-        owS.cancels++;
-        mark("off", `oldWindow: 卸势 cuts the 蓄力 recovery${observe ? " sim" : ""}`);
-    }
-    /** Per frame (oldWindow, not in a qiPlan window). @param {number} now */
-    function owTick(now) {
-        if (ow.cancelAt && now >= ow.cancelAt) owCancelTap(now);
-        if (hd) {
-            if (!offActOn) hdTick(now);
-            return;
-        }
-        if (!ow.phase) {
-            if (!burstReady(now) || now < offSetRetryAt || sinceOk(now) > OFF_FRESH_OK_MS || !offW || !commitCan(now)) return;
-            ow.phase = "set";
-            owS.windows++;
-            hd = { step: offW === "hengdao" ? "dash1" : "switch", stepAt: now, readyAt: 0, tapAt: 0, tries: 0, gone: false, goneAt: 0, owner: "win" };
-            offSetS.started++;
-            mark("off", `oldWindow: 横刀 set start (${offW}) sok ${sinceOk(now)} ${offState()}`);
-            hdTick(now);
-            return;
-        }
-        if (ow.phase === "set") return;
-        if (ow.phase === "switch") {
-            const w = offWeaponNow();
-            if (w === "modao") {
-                offW = w;
-                Object.assign(ow, { phase: "buff", phaseAt: now, winEnd: now + oldWindowMs, n: 0, lost: false });
-                mark("off", `oldWindow: 陌刀, ${oldWindowMs} ms`);
-                return;
-            }
-            if (now - ow.phaseAt > 4000 || ow.tries >= 4) return owOver(now, "switch failed");
-            if ((ow.tapAt && now - ow.tapAt < SWITCH_WAIT_MS) || !commitCan(now)) return;
-            offAct("switch", "win", SWITCH);
-            ow.tapAt = now;
-            ow.tries++;
-            return;
-        }
-        if (now >= ow.winEnd - 1000) {
-            if (!offHold) owOver(now, "time");
-            return;
-        }
-        if (!commitCan(now)) return;
-        if (ow.phase === "buff") {
-            ow.phase = "ranshi";
-            if (offSeen("buff")) {
-                offAct("buff", "win", BUFF);
-                owS.buffs++;
-                offBusyUntil = now + OFF_COST_MS.buff;
-            }
-            return;
-        }
-        if (ow.phase === "ranshi") {
-            ow.phase = "charge";
-            if (mdashLit()) {
-                offAct("ranshi", "win", DASH);
-                owS.ranshi++;
-                offBusyUntil = now + 500;
-            }
-            return;
-        }
-        // 蓄力 after 蓄力
-        if (now - lastHitAt < OLD_AFTER_HIT_MS) return;
-        if (ow.lost) { // a lost one: a quiet moment first (<= OLD_QUIET_WAIT_MS)
-            if (!ow.waitFrom) ow.waitFrom = now;
-            if (offM30 > offVetoTh && now - ow.waitFrom < OLD_QUIET_WAIT_MS) return;
-        }
-        if (offW && offW !== "modao") {
-            Object.assign(ow, { phase: "switch", phaseAt: now, tries: 0, tapAt: 0 });
-            return;
-        }
-        const hot = burstAt > 0 && now - burstAt < HOT_MS;
-        ow.n++;
-        owS.charges++;
-        if (hot) owS.hot++;
-        mark("off", `oldWindow 蓄力 ${ow.n} (${ow.winEnd - now} ms left${hot ? ", 热血" : ""})`);
-        offStartCharge(hot ? "charge" : "coldCharge", "win", hot ? offHotHoldMs : qiColdHoldMs);
-    }
-    /** Part 3 return stats. */
-    function okSummary() {
-        const min = okS.evalMs / 60000;
-        const r = (/** @type {number} */ x, d = 3) => Math.round(x * 10 ** d) / 10 ** d;
-        return {
-            ...(offOkGate ? { fightMin: r(min, 2), gateFrac: okS.evalMs ? r(okS.openMs / okS.evalMs) : 0, farFrac: okS.evalMs ? r(okS.farMs / okS.evalMs) : 0,
-                opens: okS.opens, closeWhy: okS.closeWhy, farByWhiff: okS.farByWhiff, closeIns: okS.closeIns, switchPend: okS.switchPend,
-                ...(offChargeFree ? { chargeDefers: okS.chargeDefers } : {}),
-                ...(landTh || landFloor || qiFinish ? { landOpens: okS.landOpens, qiOpens: okS.qiOpens, landFrac: okS.evalMs ? r(okS.landMs / okS.evalMs) : 0,
-                    qiFrac: okS.evalMs ? r(okS.qiMs / okS.evalMs) : 0, landSkips: okS.landSkips } : {}) } : {}),
-            ...(oursTellTh ? { oursTellWaits: okS.oursTellWaits } : {}),
-            res: okS.res, byAct: okS.byAct, ...(oldWindow ? { window: owS } : {}),
-            ...(offTang ? { tang: tgS } : {}),
-        };
+        pfTick(now);
+        qsTick(now);
     }
 
-    // --- qiPlan: the 气竭 window v2, clocked from the 处决 button's first sighting
-    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, approached: false, walkAt: 0, h0: -1, seenAt: 0, lostAt: 0,
-        qfBuff: 0, qfBurst: 0, qfSwitchAt: 0, qfBurstAt: 0, qfExecWait: 0 }; // qiFront (@see qfPick; qfBurst: 0 undecided | -1 skipped | -2 switching | 1 out)
+    // --- 气竭: the window clocked from the 处决 button's first sighting (@see QP_EXEC_AFTER_MS)
+    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, seenAt: 0, lostAt: 0 };
     const qpS = { windows: 0, fakes: 0, execs: 0, lost: 0, lights: 0, postLights: 0, futDrops: 0, preDrops: 0, btnLost: 0, chases: 0, reseenTaps: 0 };
-    /** qiFront's counters (@see qfPick). */
-    const qfS = { buff: 0, burst: 0, switch: 0, burstSkip: 0, charge: 0, post: 0, execHeld: 0 };
     /** @type {number[]} */ const qpShownToTap = [];
     /** @type {number[]} */ const qpBossDrop = [];
-    /** @type {{ms: number, h0: number, h1: number}[]} */ const qpApproach = [];
-    /** @type {Record<string, number>} */ const qpSkills = {};
-    /**
-     * qiSkill: the best skill that fits the time left (before 处决: until qiExecAfter, the slash out first; after: the
-     * ~qiPostLeftMs of 衰弱 after the 处决 scene), or null. @param {number} now @param {boolean} post
-     * @returns {{a: string, p: Point, hold: number} | null}
-     */
-    function qpPick(now, post) {
-        const left = post ? qp.tapAt + QP_EXEC_SCENE_MS + qiPostLeftMs - now : qiExecAfter - (now - qp.shown);
-        if (left <= 0) return null;
-        const w = offWeaponNow();
-        const hot = burstAt > 0 && now - burstAt < HOT_MS;
-        const slash = post ? 0 : QP_SLASH_MS;
-        if (w === "modao") {
-            if (hot && left >= offHotHoldMs + slash) return { a: "charge", p: CHARGE, hold: offHotHoldMs };
-            if (!hot && left >= qiColdHoldMs + slash) return { a: "coldCharge", p: CHARGE, hold: qiColdHoldMs };
-            if (offSeen("mdash") && left >= OFF_COST_MS.ranshi) return { a: "ranshi", p: DASH, hold: 0 }; // 燃此魂
-            if (offSeen("buff") && left >= OFF_COST_MS.buff) return { a: "buff", p: BUFF, hold: 0 }; // 唤千军
-        } else if (w === "hengdao") {
-            if (parryFollow && offSeen("swirl") && left >= PF_COST_MS) return { a: "follow", p: followTap === "diamond" ? PF_DIAMOND : CHARGE, hold: 0 }; // part 6
-            if (hot && left >= OFF_COST_MS.switch + offHotHoldMs + slash) return { a: "switch", p: SWITCH, hold: 0 };
-            if (offSeen("strike") && left >= OFF_COST_MS.strike) return { a: "strike", p: DASH, hold: 0 }; // 伤害
-            // 爆发 swallows 卸势 ~2.4 s (E0): only after 处决 and only with that much 衰弱 left (by default 2000 < 2400: never)
-            if (post && offSeen("burst") && left >= (offNoCancel.burst ?? 0)) return { a: "burst", p: BUFF, hold: 0 };
-            if (offSeen("dash") && left >= OFF_COST_MS.dash) return { a: "dash", p: DASH, hold: 0 };
-        }
-        return null;
-    }
-    /** qiFront: 唤千军 may go now (陌刀, lit, safe — bfState / p6Busy / p6Clear are the existing release detection and
-     * safety gates; futFree: the fut items are dropped in this window). @param {number} now */
-    function qfBuffOk(now) {
-        if (offWeaponNow() !== "modao" || bfState() !== "lit") return false;
-        return !p6Busy(now) && !p6Clear(now, buffNoCancelMs, buffTh, true);
-    }
-    /** qiFront: the 唤千军 tap; with offBuff on the existing out detection (bfTick -> bfDone) takes it over. @param {number} now */
-    function qfBuffGo(now) {
-        offAct("buff", "qi", BUFF);
-        qfS.buff++;
-        mark("qi", `qiPlan qiFront 唤千军 +${now - qp.shown} ms`);
-        if (qp.qfBurst === 0) { // it owns the window: the 爆发's fit is gone by the time the summon is over
-            qp.qfBurst = -1;
-            qfS.burstSkip++;
-            mark("qi", "qiPlan qiFront 爆发 skipped (the 唤千军 has the window)");
-        }
-        if (offBuff) {
-            bfTapAt = now;
-            bfWhereTap = "qi";
-            bfOutN = 0;
-            bfOutSeq = -1;
-            bfDimN = 0;
-            bfParry0 = lastParryAt;
-            bfBusyTo = Math.max(offBusyUntil, now + BF_CONFIRM_MS);
-            offBusyUntil = bfBusyTo;
-            inc(bfS.buff, "qi");
-        } else offBusyUntil = Math.max(offBusyUntil, now + buffNoCancelMs + OFF_COST_MS.buff);
-    }
-    /** qiFront: a switch tap (the 爆发 path / the hot 蓄力 from 横刀; the 爆发 one holds no busy: its -2 state owns the frames). @param {number} now @param {string} why @param {boolean} [busy] */
-    function qfSwitch(now, why, busy = true) {
-        qp.qfSwitchAt = now;
-        qfS.switch++;
-        offAct("switch", "qi", SWITCH);
-        if (busy) offBusyUntil = Math.max(offBusyUntil, now + OFF_COST_MS.switch);
-        mark("qi", `qiPlan qiFront switch (${why}) +${now - qp.shown} ms`);
-    }
-    /** qiFront: the 爆发 tap (its own offNoCancel.burst: nothing else until it is over). @param {number} now */
-    function qfBurstGo(now) {
-        qp.qfBurst = 1;
-        qp.qfBurstAt = now;
-        qfS.burst++;
-        offAct("burst", "qi", BUFF);
-        burstAt = now;
-        offBusyUntil = Math.max(offBusyUntil, now + (offNoCancel.burst ?? 0));
-        mark("qi", `qiPlan qiFront 爆发 +${now - qp.shown} ms${qp.qfSwitchAt ? ` (switch ${now - qp.qfSwitchAt} ms)` : ""}`);
-    }
-    /** qiFront: give the 爆发 up (never stuck: the window goes on with the 蓄力 / the filler). @param {number} now @param {string} why */
-    function qfBurstSkip(now, why) {
-        qp.qfBurst = -1;
-        qfS.burstSkip++;
-        mark("qi", `qiPlan qiFront 爆发 skipped (${why}) +${now - qp.shown} ms`);
-        return false;
-    }
-    /** qiFront: the 爆发 attempt (@see QF_BURST_MS; the fit is the tap's, a switch's own cost out of it). @param {number} now @returns {boolean} true = the frame is taken */
-    function qfBurstStep(now) {
-        if (qp.qfBurst === 1 || qp.qfBurst === -1) return false;
-        const off = now - qp.shown;
-        if (qp.qfBurst === -2) { // the switch is out: wait for 横刀, then 爆发 (or give it up)
-            const w = offWeaponNow();
-            if (w === "hengdao") {
-                if (!offSeen("burst")) return qfBurstSkip(now, "not lit after the switch");
-                // a switch makes the tap later: its tail must still end by the 处决's own deadline (@see qiExecMax)
-                if (off + (offNoCancel.burst ?? 0) > qiExecMax) return qfBurstSkip(now, `switch ${now - qp.qfSwitchAt} ms: its ${offNoCancel.burst ?? 0} ms would pass qiExecMax`);
-                qfBurstGo(now);
-                return true;
-            }
-            return now - qp.qfSwitchAt <= qiFrontSwitchMs ? true : qfBurstSkip(now, `switch: still ${w ?? "?"} after ${now - qp.qfSwitchAt} ms`);
-        }
-        if (off > qiFrontBurstMs) return qfBurstSkip(now, `${off} ms > ${qiFrontBurstMs}: its ${offNoCancel.burst ?? 0} ms would run into the 处决`);
-        if (!burstReady(now)) return qfBurstSkip(now, `cooling (${Math.round((BURST_CD_MS - (now - burstAt)) / 1000)} s left)`);
-        const w = offWeaponNow();
-        if (!w) return true; // not read yet: wait a frame (never switch blind)
-        if (w === "hengdao") {
-            if (!offSeen("burst")) return qfBurstSkip(now, "not lit");
-            qfBurstGo(now);
-            return true;
-        }
-        qp.qfBurst = -2; // 陌刀: switch first (@see QF_SWITCH_MS)
-        qfSwitch(now, "爆发", false);
-        return true;
-    }
-    /** qiFront: the 蓄力 (hot first, else cold by qiColdHoldMs) — the window's output, before and after the 处决. @param {number} now @param {boolean} post @param {string} a @param {number} hold */
-    function qfCharge(now, post, a, hold) {
-        if (post) qfS.post++;
-        else qfS.charge++;
-        mark("qi", `qiPlan qiFront ${a === "charge" ? "热蓄力" : "冷蓄力"}${post ? " (after 处决)" : ""} +${now - qp.shown} ms`);
-        offStartCharge(a, "qi", hold);
-        return true;
-    }
-    /**
-     * qiFront: the window by the teacher's order (@see QF_BURST_MS): 唤千军 -> 横刀 爆发 -> 蓄力 before the 处决,
-     * 蓄力 again after it (the boss down: it lands); 轻击 only as the filler (false -> the caller's 轻击).
-     * @param {number} now @param {boolean} post @returns {boolean} true = something went / the frame is taken
-     */
-    function qfPick(now, post) {
-        const off = now - qp.shown;
-        const hot = burstAt > 0 && now - burstAt < HOT_MS;
-        if (post) {
-            const left = qp.tapAt + QP_EXEC_SCENE_MS + qiPostMs - now; // to the window's own end (@see qiPostMs)
-            const w = offWeaponNow();
-            if (w === "modao") {
-                if (hot && left >= offHotHoldMs) return qfCharge(now, true, "charge", offHotHoldMs);
-                if (!hot && left >= qiColdHoldMs) return qfCharge(now, true, "coldCharge", qiColdHoldMs);
-            } else if (w === "hengdao" && now - qp.qfSwitchAt >= SWITCH_WAIT_MS
-                && left >= OFF_COST_MS.switch + (hot ? offHotHoldMs : qiColdHoldMs)) { // the 蓄力 is 陌刀's (横刀's 重击 is the swirl)
-                qfSwitch(now, "after 处决");
-                return true;
-            }
-            return false;
-        }
-        if (qp.qfBurst !== -2 && !qp.qfBuff && off <= qiFrontBuffMs && qfBuffOk(now)) { // 1. 唤千军 (the window's start)
-            qp.qfBuff = 1;
-            qfBuffGo(now);
-            return true;
-        }
-        if (qfBurstStep(now)) return true; // 2. 横刀 爆发 (off cooldown, lit, its tap within the fit)
-        const left = qiExecAfter - off; // 3. 蓄力 output (hot first, else cold by qiColdHoldMs)
-        const w = offWeaponNow();
-        if (w === "modao") {
-            if (hot && left >= offHotHoldMs) return qfCharge(now, false, "charge", offHotHoldMs);
-            if (!hot && left >= qiColdHoldMs) return qfCharge(now, false, "coldCharge", qiColdHoldMs);
-        } else if (w === "hengdao" && hot && now - qp.qfSwitchAt >= SWITCH_WAIT_MS && left >= OFF_COST_MS.switch + offHotHoldMs) {
-            qfSwitch(now, "热蓄力");
-            return true;
-        }
-        return false;
-    }
-    /** qiFront: hold the 处决 back while qiFront's own 爆发 still swallows taps (a switch pushed its tail past the fit). @param {number} now */
-    function qfExecHeld(now) {
-        if (!qiFront || qp.qfBurst !== 1 || now - qp.qfBurstAt >= (offNoCancel.burst ?? 0)) return false;
-        if (!qp.qfExecWait) {
-            qp.qfExecWait = 1;
-            qfS.execHeld++;
-            mark("qi", `qiPlan qiFront: 处决 waits out the 爆发 (${Math.round((offNoCancel.burst ?? 0) - (now - qp.qfBurstAt))} ms)`);
-        }
-        return true;
-    }
     /** @param {number} now @param {boolean} post */
     function qpLight(now, post) {
         if (offHold || offWalking || now < offBusyUntil) return;
         if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil || potionDue()) return;
         if (plan.some((x) => !x.pressedAt && x.atMs - now < QP_PENDING_MS)) return; // a tell dodge is about to go
-        if (qiApproach && !qp.approached) { // walk in first when the box says far (qiApproachMaxMs at most)
-            qp.approached = true;
-            offDistRead();
-            qp.h0 = offH;
-            if (offH >= 0 && offH < offStrikeH && offWalk(now, qiApproachMaxMs, "qi approach")) {
-                qp.walkAt = now;
-                return;
-            }
-        }
-        if (qp.walkAt) { // the walk-in just ended
-            qpApproach.push({ ms: now - qp.walkAt, h0: qp.h0, h1: offH });
-            mark("qi", `qiPlan approach ${now - qp.walkAt} ms, box ${qp.h0} -> ${offH} px`);
-            qp.walkAt = 0;
-        }
-        if (qiFront) {
-            if (qfPick(now, post)) return; // @see QF_BURST_MS: its own order, qiSkill overridden
-        } else if (qiSkill) {
-            const c = qpPick(now, post);
-            if (c) {
-                inc(qpSkills, c.a);
-                mark("qi", `qiPlan ${c.a}${post ? " (after 处决)" : ""} +${now - qp.shown} ms`);
-                if (c.hold) return offStartCharge(c.a, "qi", c.hold);
-                offAct(c.a, "qi", c.p);
-                if (c.a === "burst") burstAt = now; // (not verified in the window: its taps may be swallowed)
-                offBusyUntil = now + (OFF_COST_MS[c.a] ?? 0);
-                return;
-            }
-        }
-        if (now - qp.lastLight < qiLightMs) return;
+        if (now - qp.lastLight < QP_LIGHT_MS) return;
         qp.lastLight = now;
         offAct("light", "qi", LIGHT);
         if (post) qp.post++;
         else qp.lights++;
-        mark("qi", `qiPlan 轻击${observe ? " sim" : ""}${post ? " (after 处决)" : ""} +${now - qp.shown} ms`);
+        mark("qi", `qiPlan 轻击${post ? " (after 处决)" : ""} +${now - qp.shown} ms`);
     }
     /** @param {number} now @param {string} why */
     function qpEnd(now, why) {
@@ -4856,15 +2294,12 @@ export default function (args = {}) {
         mark("qi", `qiPlan window over (${why}) after ${now - qp.shown} ms: ${qp.lights} + ${qp.post} 轻击, 处决 ` +
             `${qp.tapAt ? `at ${qp.tapAt - qp.shown} ms` : "not tapped"}, boss ${qp.boss0} -> ${bossNow} px, ${qp.futDrops} fut items dropped`);
         if (offHold && offHold.src === "qi") offRelease(now, "window over", true);
-        if (offWalking && (offWalkWhy === "qi approach" || offWalkWhy === "qi chase")) offWalkStop("window over");
-        if (qp.walkAt) qpApproach.push({ ms: now - qp.walkAt, h0: qp.h0, h1: offH });
-        weakSince = 0;
-        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, approached: false, walkAt: 0, h0: -1, seenAt: 0, lostAt: 0,
-            qfBuff: 0, qfBurst: 0, qfSwitchAt: 0, qfBurstAt: 0, qfExecWait: 0 });
+        if (offWalking && offWalkWhy === "qi chase") offWalkStop("window over");
+        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, seenAt: 0, lostAt: 0 });
     }
     /** @param {number} now */
     function qpTick(now) {
-        // 真气 empty: read 0, or the read keeps failing while the boss bar is up and the last read was tiny (slowWeak)
+        // 真气 empty: read 0, or the read keeps failing while the boss bar is up and the last read was tiny
         const empty = qiNow === 0 || (qiEmpty >= 2 && qiNow >= 0 && qiNow <= 25 && bossNow > 50);
         qp.zeroRun = empty ? qp.zeroRun + 1 : 0;
         const back = qiEmpty === 0 && qiNow > 4;
@@ -4872,14 +2307,14 @@ export default function (args = {}) {
             qp.cand = now;
             mark("qi", `qiPlan: 真气 empty (read ${qiNow}, miss ${qiEmpty}), 处决 looked for`);
         }
-        // the 处决 button (combat/execute.png, @see slowWeak): every QI_EXEC_EVERY frames while 真气 is low, every
-        // frame once it is due; the button may show before 真气 reads empty (126/127)
+        // the 处决 button: every QI_EXEC_EVERY frames while 真气 is low, every frame once it is due; it may show before
+        // 真气 reads empty
         const low = qp.cand > 0 || (qiNow >= 0 && qiNow <= QP_EXEC_QI_MAX && bossNow > 50);
-        const due = qp.shown > 0 && !qp.tapAt && now - qp.shown >= qiExecAfter;
+        const due = qp.shown > 0 && !qp.tapAt && now - qp.shown >= QP_EXEC_AFTER_MS;
         let ex = false;
         if ((low || qp.shown) && !qp.tapAt && (due || qp.lostAt > 0 || now - qp.lastMatch >= QI_EXEC_EVERY * FRAME_MS)) {
             qp.lastMatch = now;
-            ex = perFrame("exec", (im) => match("combat/execute.png", { image: im, roi: EXEC_ROI, threshold: execThreshold }).hit);
+            ex = perFrame("exec", (im) => match("combat/execute.png", { image: im, roi: EXEC_ROI, threshold: EXEC_TH }).hit);
         }
         if (!qp.shown) {
             if (ex && !back) {
@@ -4887,7 +2322,6 @@ export default function (args = {}) {
                 qp.seenAt = now;
                 qp.boss0 = bossNow;
                 qpS.windows++;
-                weakSince = now;
                 walkOff();
                 mark("qi", `qiPlan: 处决 shows ${qp.cand ? `${now - qp.cand} ms after 真气 empty` : `before 真气 read empty (真气 ${qiNow})`}`);
             } else if (qp.cand && (back || now - qp.cand > QP_CAND_MS)) {
@@ -4899,68 +2333,51 @@ export default function (args = {}) {
         }
         if (back) return qpEnd(now, "真气 back");
         if (now - qp.shown > QP_MAX_MS) return qpEnd(now, "window limit");
-        if (qp.tapAt && now - qp.tapAt > QP_EXEC_SCENE_MS + qiPostMs) return qpEnd(now, "qiPostMs");
+        if (qp.tapAt && now - qp.tapAt > QP_EXEC_SCENE_MS + QP_POST_MS) return qpEnd(now, "qiPostMs");
         if (!qp.tapAt) {
-            const reseen = qiExecFix && ex && qp.lostAt > 0;
-            if (qiExecFix) { // the button gone for QP_LOST_MS: walk in (below), tap it once it shows again
-                if (ex) qp.seenAt = now;
-                else if (!qp.lostAt && now - qp.seenAt >= QP_LOST_MS) {
-                    qp.lostAt = now;
-                    qpS.btnLost++;
-                    mark("qi", `qiPlan: 处决 gone at ${now - qp.shown} ms (last seen ${now - qp.seenAt} ms ago), walking in`);
-                }
+            // the button shows ~2.0-2.4 s and goes when the boss is out of reach: gone for QP_LOST_MS walks us in,
+            // tapped as soon as it shows again
+            const reseen = ex && qp.lostAt > 0;
+            if (ex) qp.seenAt = now;
+            else if (!qp.lostAt && now - qp.seenAt >= QP_LOST_MS) {
+                qp.lostAt = now;
+                qpS.btnLost++;
+                mark("qi", `qiPlan: 处决 gone at ${now - qp.shown} ms (last seen ${now - qp.seenAt} ms ago), walking in`);
             }
-            if ((due || reseen) && ex && !qfExecHeld(now)) {
+            if ((due || reseen) && ex) {
                 if (reseen) qpS.reseenTaps++;
                 qp.tapAt = now;
                 qpS.execs++;
                 qpShownToTap.push(now - qp.shown);
-                if (offHold) offRelease(now, "处决", true); // (qpPick lets go before; a slip lets go here)
+                if (offHold) offRelease(now, "处决", true);
                 if (offWalking) offWalkStop("处决");
                 offAct("execute", "qi", EXECUTE, QP_EXEC_TAP_MS);
                 pressFrame(frameIdx);
-                mark("qi", `qiPlan 处决 tap${observe ? " sim" : ""} ${now - qp.shown} ms after it showed${now - qp.shown > qiExecMax ? " (late)" : ""}${reseen ? ` (back ${now - qp.lostAt} ms after it went)` : ""}`);
+                mark("qi", `qiPlan 处决 tap ${now - qp.shown} ms after it showed${now - qp.shown > QP_EXEC_MAX_MS ? " (late)" : ""}${reseen ? ` (back ${now - qp.lostAt} ms after it went)` : ""}`);
                 return;
             }
-            if (now - qp.shown > qiExecMax && !qp.lateMarked) {
+            if (now - qp.shown > QP_EXEC_MAX_MS && !qp.lateMarked) {
                 qp.lateMarked = true;
-                mark("qi", `qiPlan: 处决 not seen at ${now - qp.shown} ms (qiExecMax ${qiExecMax}), still looked for`);
+                mark("qi", `qiPlan: 处决 not seen at ${now - qp.shown} ms (max ${QP_EXEC_MAX_MS}), still looked for`);
             }
-            if (qp.lostAt) { // qiExecFix: out of its reach, walk in (轻击 when a walk cannot go)
+            if (qp.lostAt) { // out of its reach: walk in (轻击 when a walk cannot go)
                 if (offWalking) return;
                 if (!offHold && offWalk(now, QP_CHASE_MS, "qi chase")) {
                     qpS.chases++;
                     return;
                 }
             }
-            // before qiExecAfter strike; after it wait for the button (covered by effects at times, combat.js 130),
-            // striking again once it is well past its ~3.2 s life
-            if (!due || now - qp.shown > qiExecMax + 300) qpLight(now, false);
+            // before QP_EXEC_AFTER_MS strike; after it wait for the button (covered by effects at times), striking
+            // again once it is well past its ~3.2 s life
+            if (!due || now - qp.shown > QP_EXEC_MAX_MS + 300) qpLight(now, false);
             return;
         }
         if (now - qp.tapAt >= QP_EXEC_SCENE_MS) qpLight(now, true);
     }
 
-    // --- untilCleared: phase one over (combat.js deadCheck / phase2 / cleared)
-    let clrAt = 0, clrLow = 0, clrFull = 0, clrLast = false, clrPhase2 = 0, clrBossPx = -1;
-    /** The boss bar read from its left end (combat.js bossOn): px, 0 when used up, null when not read. */
-    function clrBoss() {
-        const red = color({ ...BOSS_RED, image: img, roi: BOSS_ROI, count: 10, connected: true });
-        if (red.hit) {
-            const boxes = red.results.map((m) => m.box).sort((p, q) => p[0] - q[0]);
-            if (boxes[0][0] <= BOSS_ROI[0] + 2) {
-                let right = boxes[0][0] + boxes[0][2];
-                for (const [x, , w] of boxes.slice(1)) {
-                    if (x - right > CLR_GAP) break;
-                    right = Math.max(right, x + w);
-                }
-                return right - BOSS_ROI[0];
-            }
-        }
-        if (color({ ...CLR_LAST, image: img, roi: CLR_LAST_ROI, count: 48 }).hit) return 0;
-        return null;
-    }
-    /** The quest line reads 「…阶段二」 (combat.js phase2). */
+    // --- phase one over by the quest line (combat.js phase2); the 成功 page is deadCheck's
+    let clrAt = 0, clrPhase2 = 0;
+    /** The quest line reads 「…阶段二」. */
     function clrPhase2Now() {
         const n = (/** @type {Box} */ roi) => {
             const h = color({ ...QUEST_WHITE, image: img, roi, count: 1 });
@@ -4977,35 +2394,22 @@ export default function (args = {}) {
             mark("cleared", "阶段二 in the quest line");
             return true;
         }
-        const b = clrBoss();
-        if (b == null) return false;
-        clrBossPx = b;
-        clrLow = b <= CLR_LOW_PX ? clrLow + 1 : 0;
-        if (clrLow >= CLR_LOW_READS && !clrLast) { // log only (@see untilCleared): bar reads jump (round 566)
-            clrLast = true;
-            mark("clrlow", `boss bar read in its last 10% (${b} px)`);
-        }
-        clrFull = b >= CLR_FULL_PX ? clrFull + 1 : 0;
-        if (clrFull >= CLR_FULL_READS && clrLast && clrFull === CLR_FULL_READS) mark("clrlow", "boss bar read full after its last 10%");
         return false;
     }
-    // ================================================================================================= end v8 offense
+    // ===================================================================================================== end offense
+
     /** @type {{name: string, every: number, at: number, active: () => boolean, run: (now: number) => void}[]} */
     const slowQueue = [
-        { name: "boss", every: slowEvery, at: 0, active: () => true, run: () => { bossNow = bossRead(); } },
-        { name: "mean", every: slowEvery, at: 0, active: () => true, run: () => {
+        { name: "boss", every: SLOW_EVERY, at: 0, active: () => true, run: () => { bossNow = bossRead(); } },
+        { name: "mean", every: SLOW_EVERY, at: 0, active: () => true, run: () => {
             meanNow = readMean(img);
             meanRing.push(meanNow);
             if (meanRing.length > 3) meanRing.shift();
             dark3 = Math.min(...meanRing) < 20 ? 1 : 0;
         } },
-        { name: "curtain", every: curtainEvery, at: 0, active: () => inCurtain || stickSide !== 0 || curtainImg || curtainDark, run: slowCurtain },
-        { name: "flare", every: flareEvery, at: 0, active: () => true, run: slowFlare },
-        { name: "potion", every: slowEvery, at: 0, active: () => !potionSafe && maxPotions > 0 && potionsUsed < maxPotions && hpNow != null && hpNow <= potionHp, run: slowPotion },
-        { name: "closein", every: 100, at: 0, active: () => closeIn, run: closeInWalk },
-        { name: "weak", every: 100, at: 0, active: () => qiAttack && !qiPlan, run: slowWeak }, // v8 offense: qiPlan replaces it
-        { name: "officons", every: OFF_ICON_EVERY, at: 0, active: () => offIconsOn && !hd && !qp.shown, run: offIconsRead }, // v8 offense part 2
-        { name: "dist", every: OFF_DIST_EVERY, at: 0, active: () => distNeeded() && !offWalking, run: offDistRead },
+        { name: "curtain", every: CURTAIN_EVERY, at: 0, active: () => true, run: slowCurtain },
+        { name: "flare", every: FLARE_EVERY, at: 0, active: () => true, run: slowFlare },
+        { name: "officons", every: OFF_ICON_EVERY, at: 0, active: () => !hd && !qp.shown, run: offIconsRead },
     ];
 
     /** The newest stream frame: img's if that is it, else a screenshot of it; a still screen waits NEXT_MS. */
@@ -5017,7 +2421,7 @@ export default function (args = {}) {
             return im;
         }
         const t0 = Date.now();
-        while (frameSeq() <= loopSeq && Date.now() - t0 < nextMs) {
+        while (frameSeq() <= loopSeq && Date.now() - t0 < NEXT_MS) {
             releaseDue();
             sleep(3);
         }
@@ -5026,7 +2430,7 @@ export default function (args = {}) {
         return im;
     }
 
-    log(`dufu ${observe ? "(observe) " : ""}start: ${backModel} + ${model}, ${untilMs} ms, issueLead ${issueLead} ms, potions ${maxPotions}`);
+    log(`dufu start: ${BACK_MODEL} + ${MODEL}, ${untilMs} ms, issueLead ${ISSUE_LEAD_MS} ms, potions ${maxPotions}`);
     let lastFrameStart = Date.now() - 35;
     try {
         for (;;) {
@@ -5043,7 +2447,7 @@ export default function (args = {}) {
                 reason = over;
                 break;
             }
-            if (untilCleared && clearedCheck(now)) { // v8 offense
+            if (clearedCheck(now)) {
                 reason = "cleared";
                 clearedAtMs = now - start;
                 break;
@@ -5052,7 +2456,7 @@ export default function (args = {}) {
             lockCheck(now);
             const dtMs = lastEntryT ? Math.min(300, Math.max(10, now - lastEntryT)) : FRAME_MS;
             const aux = buildAux(dtMs);
-            const b = timed("back", () => infer(backModel, seqRing ? { ...BACK, image: img, history: [{ name: "seq", aux }] } : { ...BACK, image: img }));
+            const b = timed("back", () => infer(BACK_MODEL, { ...BACK, image: img, history: [{ name: "seq", aux }] }));
             if (b.ready && b.output) {
                 ring.push({ f: b.output, aux, t: now });
                 if (ring.length > T) ring.shift();
@@ -5060,12 +2464,10 @@ export default function (args = {}) {
                 frameIdx++;
                 if (ring.length >= MIN_RING) {
                     headCalls++;
-                    const h = timed("head", () => seqRing
-                        ? infer(model, { post: "none", extra: [{ name: "seq", dim: [1, T, D], ring: true }] })
-                        : infer(model, { ...BACK, image: img, extra: [{ name: "seq", dim: [1, T, D], data: seqData() }] }));
+                    const h = timed("head", () => infer(MODEL, { post: "none", extra: [{ name: "seq", dim: [1, T, D], ring: true }] }));
                     if (h.ready && h.output) {
                         ready++;
-                        if (seqRing) checkRing(h);
+                        checkRing(h);
                         decode(h.output);
                     }
                 }
@@ -5073,20 +2475,14 @@ export default function (args = {}) {
             if (pred) {
                 const now2 = Date.now();
                 syncPlan(now2);
-                if (offOn) offenseGuard(now2); // v8 offense
-                if (spinGuard) spinTick(Date.now()); // v11: the slot's suppression, the two side dodges, the disarms
-                if (hitEscape) hitEscDodgeTick(now2); // v8 hit chain
+                offenseGuard(now2);
                 executePlan(now2);
-                if (hitEscape) hitEscParryTick(Date.now());
-                if (earlyRepress) earlyRepressTick(Date.now());
-                if (curtainBeatEntry) beatEntryTick(Date.now()); // v8: before the tick (an entry beat can't be due yet)
-                if (curtainFlank) flankTick(Date.now()); // v10: the curtain's rising edge / the forward run / the re-lock
-                if (curtainTimed) sweepTick(Date.now());
-                if (failEscape) failEscapeTick(Date.now());
+                hitEscTick(Date.now());
+                sweepTick(Date.now());
                 expire(now2);
-                if (potionConfirm) potionTick(Date.now()); // v9 potion
-                if (potionSafe) slowPotion(Date.now()); // v9: every frame (cheap), safe windows are short
-                if (offOn) offenseTick(Date.now()); // v8 offense
+                potionTick(Date.now());
+                planPotion(Date.now());
+                offenseTick(Date.now());
                 predMark(now2);
             }
             for (const s of slowQueue) {
@@ -5108,64 +2504,43 @@ export default function (args = {}) {
                 s.at = nowS;
                 s.run(nowS);
             }
-            telTick(Date.now());
             tMs.loop.push(Date.now() - t0);
             looks++;
             if (Date.now() >= until) break;
         }
     } finally {
-        if (!observe) {
-            releaseDue(true);
-            tup(0);
-            if (offTouched) touch.up(offContact); // v8 offense
-            if (offWalking) strideF(0);
-        }
+        releaseDue(true);
+        tup(0);
+        if (offTouched) touch.up(OFF_CONTACT);
+        if (offWalking) strideF(0);
     }
+    if (qp.shown) qpEnd(Date.now(), "run over");
+    if (foFrom) foEnd("run over");
     const backS = stats(tMs.back), headS = stats(tMs.head), readS = stats(tMs.reads), loopS = stats(tMs.loop);
     const readyPct = headCalls ? Math.round((ready / headCalls) * 1000) / 10 : 0;
     log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, halt ${halts} (${haltDowns} downs held back, ${pageHeld} on the page), ` +
-        `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, weak ${weakWindows} (${weakLights} light, ${weakExecs} exec), blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
-    log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}`);
-    if (seqRing) log(`seqRing: ${headCalls} head calls, ringBad ${ringBad} (device ring vs own ${ringBad ? "MISMATCH" : "ok"})`);
-    const v8On = flareMode !== "dodge" || args.futDodgeLead != null || curtainTimed || curtainKeepParry || flare2 || failEscape || flareHoldFut || chainOn || flareSplit || flareThreat || grabParry || grabContactDodge || grabClass;
-    if (flareHoldFut) foEnd("run over");
-    const v8 = v8On ? { flareMode, tellParries, flare2s, timedSweeps, failEscapes, ...(grabParry ? { grab: grabS } : {}), ...(flareHoldFut ? { holdFut: foS } : {}), ...(chainOn ? { chain: hcS } : {}),
-        ...(flareSplit ? { split: fsS } : {}), ...(flareThreat ? { threat: ftS } : {}), ...(grabContactDodge ? { grabContact: gcS } : {}), ...(grabClass ? { grabClass: gclsS } : {}),
-        ...(curtainBeatEntry ? { beatEntry: beatS } : {}) } : undefined;
-    if (v8) log(`v8: ${JSON.stringify(v8)}`);
-    // v8 offense: only when one of its switches is on (the default return is unchanged)
-    if (qiPlan && qp.shown) qpEnd(Date.now(), "run over");
-    const off = offOn ? {
-        ...(offGate ? { gate: offSummary() } : {}),
-        ...(qiPlan ? { qi: { ...qpS, execShownToTapMs: qpShownToTap, bossDropPx: qpBossDrop, ...(qiSkill ? { skills: qpSkills } : {}),
-            ...(qiFront ? { front: qfS } : {}),
-            ...(qiApproach ? { approach: qpApproach } : {}) } } : {}),
-        ...(offActOn || qiPlan || offOkGate || oldWindow || offP6 ? { act: offActSummary() } : {}),
-        ...(untilCleared ? { bossLeftPx: clrBossPx, bossLast: clrLast } : {}),
-        ...(offOkGate || oldWindow ? { near: okSummary() } : {}),
-        ...(offP6 ? { p6: p6S } : {}),
-    } : undefined;
-    if (off) log(`off: ${JSON.stringify(off)}`);
-    // v9 potion: only when one of its switches is on
-    const v9On = potionSafe || potionConfirm || potionCdMs > 0;
-    const potion = v9On ? { taps: presses.potion, healed: potionsUsed, ...potS } : undefined;
-    if (potion) log(`potion: ${JSON.stringify(potion)}`);
-    // v10 curtainFlank: only when the switch is on (the default return is unchanged)
-    const flank = curtainFlank ? { ...flankS } : undefined;
-    if (flank) log(`flank: ${JSON.stringify(flank)}`);
-    // v11 spinGuard: only when the switch is on (the default return is unchanged)
-    const spin = spinGuard ? { ...spinS } : undefined;
-    if (spin) log(`spin: ${JSON.stringify(spin)}`);
+        `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
+    log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}, ringBad ${ringBad}`);
+    const defense = { timedSweeps, holdFut: foS, split: fsS, chain: hcS };
+    const potion = { taps: presses.potion, healed: potionsUsed, ...potS };
+    const sorted = [...offHoldS.heldMs].sort((a, b) => a - b);
+    const off = {
+        qi: { ...qpS, execShownToTapMs: qpShownToTap, bossDropPx: qpBossDrop },
+        act: { n: offActS.n, hit1s: offActS.hit1s, dropPx: offActS.dropPx, dropN: offActS.dropN, stops: offStopWhy, sets: offSetS,
+               holds: { n: offHoldS.n, full: offHoldS.full, early: offHoldS.early, heldMsMedian: sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0 },
+               walks: offWalkS },
+        near: { fightMin: Math.round(okS.evalMs / 600) / 100, gateFrac: okS.evalMs ? Math.round((okS.openMs / okS.evalMs) * 1000) / 1000 : 0,
+                farFrac: okS.evalMs ? Math.round((okS.farMs / okS.evalMs) * 1000) / 1000 : 0, opens: okS.opens, closeWhy: okS.closeWhy,
+                farByWhiff: okS.farByWhiff, closeIns: okS.closeIns, switchPend: okS.switchPend, chargeDefers: okS.chargeDefers, res: okS.res, byAct: okS.byAct },
+        p6: p6S,
+    };
+    log(`defense: ${JSON.stringify(defense)}`);
+    log(`potion: ${JSON.stringify(potion)}`);
+    log(`off: ${JSON.stringify(off)}`);
     return {
-        ...(seqRing ? { seqRing: true, ringBad } : {}),
-        ...(v8 ? { v8 } : {}),
-        ...(off ? { off } : {}),
-        ...(potion ? { potion } : {}),
-        ...(flank ? { flank } : {}),
-        ...(spin ? { spin } : {}),
-        reason, ...(reason === "cleared" ? { clearedAtMs } : {}), observe, looks, ready, headCalls, readyPct,
-        presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, holds, holdPresses, insurePresses,
-        rerepresses, weakWindows, weakLights, weakExecs,
+        reason, ...(reason === "cleared" ? { clearedAtMs } : {}), looks, ready, headCalls, readyPct, ringBad,
+        presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, holds, holdPresses, insurePresses, rerepresses,
+        defense, potion, off,
         ms: { back: backS, head: headS, reads: readS, loop: loopS },
         start, events,
     };

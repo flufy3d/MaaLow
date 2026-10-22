@@ -1,6 +1,5 @@
-// The screen reads (combat.js / f6.py ROIs and masks) and their colour helpers, moved out of dufu.js verbatim in the
-// stage-1 split (2026-10-19). Every read takes the frame's Image explicitly (the closure's current `img`); nothing
-// here touches the scheduler's state.
+// dufu.js's screen reads (combat.js ROIs and masks) and their colour helpers. Every read takes the frame's Image
+// explicitly; nothing here touches the scheduler's state.
 /** @type {Box} */ export const HP_ROI = [405, 681, 280, 5];
 export const HP_LEFT = 415, HP_FULL = 669, HP_GAP = 12, HP_RED_MAX = 0.45;
 export const HP_GREY = { lower: [0, 0, 140], upper: [180, 45, 255], method: 40 };

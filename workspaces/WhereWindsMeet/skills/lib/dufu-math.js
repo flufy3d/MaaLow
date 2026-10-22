@@ -1,6 +1,4 @@
-// The head's pure decoding math (softmax / argmax / headOut / futStats), moved out of dufu.js verbatim in the
-// stage-1 split (2026-10-19). No scheduler state: the arguments carry everything in; the bins come from
-// lib/dufu-labels.js.
+// The head's pure decoding math (softmax / argmax / headOut / futStats); the bins come from lib/dufu-labels.js.
 import { FUT_CENTER } from "./dufu-labels.js";
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
