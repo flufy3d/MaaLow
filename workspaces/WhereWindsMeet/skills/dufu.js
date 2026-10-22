@@ -1271,9 +1271,18 @@ export default function (args = {}) {
         step(POTION, PREP_USE_MS); // the slot now holds the poison
         step(ITEM_OPEN, PREP_MENU_MS);
         step(ITEM_PICK, PREP_MENU_MS); // the potion took the poison's place
+        // 增益 is 陌刀's (横刀 has 爆发 there): switch first when the round starts on 横刀
+        img = shot();
+        let w = offWeaponNow();
+        for (let i = 0; i < 2 && w === "hengdao"; i++) {
+            step(SWITCH, SWITCH_WAIT_MS);
+            img = shot();
+            w = offWeaponNow();
+        }
+        if (w !== "modao") mark("prep", `weapon ${w ?? "unknown"}: 增益 may be the wrong button`);
         step(BUFF, PREP_USE_MS);
         step(QISHU, PREP_USE_MS);
-        mark("prep", `poison + 增益 + 伤害 in ${Date.now() - start} ms`);
+        mark("prep", `poison + 增益 + 伤害 (${w ?? "unknown"}) in ${Date.now() - start} ms`);
     }
 
     // --- round start: walk in, in short bursts, until the boss bar shows
