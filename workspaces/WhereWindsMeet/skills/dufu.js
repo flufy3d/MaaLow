@@ -148,7 +148,7 @@ const OFF_DROP_PX = 1.5, OFF_DROP_WIN_MS = 1200, OFF_DROP_MAX_PX = 80, OFF_BOSS_
 const OFF_NEAR_OK_MS = 5000, OFF_NEAR_DROP_MS = 3000, OFF_WHIFF_FAR = 2, OFF_FAR_MS = 8000, OFF_FAR_PUSH_MS = 450;
 const HLIGHT_HOLD_MS = 800; // 横刀 轻击 held: 轻蓄力, out on the lift (the ring fills 0.4-0.75 s; probe 2026-10-23)
 const RANSHI_END_MS = 2500; // 燃此魂 runs on until its button is tapped again (ends it with a slash; teacher, 2026-10-23)
-const OFF_HOT_HOLD_MS = 1800, OFF_LIGHT_MS = 420;
+const OFF_HOT_HOLD_MS = 1800;
 const OFF_SWITCH_PEND_MS = 1500, OFF_FRESH_OK_MS = 1500, OFF_COMMIT_PAUSE_MS = 3000, OFF_SKILL_PAUSE_MS = 2500;
 const OFF_SLASH_MS = 500, OFF_EVAL_MS = 1200, OFF_SET_RETRY_MS = 5000;
 // how long after an action starts a 卸势 cannot cut it (E0 dummy test, 2026-10-16)
@@ -1920,7 +1920,7 @@ export default function (args = {}) {
     /** @type {{t: number, b: number}[]} */ const bossRing = [];
     let lastDropAt = 0, okOpenAt = 0, okTickAt = 0, okWhiff = 0, okFarByWhiff = false, okWhiffAt = 0, okFarSince = 0;
     let ranshiAt = 0; // 燃此魂 out, its ending tap still due
-    let okSwitchPend = 0, okSwitchAt = 0, okLastLight = 0, okDeferAt = 0;
+    let okSwitchPend = 0, okSwitchAt = 0, okDeferAt = 0;
     const DMG_ACTS = new Set(["light", "hlight", "charge", "dash", "strike", "burst", "farRanshi", "ranshiEnd", "farDash", "qishu", "follow"]);
     /** @typedef {{n: number, hit: number, px: number}} OkRes */
     const okS = {
@@ -2083,11 +2083,8 @@ export default function (args = {}) {
             offBuffSeen = false;
             return;
         }
-        if (w === "hengdao" && okCan("hlight", now)) return okCharge("hlight", HLIGHT_HOLD_MS, LIGHT);
-        if (now - okLastLight >= OFF_LIGHT_MS && okCan("light", now)) {
-            offAct("light", "ok", LIGHT);
-            okLastLight = now;
-        }
+        // the filler is 横刀's only: 陌刀 轻击 does little (teacher, 2026-10-23); 陌刀 waits for the switch back
+        if (w === "hengdao" && okCan("hlight", now)) okCharge("hlight", HLIGHT_HOLD_MS, LIGHT);
     }
     /** Per frame (not in a 气竭 window): far state, the set, the gate, the action. @param {number} now */
     function okTick(now) {
@@ -2319,7 +2316,7 @@ export default function (args = {}) {
     }
 
     // --- 气竭: the window clocked from the 处决 button's first sighting (@see QP_EXEC_AFTER_MS)
-    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, seenAt: 0, lostAt: 0 };
+    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, switchAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, seenAt: 0, lostAt: 0 };
     const qpS = { windows: 0, fakes: 0, execs: 0, lost: 0, lights: 0, postLights: 0, futDrops: 0, preDrops: 0, btnLost: 0, chases: 0, reseenTaps: 0 };
     /** @type {number[]} */ const qpShownToTap = [];
     /** @type {number[]} */ const qpBossDrop = [];
@@ -2329,9 +2326,20 @@ export default function (args = {}) {
         if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil || potionDue()) return;
         if (plan.some((x) => !x.pressedAt && x.atMs - now < QP_PENDING_MS)) return; // a tell dodge is about to go
         if (now - qp.lastLight < QP_LIGHT_MS) return;
+        // 陌刀: switch to 横刀 first (once a window), no 陌刀 轻击 (teacher, 2026-10-23)
+        const w = offWeaponNow() ?? offW;
+        if (w === "modao") {
+            if (qp.switchAt) return;
+            qp.switchAt = now;
+            offAct("switch", "qi", SWITCH);
+            offBusyUntil = now + SWITCH_WAIT_MS;
+            mark("qi", `qiPlan switch to 横刀 +${now - qp.shown} ms`);
+            return;
+        }
+        if (w) offW = w;
         qp.lastLight = now;
         // 横刀: 轻蓄力 while one still fits before the 处决 tap (teacher, 2026-10-23), else plain 轻击
-        if (!post && offW === "hengdao" && now - qp.shown + HLIGHT_HOLD_MS + OFF_SLASH_MS <= QP_EXEC_AFTER_MS) {
+        if (!post && w === "hengdao" && now - qp.shown + HLIGHT_HOLD_MS + OFF_SLASH_MS <= QP_EXEC_AFTER_MS) {
             offStartCharge("hlight", "qi", HLIGHT_HOLD_MS, LIGHT);
             qp.lights++;
             mark("qi", `qiPlan 轻蓄力 +${now - qp.shown} ms`);
@@ -2354,7 +2362,7 @@ export default function (args = {}) {
             `${qp.tapAt ? `at ${qp.tapAt - qp.shown} ms` : "not tapped"}, boss ${qp.boss0} -> ${bossNow} px, ${qp.futDrops} fut items dropped`);
         if (offHold && offHold.src === "qi") offRelease(now, "window over", true);
         if (offWalking && offWalkWhy === "qi chase") offWalkStop("window over");
-        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, seenAt: 0, lostAt: 0 });
+        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, switchAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, seenAt: 0, lostAt: 0 });
     }
     /** @param {number} now */
     function qpTick(now) {
