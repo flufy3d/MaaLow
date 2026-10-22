@@ -134,8 +134,8 @@ const POTION_SETTLE_MS = 2500, POTION_WAIT_MAX_MS = 2500;
 // 气竭: 真气 read empty twice AND the 处决 button seen (it can show first). From its first sighting: 轻击 every
 //   QP_LIGHT_MS until QP_EXEC_AFTER_MS, then 处决 when seen (the unpressed plan items go, the boss strikes nothing);
 //   a button gone for QP_LOST_MS walks us in and is tapped as soon as it shows again; 轻击 until 真气 is back.
-// 奇术 (箫吟千浪) only in the opening before any contact (after an ok its long recovery ate blows; 轻蓄力 / the
-//   follow-up pay better there, teacher 2026-10-23); a 卸势 cuts it only after
+// 奇术 (箫吟千浪) only in the opening before any contact and at a 气竭 window's start (the boss strikes nothing there;
+//   after an ok its long recovery ate blows, 轻蓄力 / the follow-up pay better, teacher 2026-10-23); a 卸势 cuts it only after
 //   ~2 s, so the horizon must be clear that long. Out only once the cooldown shows; else retried.
 // The 横刀 ok follow-up: a 横刀 ok turns 重击 into the blue 爆发 disc for ~3 s; tap it FOLLOW_DELAY_MS after the ok
 //   (sooner is swallowed); the rest of the offense waits for it meanwhile.
@@ -2192,10 +2192,11 @@ export default function (args = {}) {
         if (plan.some((it) => !it.pressedAt && it.atMs - now <= nc + OFF_ABORT_MS)) return "plan";
         return "";
     }
-    /** Where 奇术 may go now ("" = nowhere): the opening (the bar up, no contact yet). @param {number} now */
+    /** Where 奇术 may go now ("" = nowhere): the opening (the bar up, no contact yet) or a 气竭 window's start (its
+     * recovery over before the 处决 tap). @param {number} now */
     function qsWhere(now) {
         if (!qsBossAt && bossNow > 50) qsBossAt = now;
-        if (qp.shown) return "";
+        if (qp.shown) return !qp.tapAt && now - qp.shown + QS_NO_CANCEL_MS <= QP_EXEC_AFTER_MS ? "qi" : "";
         if (qsOpenOk) {
             if (lastHitAt || lastOkAt || (qsBossAt && now - qsBossAt > QS_OPEN_MS)) qsOpenOk = false;
             else if (qsBossAt) return "open";
@@ -2237,7 +2238,7 @@ export default function (args = {}) {
         if (!qsSoon && now - qsRetryAt > QS_RETRY_MS) qsSoon = true; // a long while on: a retry again
         const where = qsWhere(now);
         if (!where || !qsLitRead(now)) return;
-        const why = p6Busy(now) || p6Clear(now, QS_NO_CANCEL_MS, QS_TH);
+        const why = p6Busy(now) || (where === "qi" ? "" : p6Clear(now, QS_NO_CANCEL_MS, QS_TH));
         if (why) {
             inc(p6S.qishuPutOff, `${where}:${why}`);
             if (now - qsPutOffAt > 1000) mark("off", `奇术 put off (${where}: ${why}) ${offState()}`);
