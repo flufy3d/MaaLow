@@ -38,6 +38,8 @@ const MORE_X = 1040; // and the ▶ right of it
 /** @type {Point} */ const SHORT_CANCEL = [80, 459];
 /** @type {Point} */ const SHORT_GO = [950, 459]; // 确认前往
 /** @type {Point} */ const BACK_X_Y = [1040, 37]; // the « on the map, challenge pages and the menu
+/** @type {Box} */ const DOWN_ROI = [930, 650, 140, 60]; // 重伤: 疗伤 at the bottom right (combat.js)
+const MAX_DOWNS = 3; // lost fights in one run before giving up
 
 /** Fights only, no chest (teacher, 2026-10-10: out of 心力, fight anyway to see the combat). */
 let practice = false;
@@ -527,6 +529,7 @@ export default function (args = {}) {
     if (args.probe) return { potions: potionsLeft(), health: health(screenshot()), stones: stones() };
     if (args.homeOnly) return home();
     const report = [];
+    let downs = 0; // fights lost (疗伤 and again), at most MAX_DOWNS in a run
     const stopped = (e) => {
         if (!(e instanceof OutOfStamina)) throw e;
         log("out of 心力: done");
@@ -544,6 +547,17 @@ export default function (args = {}) {
         const t0 = Date.now();
         const fight = args.chest && i === 1 ? { reason: "boss gone" } : runSkill("combat", { boss: true, hp: args.hp ?? 0.7, ms: 900_000 });
         log(`fight ${i}: ${JSON.stringify(fight)}`);
+        // 重伤: 疗伤 revives in the arena with full health and potions, the boss back at full; fight it again (teacher,
+        // 2026-10-23: losing happens, the skill should carry on by itself). No 心力 is spent on a lost fight.
+        if ((fight?.reason === "down" || fight?.reason === "dead") && downs < MAX_DOWNS) {
+            downs++;
+            if (!tapWhen("down_heal.png", DOWN_ROI, 20_000)) throw new Error(`fight ${i} lost: no 疗伤`);
+            log(`fight ${i} lost (${fight.reason}): 疗伤, again (${downs}/${MAX_DOWNS})`);
+            landed("疗伤");
+            report.push({ fight: i, s: Math.round((Date.now() - t0) / 1000), ...fight });
+            i--;
+            continue;
+        }
         if (fight?.reason !== "boss gone") throw new Error(`fight ${i} not won: ${fight?.reason}`);
         const hp = health(screenshot());
         const potions = potionsAfter(fight?.potions ?? 0);
