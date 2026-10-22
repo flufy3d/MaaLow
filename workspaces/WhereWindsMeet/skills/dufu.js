@@ -1270,18 +1270,23 @@ export default function (args = {}) {
             releaseDue(true);
             sleep(ms);
         };
-        step(ITEM_OPEN, PREP_MENU_MS);
-        step(ITEM_PICK, PREP_MENU_MS);
-        step(POTION, PREP_USE_MS); // the slot now holds the poison
-        // the potion takes the poison's place; checked, it once stayed poison and the drink never came
+        // the pick swaps with the slot's item; checked each time (a swap once failed and the drinks were poison)
         const potionIn = () => color({ ...ICON_WHITE, image: shot(), roi: SLOT_ROI, count: SLOT_POTION_PX }).hit;
-        let back = false;
-        for (let i = 0; i < PREP_SWAP_TRIES && !back; i++) {
-            step(ITEM_OPEN, PREP_MENU_MS);
-            step(ITEM_PICK, PREP_MENU_MS);
-            back = potionIn();
-            if (!back) mark("prep", `potion not back in the slot (try ${i + 1})`);
-        }
+        /** Swap until the slot holds the potion (want) or not; false when it never did. @param {boolean} want @param {string} what */
+        const swapTo = (want, what) => {
+            for (let i = 0; i < PREP_SWAP_TRIES; i++) {
+                step(ITEM_OPEN, PREP_MENU_MS);
+                step(ITEM_PICK, PREP_MENU_MS);
+                if (potionIn() === want) return true;
+                mark("prep", `${what} not in the slot (try ${i + 1})`);
+            }
+            return false;
+        };
+        // a round may start with the poison still in the slot (the last one's swap back failed)
+        if (!potionIn() && !swapTo(true, "potion")) mark("prep", "no potion in the slot at the start");
+        const poisoned = swapTo(false, "poison");
+        if (poisoned) step(POTION, PREP_USE_MS);
+        const back = !poisoned || swapTo(true, "potion");
         // 增益 is 陌刀's (横刀 has 爆发 there): switch first when the round starts on 横刀
         img = shot();
         let w = offWeaponNow();
@@ -1293,7 +1298,7 @@ export default function (args = {}) {
         if (w !== "modao") mark("prep", `weapon ${w ?? "unknown"}: 增益 may be the wrong button`);
         step(BUFF, PREP_USE_MS);
         step(QISHU, PREP_USE_MS);
-        mark("prep", `poison + ${back ? "potion back" : "POTION NOT BACK"} + 增益 + 伤害 (${w ?? "unknown"}) in ${Date.now() - start} ms`);
+        mark("prep", `${poisoned ? "poison" : "NO POISON"} + ${back ? "potion back" : "POTION NOT BACK"} + 增益 + 伤害 (${w ?? "unknown"}) in ${Date.now() - start} ms`);
     }
 
     // --- round start: walk in, in short bursts, until the boss bar shows
