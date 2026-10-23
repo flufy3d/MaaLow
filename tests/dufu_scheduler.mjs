@@ -139,6 +139,23 @@ const tests = {
             assert.ok(Math.abs(late[i] - t - 3 * frameMs) <= frameMs + 1, `late ${late[i]} vs ${t}`);
         });
     },
+    "phase 2 leadF presses later and secondTapF taps once more without an ok"() {
+        const downs = (a) => run({ phase: 2, ...a }, {}).touches.filter((t) => t.op === "down" && t.id === 1).map((t) => t.at);
+        const base = downs({}), later = downs({ leadF: 11 });
+        assert.ok(base.length >= 2 && later.length === base.length, `${base} / ${later}`);
+        base.forEach((t, i) => assert.ok(Math.abs(later[i] - t - 3 * frameMs) <= frameMs + 1, `leadF: ${later[i]} vs ${t}`));
+        // a blow that keeps showing ~10 f ahead for 1 s (lands later than believed): one more tap 13 f after the first
+        // believed at 1500; from 1400 the head keeps it ~4 f ahead (the blow lands later): the second tap 12 f after the press
+        const fut = (t) => t < 1400 ? (t >= 900 ? 1500 : null) : t < 2000 ? t + 4 * frameMs : null;
+        const slow = (a) => run({ phase: 2, ms: 2500, ...a }, { contacts: [], futFn: fut });
+        const marks = (r) => r.result.events.filter((e) => e[2] === "re-press" && e[3].includes("second tap +12f"));
+        assert.equal(marks(slow({})).length, 0);
+        const two = slow({ secondTapF: 12 });
+        assert.ok(marks(two).length >= 1, "no second tap");
+        const at = marks(two)[0][1], taps = two.touches.filter((t) => t.op === "down" && t.id === 1).map((t) => t.at);
+        assert.ok(taps.some((t) => t >= at && t - at <= frameMs + 1), `the second tap did not go at once: ${taps} / ${at}`);
+        assert.deepEqual(run({ ...{}, secondTapF: 13, leadF: 11 }, {}).touches, run({}, {}).touches, "phase 1 changed");
+    },
     "phase 2 parries the def head's dodges"() {
         const { result, dodges, touches } = run({ phase: 2 }, { def: 2 });
         assert.equal(dodges.length, 0, `phase 2 dodged: ${dodges.map((d) => d.at)}`);

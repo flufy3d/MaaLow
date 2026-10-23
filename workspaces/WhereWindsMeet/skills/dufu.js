@@ -296,10 +296,17 @@ export default function (args = {}) {
     // once and is pressed that much earlier (+) / later (-) than ISSUE_LEAD_MS, re-arms included; the press mark
     // carries it ("jit+3f") for the offline timing study of the phase-2 big red moves (teacher: 卸势 at their own time)
     const jitter = Array.isArray(args.parryJitter) ? args.parryJitter : null;
+    // phase 2 timing (data/tmp/p2timing, 89 rounds): a 卸势 lands 3-9 f before the contact (ok .82-.97), 11-13 f only
+    // .45, >= 16 f ~0; 42% of the last presses were >= 10 f early. args.leadF (phase 2): the fut items' target lead in
+    // frames (default ISSUE_LEAD_MS = 14). args.secondTapF (phase 2): a fut 卸势 with no ok / hit after it is pressed
+    // once more this many frames after its press while the head still shows a contact (a late-landing blow; +12..14 f
+    // puts 56-66% of them in the window), once per item.
+    const FUT_LEAD_MS = phase === 2 && typeof args.leadF === "number" ? Math.round(args.leadF * FRAME_MS) : ISSUE_LEAD_MS;
+    const secondTapF = phase === 2 && typeof args.secondTapF === "number" ? args.secondTapF : 0;
     /** @returns {number} */
     const drawJit = () => (jitter ? jitter[0] + Math.floor(Math.random() * (jitter[1] - jitter[0] + 1)) : 0);
     /** The press lead of a fut item. @param {PlanItem | {jit?: number}} it */
-    const leadOf = (it) => ISSUE_LEAD_MS + (it.jit ?? 0) * FRAME_MS;
+    const leadOf = (it) => FUT_LEAD_MS + (it.jit ?? 0) * FRAME_MS;
     const defDodgeP = phase === 2 && typeof args.defDodgeP === "number" ? args.defDodgeP : null; // @see defAction
     // args.flare2 true: phase 2 dodges a flare tell at its first report (flare2Tick); off by default: A/B r078-r093 8 vs 8
     // rounds, hits/min 9.9 vs 10.05, median life 109 vs 119 s (no difference), so phase 1 anchored dodges stay
@@ -737,6 +744,16 @@ export default function (args = {}) {
         // is quiet until the arm's real contact approaches (r241 press@196 c=210: S1 0.04-0.18 until t225, real
         // contact 243). The estimate may still be 30-45 f out here; re-pressing lands at c'-14.
         const main0 = plan.find((x) => x.k === k && x.src === "fut" && !x.branch);
+        if (secondTapF && main0 && main0.kind === "parry" && main0.pressedAt && !main0.repressed && pred
+            && now - main0.pressedAt >= secondTapF * FRAME_MS
+            && lastHitAt < main0.pressedAt && lastOkAt < main0.pressedAt) {
+            const st2 = futStats(pred.fut[k]);
+            if (st2.none < 0.65 && st2.sum > 0.05) {
+                // press now: the item's lead from now (atMs = now)
+                rearmItem(main0, "parry", now + leadOf(main0), `second tap +${secondTapF}f`);
+                return;
+            }
+        }
         if (main0 && main0.pressedAt && !main0.repressed && pred
             && now - main0.pressedAt >= REPRESS_GAP_FRAMES * FRAME_MS && now > main0.cMs + 3 * FRAME_MS
             && lastHitAt < main0.pressedAt - FRAME_MS && lastOkAt < main0.pressedAt - FRAME_MS) {
@@ -779,7 +796,7 @@ export default function (args = {}) {
                 lastAvoidDropAt = now;
             }
             const jit = drawJit();
-            addItem({ kind: t.kind, k, src: "fut", cMs: t.cMs, atMs: t.cMs - ISSUE_LEAD_MS - jit * FRAME_MS, untilMs: t.cMs + MISS_GRACE_MS, jit, why: `pred k${k}${t.covers ? " covers both" : ""}` });
+            addItem({ kind: t.kind, k, src: "fut", cMs: t.cMs, atMs: t.cMs - FUT_LEAD_MS - jit * FRAME_MS, untilMs: t.cMs + MISS_GRACE_MS, jit, why: `pred k${k}${t.covers ? " covers both" : ""}` });
         } else if (!main.committed && !main.pressedAt) {
             if (Math.abs(t.cMs - main.cMs) > REVISE_MOVE_MS || t.kind !== main.kind) {
                 revisions++;
@@ -802,7 +819,7 @@ export default function (args = {}) {
         if (t.branchMs) {
             if (!br) {
                 const jit = drawJit();
-                addItem({ kind: t.kind, k, src: "fut", branch: true, cMs: t.branchMs, atMs: t.branchMs - ISSUE_LEAD_MS - jit * FRAME_MS, untilMs: t.branchMs + MISS_GRACE_MS, t1Ms: t.cMs, jit, why: "branch (bimodal)" });
+                addItem({ kind: t.kind, k, src: "fut", branch: true, cMs: t.branchMs, atMs: t.branchMs - FUT_LEAD_MS - jit * FRAME_MS, untilMs: t.branchMs + MISS_GRACE_MS, t1Ms: t.cMs, jit, why: "branch (bimodal)" });
             }
             else if (!br.pressedAt) {
                 br.cMs = t.branchMs;
