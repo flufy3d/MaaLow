@@ -251,6 +251,7 @@ const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
 /** @type {Box} */ const RETRY_ROI = [945, 668, 95, 24];
 const RETRY_WHITE = { lower: [0, 0, 170], upper: [180, 60, 255], method: 40 };
 const DEAD_MS = 500;
+const BOSS_GONE_MS = 10_000; // phase 2: no boss bar this long after it showed = the arena restarted (@see deadCheck)
 // phase one cleared (2.3): the 成功 page (「成功」 + 再次演练 (868,679) / 演练下一阶段 (993,679)). 演练下一阶段 is a white
 // button inside RETRY_ROI and the page is grey enough for GREY, so deadCheck looks for it first. Both templates score
 // >= 0.997 on the page, <= 0.30 on the 重伤 page and <= 0.70 elsewhere in 26 recordings: both must match, on two checks
@@ -1307,7 +1308,7 @@ export default function (args = {}) {
     }
 
     // --- the round is over (重伤): the 再次训练 panel, or a long all-grey screen (@see combat.js)
-    let deadAt = 0, deadSeen = 0, greySeen = 0, wonSeen = 0;
+    let deadAt = 0, deadSeen = 0, greySeen = 0, wonSeen = 0, bossGoneAt = 0;
     /** @type {number | null} ms since start when phase one was seen cleared (reason "cleared") */
     let clearedAtMs = null;
     /** @param {number} now @returns {"dead" | "cleared" | null} */
@@ -1345,6 +1346,16 @@ export default function (args = {}) {
         if (greySeen >= 6) {
             mark("dead", "the round is over (grey screen)");
             return "dead";
+        }
+        // phase 2: a death can skip both reads and the arena restarts at its gate (r128: down at ~170 s, then 12 min
+        // idle): the boss bar gone BOSS_GONE_MS after it was seen ends the run
+        if (phase === 2 && bossSeen) {
+            if (bossNow > 50) bossGoneAt = 0;
+            else if (!bossGoneAt) bossGoneAt = now;
+            else if (now - bossGoneAt >= BOSS_GONE_MS) {
+                mark("dead", `the round is over (boss bar gone ${BOSS_GONE_MS / 1000} s)`);
+                return "dead";
+            }
         }
         return null;
     }
