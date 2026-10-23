@@ -14,7 +14,8 @@ globalThis.log = () => {};
 globalThis.remaining = () => 3_600_000;
 globalThis.event = (name, data) => { sent.push({ name, data: JSON.parse(JSON.stringify(data)) }); };
 globalThis.frame = () => ({ seq: Math.floor(time / frameMs) });
-globalThis.screenshot = () => ({ seq: Math.floor(time / frameMs) });
+// cfg.ageMs: the frame's age (img.time - img.age_ms = its capture time), only when set (the other tests keep {seq})
+globalThis.screenshot = () => ({ seq: Math.floor(time / frameMs), ...(cfg.ageMs != null ? { time: epoch + time, age_ms: cfg.ageMs } : {}) });
 globalThis.match = (template) => ({ hit: !!cfg.match?.(template, time) });
 globalThis.touch = {
     down(p, id) {
@@ -28,8 +29,17 @@ globalThis.touch = {
     },
     up(id) { touches.push({ op: "up", id, at: time }); },
 };
-globalThis.color = ({ roi: [x, y], lower }) => {
+globalThis.color = ({ roi: [x, y, w, h], lower }) => {
     let box;
+    // the phase-2 red line (redLine's reads): cfg.redLine(time) = the line's row y, or null. A thin component in each
+    // column, a full strip around it, a full 3-row band; the 12-row side bands stay empty.
+    const ly = cfg.redLine?.(time);
+    if (ly != null && Array.isArray(lower[0]) && lower[0][2] === 200) {
+        if (w === 4 && y === 152) return { hit: true, results: [{ box: [x, ly - 2, 4, 4], count: 16 }] };
+        if (h === 4 && y === ly - 2) return { hit: true, results: [{ box: [x, y, w, 4], count: 4 * w }] };
+        if (w === 780 && h === 3 && y === ly - 1) return { hit: true, results: [{ box: [150, y, 780, 3], count: 3 * 700 }] };
+        return { hit: false, results: [] };
+    }
     if (y === 681 && x === 405) {
         // The HP stub: cfg.hp(time) is either one ratio (both masks agree) or { grey, red } so the health() tests
         // can feed the low-HP disagreement seen at 737 f5970-6051. A null side is an unreadable bar.
@@ -277,6 +287,60 @@ const tests = {
         }
         const aux = run({ trace: true }).sent.flatMap((e) => e.data.rows);
         assert.ok(aux.every((x) => x.length === 18 && x.slice(3).every((v) => Math.round(v * 1000) / 1000 === v)));
+    },
+    "phase 2 redLine: a red line plans one 卸势 at its capture time + 6 f"() {
+        const opts = { contacts: [], futFn: () => null, redLine: (t) => t >= 1000 && t < 1300 ? 300 : null, ageMs: 30 };
+        const { result, touches } = run({ phase: 2, redLine: true, ms: 2500 }, opts);
+        const on = result.events.filter((e) => e[2] === "redline" && e[3].startsWith("onset"));
+        assert.equal(on.length, 1, `onsets: ${on.map((e) => e[3])}`);
+        const cap = on[0][1] - 30; // the first line frame's capture time (ms since start)
+        const taps = touches.filter((t) => t.op === "down" && t.id === 1).map((t) => t.at);
+        assert.equal(taps.length, 1, `taps: ${taps}`);
+        assert.ok(taps[0] >= cap + 6 * frameMs - 1 && taps[0] <= cap + 7 * frameMs + 5, `tap ${taps[0]} vs capture ${cap}`);
+        const press = result.events.find((e) => e[2] === "press" && e[3].includes(" red "));
+        assert.ok(press && /redline \+[67]\.\df/.test(press[3]), `press mark: ${press?.[3]}`);
+        assert.equal(result.redLine.onsets, 1);
+        assert.equal(result.redLine.presses, 1);
+        assert.ok(result.redLine.readMs.n > 0 && result.redLine.calls.n > 0, JSON.stringify(result.redLine));
+        // a number is the delay in frames
+        const t9 = run({ phase: 2, redLine: 9, ms: 2500 }, opts).touches.filter((t) => t.op === "down" && t.id === 1).map((t) => t.at);
+        assert.ok(t9.length === 1 && Math.abs(t9[0] - taps[0] - 3 * frameMs) <= frameMs + 1, `redLine 9: ${t9} vs ${taps}`);
+    },
+    "phase 2 redLine ignores a line right after a hit (impact flash)"() {
+        const opts = { contacts: [], futFn: () => null, redLine: (t) => t >= 1000 && t < 1300 ? 300 : null };
+        // the hit read 1 f before the line
+        const before = run({ phase: 2, redLine: true, ms: 2500 }, { ...opts, hp: (t) => t < 970 ? 0.8 : 0.75 }).result;
+        assert.deepEqual(before.redLine.ignored, { hit: 1 }, JSON.stringify(before.redLine));
+        assert.ok(!before.events.some((e) => e[3].includes(" red ")), "a red-line item after a hit");
+        // the hit read 3 f after the line onset (the flash came first): the planned 卸势 goes unpressed
+        const after = run({ phase: 2, redLine: true, ms: 2500 }, { ...opts, hp: (t) => t < 1100 ? 0.8 : 0.75 }).result;
+        assert.deepEqual(after.redLine.ignored, { "hit late": 1 }, JSON.stringify(after.redLine));
+        assert.equal(after.redLine.presses, 0);
+        assert.ok(after.events.some((e) => e[2] === "plan" && e[3].includes("redline: hit flash")), "the red item was not dropped");
+    },
+    "phase 2 redLine moves an early fut 卸势 to the anchor and adds no second press"() {
+        // the head believes a contact at 1500 (fut 卸势 at ~1033, before onset + 3 f): it waits for onset + 6 f
+        const opts = { contacts: [], futFn: (t) => t < 1500 ? 1500 : null, redLine: (t) => t >= 1000 && t < 1300 ? 300 : null };
+        const base = run({ phase: 2, ms: 2500 }, opts).touches.filter((t) => t.op === "down" && t.id === 1).map((t) => t.at);
+        const { result, touches } = run({ phase: 2, redLine: true, ms: 2500 }, opts);
+        const taps = touches.filter((t) => t.op === "down" && t.id === 1).map((t) => t.at);
+        const on = result.events.find((e) => e[2] === "redline" && e[3].startsWith("onset"));
+        assert.ok(base.length === 1 && base[0] < on[1] + 3 * frameMs, `base ${base} / onset ${on?.[1]}`);
+        assert.equal(taps.length, 1, `taps: ${taps}`);
+        assert.ok(taps[0] >= on[1] + 6 * frameMs - 1 && taps[0] <= on[1] + 7 * frameMs + 5, `moved tap ${taps[0]} vs onset ${on[1]}`);
+        assert.equal(result.redLine.moved, 1);
+        assert.ok(result.events.some((e) => e[2] === "press" && e[3].includes(" fut ") && e[3].includes("moved")), "no moved press mark");
+        assert.deepEqual(result.redLine.windowPressBy, { moved: 1 });
+        assert.equal(result.redLine.planned, 0, "a red item next to the fut one");
+    },
+    "redLine is off by default and phase 1 ignores it"() {
+        const opts = { def: 2, redLine: (t) => t >= 1000 && t < 1300 ? 300 : null };
+        const p2 = run({ phase: 2 }, opts);
+        assert.equal(p2.result.redLine, undefined);
+        assert.deepEqual(p2.touches, run({ phase: 2 }, { def: 2 }).touches, "phase 2 without redLine changed by a line");
+        const p1 = run({ redLine: true }, opts);
+        assert.equal(p1.result.redLine, undefined);
+        assert.deepEqual(p1.touches, run({}, { def: 2 }).touches, "phase 1 changed by redLine");
     },
     "health prefers the red bar over a low-HP grey overread"() {
         // 737 f5970-6051: the grey mask read 21% on a 17% red bar (bright tip / hit flash). The red read is the bar.

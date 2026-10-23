@@ -162,3 +162,65 @@ export function gapNow(im) {
     const off = (/** @type {[number, number]} */ [a, b]) => (a <= ME_X && ME_X <= b ? 0 : Math.min(Math.abs(a - ME_X), Math.abs(b - ME_X)));
     return cands.reduce((p, q) => (off(q) < off(p) ? q : p));
 }
+
+// phase-2 red line (data/tmp/p2timing flags2.py: bright red HSV, a row of >= 220 px spanning >= 300 px in x 150-930,
+// rows 18-30 px above / below < 30% of it). The device read (data/tmp/p2timing/rl/emu4.py, replayed on 7.6k video frames
+// of 29 rounds) avoids the 780 x 440 scan (~33 ms like seeFlash): two 4 px columns at RL_COLS (a >= 300 px line in
+// x 150-930 crosses at least one) give thin components (h <= RL_THIN) as candidate rows (at most RL_MAX_CANDS, by px);
+// each is checked by a 120 px strip around its column on the component's rows (fill >= 50%, span >= 80%), then by a
+// 3-row band over the full width (>= RL_ROW_PX px, span >= RL_SPAN) and the two 12-row side bands 18-30 px above /
+// below (mean row < RL_SIDE x the band's mean row; a burst / glow fills them). Rows RL_Y0-RL_Y1 (lines above the
+// arena centre, boss in the air, are tilted and not covered). Recall of the 161 true red tells' onsets within +2 f:
+// 0.62 (0.66 of those in the row band); frames firing where the offline rule does not: 0.7%.
+export const RED_HSV = { lower: [[0, 60, 200], [170, 60, 200]], upper: [[9, 255, 255], [180, 255, 255]], method: 40 };
+export const RL_COLS = [400, 680], RL_COL_W = 4, RL_Y0 = 152, RL_Y1 = 470, RL_THIN = 20, RL_MAX_CANDS = 3;
+export const RL_X0 = 150, RL_W = 780, RL_QUICK = 60, RL_ROW_PX = 220, RL_SPAN = 300, RL_SIDE = 0.25;
+
+/** Count and box width of colour c in roi (one non-connected read). @param {ColorOptions} c @param {Box} roi @param {Image} im */
+function spanRead(c, roi, im) {
+    const r = color({ ...c, image: im, roi, count: 1 });
+    const m = r.hit ? r.results[0] : null;
+    return { n: m?.count ?? 0, w: m?.box?.[2] ?? 0 };
+}
+
+/**
+ * The phase-2 red line: its row y, or null; calls = color() reads used (cost: ~2 per frame, 3-6 with a candidate).
+ * @param {Image} im @returns {{y: number | null, calls: number}}
+ */
+export function redLine(im) {
+    let calls = 0;
+    /** @type {{cx: number, y: number, h: number, n: number}[]} */
+    const cands = [];
+    for (const cx of RL_COLS) {
+        calls++;
+        const r = color({ ...RED_HSV, image: im, roi: [cx - RL_COL_W / 2, RL_Y0, RL_COL_W, RL_Y1 - RL_Y0], count: 3, connected: true });
+        if (r.hit) for (const m of r.results) if (m.box[3] <= RL_THIN) cands.push({ cx, y: m.box[1], h: m.box[3], n: m.count ?? 0 });
+    }
+    cands.sort((a, b) => b.n - a.n);
+    /** @type {number[]} */
+    const seen = [];
+    for (const c of cands) {
+        const yc = c.y + Math.floor(c.h / 2);
+        if (seen.some((v) => Math.abs(v - yc) <= 6)) continue;
+        seen.push(yc);
+        if (seen.length > RL_MAX_CANDS) break;
+        if (yc - 32 < 120 || yc + 32 > 560) continue;
+        const a = Math.max(RL_X0, c.cx - RL_QUICK), b = Math.min(RL_X0 + RL_W, c.cx + RL_QUICK);
+        calls++;
+        const q = spanRead(RED_HSV, [a, c.y, b - a, c.h], im);
+        if (q.n < 0.5 * (b - a) || q.w < 0.8 * (b - a)) continue;
+        calls++;
+        const band = spanRead(RED_HSV, [RL_X0, yc - 1, RL_W, 3], im);
+        if (band.n < RL_ROW_PX || band.w < RL_SPAN) continue;
+        let ok = true;
+        for (const s0 of [yc - 30, yc + 18]) {
+            calls++;
+            if (spanRead(RED_HSV, [RL_X0, s0, RL_W, 12], im).n / 12 > RL_SIDE * (band.n / 3)) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) return { y: yc, calls };
+    }
+    return { y: null, calls };
+}

@@ -13,9 +13,10 @@
 //   maalow do skill dufu --args '{"phase":2,"ms":900000}' --timeout 960000      (> ~10 min needs --timeout, @see END_MARGIN_MS)
 // phase 2 (args.phase): the quest line reads 阶段二 from the start there, so only the 成功 page / death / time end the
 // run; the fut/def heads' plain dodges become 卸势 (@see defAction); no curtain; 金光 dodges at the first report with a
-// per-frame image rule (@see FLARE2_P); a 气竭 spell without 处决 walks in (@see QP2_WALK_AFTER_MS).
+// per-frame image rule (@see FLARE2_P); a 气竭 spell without 处决 walks in (@see QP2_WALK_AFTER_MS); args.redLine: a 卸势
+// anchored on the red line some red moves show first (@see RL_DELAY_F).
 import { stats } from "./lib/stats.js";
-import { BOSS_FULL, ICON_WHITE, ME_X, bossPx, countAtLeast, gapNow, health, litNow, readMean, readQi, seeFlash } from "./lib/dufu-reads.js";
+import { BOSS_FULL, ICON_WHITE, ME_X, bossPx, countAtLeast, gapNow, health, litNow, readMean, readQi, redLine, seeFlash } from "./lib/dufu-reads.js";
 import { COMBO6_LABELS, DEF_LABELS, FUT_CENTER, FUT_HI, FUT_LABELS, FUT_LO, STAGE_LABELS, TELL_LABELS } from "./lib/dufu-labels.js";
 import { argmax, futStats, headOut, softmax } from "./lib/dufu-math.js";
 
@@ -129,6 +130,24 @@ const FLARE2_COST_MS = 5, FLARE2_COST_N = 30, FLARE2_SLOW_EVERY = 100;
 // FLARE2_IMG off (r058-r067): the per-frame image rule cost ~33 ms a read (loop p50 27 -> 36 ms) and most of its phase-2
 // hits were red bursts / lens streaks, not gold; median life 170 -> 95 s. Phase 2 keeps the 400 ms slowFlare instead.
 const FLARE2_IMG = false;
+// phase 2 red line (args.redLine, default off; data/tmp/p2timing, 89 rounds). Some red moves show a thin red horizontal
+// line (lib/dufu-reads.js redLine) and land 12-21 f (mode 16) after its onset; a 卸势 issued at onset +6..+14 f took
+// 92/93 of them (before the onset 2/31, +0..2 12/21, +3..5 28/34). Those times are the press mark (tap issue,
+// Date.now()) minus the line's first video frame, and the video frames map to the capture clock (frames.py: frame =
+// (trace start + capture ms - recording start) / 33.3 ms), so the anchor is the line frame's capture time (img.time -
+// img.age_ms) + the delay, compared with Date.now(): LATENCY_F (tap -> screen) is already inside those numbers. Our first
+// line frame is ~0..1 f after the video onset (the loop takes ~every frame, ~30 ms behind capture) and executePlan
+// fires 0..1.2 f after an item's atMs, so RL_DELAY_F 6 puts the taps at ~onset +6..+8 f. An episode = line frames at
+// most RL_GAP_F apart (capture time); its onset plans once. A line within RL_IGNORE_F after a contact is that contact's
+// impact flash (36% of the lines): an ok / hit read (it comes ~RL_FB_LAG_F after its contact) in [onset - (RL_IGNORE_F -
+// RL_FB_LAG_F), onset + RL_FB_LAG_F] ignores the line, at the onset or later until a 卸势 went in the window. The window
+// is [onset + RL_WIN_LO_F, onset + RL_WIN_HI_F]: an unpressed fut 卸势 planned before its start waits for the anchor
+// (floorMs); a fut 卸势 inside it covers the line; else one "red" item at the anchor waits out the parry CD / relock
+// while still in the window. Once a 卸势 went in the window, the other unpressed ones up to its end are dropped.
+// The read runs every frame (~2 color() reads, 3-6 with a candidate row); every other frame once its mean cost over
+// the last RL_COST_N reads passes RL_COST_MS.
+const RL_DELAY_F = 6, RL_GAP_F = 3.5, RL_IGNORE_F = 8, RL_FB_LAG_F = 6, RL_WIN_LO_F = 3, RL_WIN_HI_F = 15;
+const RL_CONTACT_F = 16, RL_MISS_F = 30, RL_COST_MS = 5, RL_COST_N = 30;
 // phase 2 气竭: in 4 of 9 windows the boss stood staggered at mid / far range and 处决 (shown only within reach) never
 // came. With phase 2, QP2_WALK_AFTER_MS after the qiPlan candidate (真气 read empty) with no 处决 button, walk forward
 // (lock-on keeps the camera on the boss) in QP_CHASE_MS pushes until the button shows, at most QP2_WALK_MAX_MS per
@@ -278,10 +297,10 @@ const SLOT_POTION_PX = 10;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
-/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, rearms?: number, relocked?: boolean, jit?: number}} PlanItem */
+/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"insure"|"red", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, rearms?: number, relocked?: boolean, jit?: number, onMs?: number, floorMs?: number}} PlanItem */
 
 /**
- * @param {{ms?: number, potions?: number, prep?: boolean, phase?: number, trace?: boolean | "feat", head?: string, defDodgeP?: number}} [args] ms: run length
+ * @param {{ms?: number, potions?: number, prep?: boolean, phase?: number, trace?: boolean | "feat", head?: string, defDodgeP?: number, redLine?: boolean | number}} [args] ms: run length
  *     (default 10 min; clipped to the call's timeout less END_MARGIN_MS); potions: drinks allowed (default 1); prep: poison
  *     + buffs at the start (default on; the scheduler test turns it off); phase: 1 (default) or 2, the arena's 阶段
  *     (@see defAction, clearedCheck); trace: per-frame trace events (@see TRACE_EVENT); head: the head model (default
@@ -312,6 +331,8 @@ export default function (args = {}) {
     // rounds, hits/min 9.9 vs 10.05, median life 109 vs 119 s (no difference), so phase 1 anchored dodges stay
     const flare2On = phase === 2 && (args.flare2 ?? false); // @see flare2Tick
     const curtainOn = phase !== 2; // phase two has no curtain (the note above END_MARGIN_MS)
+    // args.redLine (phase 2, default off): the red-line 卸势 anchor; true = onset + RL_DELAY_F, a number = that many frames
+    const redLineF = phase === 2 && args.redLine ? (typeof args.redLine === "number" ? args.redLine : RL_DELAY_F) : 0;
 
     const start = Date.now();
     const untilMs = Math.min(args.ms ?? 600_000, remaining() - END_MARGIN_MS);
@@ -965,6 +986,7 @@ export default function (args = {}) {
     /** @param {PlanItem} it @param {number} now */
     function press(it, now) {
         if (it.kind === "parry") {
+            if (it.src === "red") rlPressed(it);
             tap(PARRY);
             lastParryAt = Date.now();
             pressFrame(frameIdx);
@@ -973,7 +995,9 @@ export default function (args = {}) {
             lastParryC = it.cMs;
             lastItemParryAt = lastParryAt;
             if (it.src !== "insure") pressedSinceHit = true;
-            mark("press", `parry k${it.k} ${it.src} c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f ${it.why}${it.jit ? ` jit${it.jit > 0 ? "+" : ""}${it.jit}f` : ""}`);
+            // a fut 卸势 held for a red line's anchor (@see redLineTick)
+            const moved = it.src !== "red" && rlEp && it.floorMs === rlEp.at ? ` redline +${((lastParryAt - rlEp.on) / FRAME_MS).toFixed(1)}f moved` : "";
+            mark("press", `parry k${it.k} ${it.src} c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f ${it.why}${it.jit ? ` jit${it.jit > 0 ? "+" : ""}${it.jit}f` : ""}${moved}`);
         } else if (it.kind === "dodge") {
             // fut plans have no direction yet: resolve it at dispatch, so a cancelled plan does not consume a side
             if (!it.dir) it.dir = nextDir();
@@ -1019,6 +1043,7 @@ export default function (args = {}) {
         for (const it of items) {
             if (!plan.includes(it) || it.pressedAt) continue;
             if (now < it.atMs) continue;
+            if (it.floorMs && now < it.floorMs) continue; // a red line's anchor (@see redLineTick)
             if (it.branch) {
                 if (now < it.t1Ms + 3 * FRAME_MS) continue;
                 const firstKnown = lastHitAt >= it.t1Ms - 100 || lastOkAt >= it.t1Ms - 100;
@@ -1069,6 +1094,21 @@ export default function (args = {}) {
                 lastParryC = it.cMs;
                 mark("press", `parry posthit c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f`);
                 dropItem(it, "posthit done");
+                continue;
+            }
+            if (it.src === "red") {
+                // the red-line 卸势: waits out the CD / stagger / relock while its window lasts (redLineTick ends it)
+                const why = pressBlocked(it, now) || (relockAt(now, it.cMs, true) ? "relock" : "");
+                if (why) {
+                    if (!it.held) {
+                        it.held = true;
+                        inc(rlS.waits, why);
+                        mark("redline", `卸势 waits (${why})`);
+                    }
+                    continue;
+                }
+                press(it, now);
+                it.untilMs = (it.onMs ?? now) + RL_MISS_F * FRAME_MS;
                 continue;
             }
             const why = pressBlocked(it, now);
@@ -1224,6 +1264,7 @@ export default function (args = {}) {
     // --- feedback (fast path): hp drop = hit, qi drop = ok
     /** @param {number} now @param {number} before @param {number} after */
     function onHit(now, before, after) {
+        rlOutcome(now, "hit");
         hits++;
         lastHitAt = now;
         pressedSinceHit = false;
@@ -1275,6 +1316,7 @@ export default function (args = {}) {
     }
     /** @param {number} now */
     function onOk(now) {
+        rlOutcome(now, "ok");
         oks++;
         lastOkAt = now;
         /** @type {PlanItem | null} */
@@ -1719,6 +1761,136 @@ export default function (args = {}) {
         f2ReDone = true;
         f2S.redodges++;
         flare2Item(now, `flare2 re-dodge ${src} +${Math.round(s / FRAME_MS)}f after the first`);
+    }
+
+    // --- phase 2 red line (@see RL_DELAY_F): the read per frame, the 卸势 window per head output
+    /** @typedef {{on: number, last: number, at: number, y: number, closed: boolean, item: PlanItem | null, moved: Set<number>, dropped: Set<number>, covered: boolean, inWin: boolean}} RlEpisode */
+    /** @type {RlEpisode | null} */
+    let rlEp = null;
+    let rlOdd = false, rlPressAt = 0, rlResolved = true;
+    /** @type {number[]} */ const rlCost = [];
+    const rlS = { reads: 0, slowReads: 0, lineFrames: 0, onsets: 0, ignored: /** @type {Record<string, number>} */ ({}), planned: 0,
+                  covered: 0, moved: 0, droppedInWindow: 0, presses: 0, late: 0, waits: /** @type {Record<string, number>} */ ({}),
+                  windowPressBy: /** @type {Record<string, number>} */ ({}), after: /** @type {Record<string, number>} */ ({}),
+                  pressF: /** @type {number[]} */ ([]), readMs: /** @type {number[]} */ ([]), calls: /** @type {number[]} */ ([]) };
+    const rlResult = () => ({ ...rlS, delayF: redLineF, pressF: stats(rlS.pressF), readMs: stats(rlS.readMs), calls: stats(rlS.calls) });
+    /** Per frame before the aux: the red line on this frame -> a new episode at its onset. @param {number} now */
+    function redLineRead(now) {
+        const slow = rlCost.length >= RL_COST_N && rlCost.reduce((a, b) => a + b, 0) / rlCost.length > RL_COST_MS;
+        if (slow) {
+            rlOdd = !rlOdd;
+            if (rlOdd) return;
+            rlS.slowReads++;
+        }
+        const t0 = Date.now();
+        const r = redLine(img);
+        const ms = Date.now() - t0;
+        rlCost.push(ms);
+        if (rlCost.length > RL_COST_N) rlCost.shift();
+        rlS.readMs.push(ms);
+        rlS.calls.push(r.calls);
+        rlS.reads++;
+        if (r.y == null) return;
+        rlS.lineFrames++;
+        const cap = img.time != null ? img.time - (img.age_ms ?? 0) : now; // the line frame's capture time
+        if (rlEp && cap - rlEp.last <= RL_GAP_F * FRAME_MS) {
+            rlEp.last = cap;
+            return;
+        }
+        rlS.onsets++;
+        const fb = Math.max(lastHitAt, lastOkAt);
+        const why = fb && fb >= cap - (RL_IGNORE_F - RL_FB_LAG_F) * FRAME_MS ? (lastHitAt >= lastOkAt ? "hit" : "ok") : "";
+        rlEp = { on: cap, last: cap, at: cap + redLineF * FRAME_MS, y: r.y, closed: !!why, item: null, moved: new Set(), dropped: new Set(), covered: false, inWin: false };
+        if (why) inc(rlS.ignored, why);
+        mark("redline", `onset y${r.y} (frame ${Math.round(now - cap)} ms old)${why ? ` ignored: ${why} ${Math.round((cap - fb) / FRAME_MS)}f before` : `, 卸势 at +${redLineF}f`}`);
+    }
+    /** The red-line 卸势 window (after syncPlan, before executePlan). @param {number} now */
+    function redLineTick(now) {
+        const ep = rlEp;
+        if (!ep || ep.closed) return;
+        const lo = ep.on + RL_WIN_LO_F * FRAME_MS, hi = ep.on + RL_WIN_HI_F * FRAME_MS;
+        const red = ep.item && plan.includes(ep.item) ? ep.item : null;
+        const inWin = lastParryAt >= lo && lastParryAt <= hi;
+        // a contact's impact flash: its ok / hit read shows up to RL_FB_LAG_F after the onset
+        const fb = Math.max(lastHitAt, lastOkAt);
+        if (!inWin && fb >= ep.on - (RL_IGNORE_F - RL_FB_LAG_F) * FRAME_MS && fb <= ep.on + RL_FB_LAG_F * FRAME_MS) {
+            const why = lastHitAt >= lastOkAt ? "hit" : "ok";
+            ep.closed = true;
+            inc(rlS.ignored, `${why} late`);
+            if (red && !red.pressedAt) dropItem(red, `redline: ${why} flash`);
+            for (const it of plan) if (it.floorMs === ep.at) it.floorMs = 0;
+            mark("redline", `ignored: ${why} ${Math.round((fb - ep.on) / FRAME_MS)}f after the onset`);
+            return;
+        }
+        if (now > hi) {
+            ep.closed = true;
+            if (red && !red.pressedAt) {
+                rlS.late++;
+                dropItem(red, "redline: window over");
+            }
+            if (!ep.inWin) mark("redline", "no 卸势 in the window");
+            return;
+        }
+        const fut = plan.filter((x) => x.kind === "parry" && x.src === "fut" && !x.branch && !x.pressedAt);
+        const eff = (/** @type {PlanItem} */ x) => Math.max(x.atMs, x.floorMs ?? 0);
+        if (inWin) {
+            if (!ep.inWin) {
+                ep.inWin = true;
+                const by = plan.find((x) => x.pressedAt === lastParryAt);
+                inc(rlS.windowPressBy, by?.src === "red" ? "red" : by && by.floorMs === ep.at ? "moved" : by ? by.src : "other");
+            }
+            // the window has its 卸势: no second one up to its end
+            for (const x of fut) {
+                if (eff(x) > hi) continue;
+                if (!ep.dropped.has(x.k)) {
+                    ep.dropped.add(x.k);
+                    rlS.droppedInWindow++;
+                }
+                dropItem(x, "redline: a 卸势 went in the window");
+            }
+            if (red && !red.pressedAt) dropItem(red, "redline: a 卸势 went in the window");
+            return;
+        }
+        for (const x of fut) {
+            if (x.atMs >= lo || (x.floorMs ?? 0) >= ep.at) continue;
+            x.floorMs = ep.at;
+            if (!ep.moved.has(x.k)) {
+                ep.moved.add(x.k);
+                rlS.moved++;
+                mark("redline", `fut k${x.k} 卸势 at +${Math.round((x.atMs - ep.on) / FRAME_MS)}f moved to +${redLineF}f`);
+            }
+        }
+        if (fut.some((x) => eff(x) >= lo && eff(x) <= hi)) {
+            if (!ep.covered) {
+                ep.covered = true;
+                rlS.covered++;
+            }
+            if (red && !red.pressedAt) {
+                dropItem(red, "redline: a fut 卸势 covers it");
+                ep.item = null;
+            }
+            return;
+        }
+        if (!red) {
+            if (!ep.item) rlS.planned++;
+            ep.item = addItem({ kind: "parry", k: -1, src: "red", cMs: ep.on + RL_CONTACT_F * FRAME_MS, atMs: Math.max(ep.at, now), untilMs: hi,
+                                onMs: ep.on, why: `redline +${redLineF}f` });
+        }
+    }
+    /** A red item is being pressed: its why is the onset offset. @param {PlanItem} it */
+    function rlPressed(it) {
+        const f = (Date.now() - (it.onMs ?? 0)) / FRAME_MS;
+        it.why = `redline +${f.toFixed(1)}f`;
+        rlS.presses++;
+        rlS.pressF.push(Math.round(f * 10) / 10);
+        rlPressAt = Date.now();
+        rlResolved = false;
+    }
+    /** The first ok / hit after a red-line 卸势 (within RL_MISS_F). @param {number} now @param {string} kind */
+    function rlOutcome(now, kind) {
+        if (rlResolved || !rlPressAt) return;
+        rlResolved = true;
+        inc(rlS.after, now - rlPressAt <= RL_MISS_F * FRAME_MS ? kind : `${kind} late`);
     }
 
     // --- potion (@see POTION_QUIET_MS)
@@ -2844,6 +3016,7 @@ export default function (args = {}) {
             approach(now);
             lockCheck(now);
             if (phase === 2 && FLARE2_IMG) flare2Read(now);
+            if (redLineF) redLineRead(now);
             const dtMs = lastEntryT ? Math.min(300, Math.max(10, now - lastEntryT)) : FRAME_MS;
             const aux = buildAux(dtMs);
             const b = timed("back", () => infer(BACK_MODEL, { ...BACK, image: img, history: [{ name: "seq", aux }] }));
@@ -2866,6 +3039,7 @@ export default function (args = {}) {
             if (pred) {
                 const now2 = Date.now();
                 syncPlan(now2);
+                if (redLineF) redLineTick(now2);
                 offenseGuard(now2);
                 executePlan(now2);
                 hitEscTick(Date.now());
@@ -2928,6 +3102,7 @@ export default function (args = {}) {
     };
     log(`defense: ${JSON.stringify(defense)}`);
     log(`potion: ${JSON.stringify(potion)}`);
+    if (redLineF) log(`redLine: ${JSON.stringify(rlResult())}`);
     log(`off: ${JSON.stringify(off)}`);
     return {
         reason, ...(reason === "cleared" ? { clearedAtMs } : {}), looks, ready, headCalls, readyPct, ringBad,
@@ -2936,6 +3111,7 @@ export default function (args = {}) {
         ms: { back: backS, head: headS, reads: readS, loop: loopS },
         start, events,
         ...(phase === 2 ? { phase, flare2: { ...f2S, readMs: stats(f2S.readMs) }, qiWalk: { ...qp2S, capped: undefined } } : {}),
+        ...(redLineF ? { redLine: rlResult() } : {}),
         ...(args.trace ? { trace: { event: TRACE_EVENT, start, rows: traceN, chunks: traceChunks, feat: traceFeat } } : {}),
     };
 }
