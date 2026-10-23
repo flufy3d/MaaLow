@@ -308,9 +308,30 @@ const APPROACH_MS = 30_000, APPROACH_CYCLE = 1200, APPROACH_ON = 500;
 /** @type {Point} */ const ITEM_OPEN = [700, 633];
 /** @type {Point} */ const ITEM_PICK = [702, 575];
 const PREP_MENU_MS = 600, PREP_USE_MS = 1500, PREP_SWAP_TRIES = 3;
-// the slot's item: the potion jar is white (26 px), the poison purple (0)
-/** @type {Box} */ const SLOT_ROI = [683, 650, 35, 30];
-const SLOT_POTION_PX = 10;
+// the slot's item: the potion by template, the training jar or the quest fight's 药品 bottle (real fight 2026-10-23: its
+// 特殊道具 hat is white too and passed the old white-pixel test, so prep left the hat in the slot). Scores: the jar
+// >= 0.85 in 5 training recordings, the bottle 0.99; the hat <= 0.53 on both.
+/** @type {Box} */ const SLOT_ROI = [670, 640, 60, 55];
+const SLOT_POTION_T = ["combat/potion_drill.png", "combat/potion_real.png"], SLOT_POTION_TH = 0.75;
+/** @param {Image} image */
+const slotPotion = (image) => match(SLOT_POTION_T, { image, roi: SLOT_ROI, threshold: SLOT_POTION_TH }).hit;
+// the open column above the slot. Training: one other item at ITEM_PICK (potion <-> poison). Quest fight: 天工开物 (the
+// poison, purple, 399) at (700, 490), the third item (药品 / 特殊道具) at ITEM_PICK; both found by template (0.96-0.98
+// in the 2026-10-23 recording), ITEM_PICK when none shows (the training poison has no template)
+/** @type {Box} */ const COLUMN_ROI = [665, 400, 75, 210];
+const POISON_T = ["combat/poison_real.png"], COLUMN_TH = 0.8;
+// the quest fight's 药品 bottle in the slot or the column: ITEM_PICK there is 特殊道具, never a fallback
+/** @type {Box} */ const ITEMS_ROI = [665, 400, 75, 300];
+/** Where to tap in the open column for templates; ITEM_PICK when none is there (training), null in the quest fight.
+ * @param {Image} image @param {string[]} templates @returns {Point | null} */
+function columnPick(image, templates) {
+    const b = match(templates, { image, roi: COLUMN_ROI, threshold: COLUMN_TH }).box;
+    if (b) return [Math.round(b[0] + b[2] / 2), Math.round(b[1] + b[3] / 2)];
+    return match("combat/potion_real.png", { image, roi: ITEMS_ROI, threshold: COLUMN_TH }).hit ? null : ITEM_PICK;
+}
+// the poison is used by a tap on the slot icon (real fight 2026-10-23: 天工开物 398 -> 397, the blade glows green, the
+// slot keeps it greyed); prep's POTION tap (700, 690) there left 特殊道具 in the slot instead
+/** @type {Point} */ const SLOT_ICON = [700, 666];
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
@@ -1581,12 +1602,18 @@ export default function (args = {}) {
             sleep(ms);
         };
         // the pick swaps with the slot's item; checked each time (a swap once failed and the drinks were poison)
-        const potionIn = () => color({ ...ICON_WHITE, image: shot(), roi: SLOT_ROI, count: SLOT_POTION_PX }).hit;
+        const potionIn = () => slotPotion(shot());
         /** Swap until the slot holds the potion (want) or not; false when it never did. @param {boolean} want @param {string} what */
         const swapTo = (want, what) => {
             for (let i = 0; i < PREP_SWAP_TRIES; i++) {
                 step(ITEM_OPEN, PREP_MENU_MS);
-                step(ITEM_PICK, PREP_MENU_MS);
+                const pick = columnPick(shot(), want ? SLOT_POTION_T : POISON_T);
+                if (!pick) { // quest fight without the item in the column: close it, nothing picked
+                    mark("prep", `${what} not in the column`);
+                    step(ITEM_OPEN, PREP_MENU_MS);
+                    return false;
+                }
+                step(pick, PREP_MENU_MS);
                 if (potionIn() === want) return true;
                 mark("prep", `${what} not in the slot (try ${i + 1})`);
             }
@@ -1597,7 +1624,7 @@ export default function (args = {}) {
         // phase 2: no poison (teacher, 2026-10-23: the real fight goes on from phase 1 with no quiet start to coat the
         // weapon, so the item slot is not switched at all)
         const poisoned = phase !== 2 && swapTo(false, "poison");
-        if (poisoned) step(POTION, PREP_USE_MS);
+        if (poisoned) step(SLOT_ICON, PREP_USE_MS);
         const back = !poisoned || swapTo(true, "potion");
         // 增益 is 陌刀's (横刀 has 爆发 there): switch first when the round starts on 横刀
         img = shot();
@@ -2065,7 +2092,7 @@ export default function (args = {}) {
     }
     // the slot swap before a drink: the potion slot sometimes holds the other item mid-fight (r075 / r103 / r105: it
     // turned to the poison by itself, then every drink tap used poison). At a safe drink moment, a slot read twice
-    // without the potion's white gourd gets prep's swap (ITEM_OPEN, ITEM_PICK PREP_MENU_MS later), parries held off
+    // without the potion (slotPotion) gets prep's swap (ITEM_OPEN, the potion in the column PREP_MENU_MS later), parries held off
     // meanwhile (potionHoldUntil), at most SLOT_SWAPS_MAX times a run.
     const SLOT_SWAPS_MAX = 3;
     let slotMiss = 0, slotSwaps = 0;
@@ -2074,7 +2101,7 @@ export default function (args = {}) {
     function planPotion(now) {
         if (slotSwap) {
             if (!slotSwap.picked && now - slotSwap.at >= PREP_MENU_MS) {
-                tap(ITEM_PICK);
+                tap(columnPick(img, SLOT_POTION_T) ?? ITEM_OPEN); // no potion in the column: close it
                 slotSwap.picked = true;
             }
             if (now - slotSwap.at >= 2 * PREP_MENU_MS) {
@@ -2102,7 +2129,7 @@ export default function (args = {}) {
             }
             return;
         }
-        if (slotSwaps < SLOT_SWAPS_MAX && !color({ ...ICON_WHITE, image: img, roi: SLOT_ROI, count: SLOT_POTION_PX }).hit) {
+        if (slotSwaps < SLOT_SWAPS_MAX && !slotPotion(img)) {
             if (++slotMiss < 2) return;
             slotSwaps++;
             slotSwap = { at: now, picked: false };

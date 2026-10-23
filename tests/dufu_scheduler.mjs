@@ -16,7 +16,10 @@ globalThis.event = (name, data) => { sent.push({ name, data: JSON.parse(JSON.str
 globalThis.frame = () => ({ seq: Math.floor(time / frameMs) });
 // cfg.ageMs: the frame's age (img.time - img.age_ms = its capture time), only when set (the other tests keep {seq})
 globalThis.screenshot = () => ({ seq: Math.floor(time / frameMs), ...(cfg.ageMs != null ? { time: epoch + time, age_ms: cfg.ageMs } : {}) });
-globalThis.match = (template) => ({ hit: !!cfg.match?.(template, time) });
+// the item slot (SLOT_POTION_T): the potion unless cfg.slot(time) says the other item is there
+globalThis.match = (template) => Array.isArray(template)
+    ? { hit: template[0].startsWith("combat/potion_") && !(cfg.slot && !cfg.slot(time)), box: null }
+    : { hit: !!cfg.match?.(template, time) };
 globalThis.touch = {
     down(p, id) {
         if (id === 0) stick = p;
@@ -61,8 +64,6 @@ globalThis.color = ({ roi: [x, y, w, h], lower }) => {
         return { hit: true, results: [{ box: [150, 300, 400, 20], count: 9999 }] };
     }
     else if (y === 648 && x === 1004) box = [1004, 648, 34, 39];
-    // the item slot (SLOT_ROI): the potion's white gourd unless cfg.slot(time) says the other item is there
-    else if (y === 650 && x === 683 && !(cfg.slot && !cfg.slot(time))) box = [690, 655, 20, 20];
     return box ? { hit: true, results: [{ box, count: 999 }] } : { hit: false, results: [] };
 };
 globalThis.infer = (model) => {
