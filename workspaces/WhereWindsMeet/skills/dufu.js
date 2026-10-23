@@ -1744,8 +1744,26 @@ export default function (args = {}) {
             mark("potion", `${hit ? `hit ${now - p.at} ms into the drink` : `no heal ${POTION_CONFIRM_MS} ms after the tap`}, not counted`);
         }
     }
+    // the slot swap before a drink: the potion slot sometimes holds the other item mid-fight (r075 / r103 / r105: it
+    // turned to the poison by itself, then every drink tap used poison). At a safe drink moment, a slot read twice
+    // without the potion's white gourd gets prep's swap (ITEM_OPEN, ITEM_PICK PREP_MENU_MS later), parries held off
+    // meanwhile (potionHoldUntil), at most SLOT_SWAPS_MAX times a run.
+    const SLOT_SWAPS_MAX = 3;
+    let slotMiss = 0, slotSwaps = 0;
+    /** @type {{at: number, picked: boolean} | null} */ let slotSwap = null;
     /** Per frame: plan the drink at a safe moment. @param {number} now */
     function planPotion(now) {
+        if (slotSwap) {
+            if (!slotSwap.picked && now - slotSwap.at >= PREP_MENU_MS) {
+                tap(ITEM_PICK);
+                slotSwap.picked = true;
+            }
+            if (now - slotSwap.at >= 2 * PREP_MENU_MS) {
+                slotSwap = null;
+                slotMiss = 0;
+            }
+            return;
+        }
         if (maxPotions <= 0 || potionsUsed >= maxPotions) return;
         if (hpNow == null || hpNow > POTION_HP) {
             potionDueAt = 0;
@@ -1765,6 +1783,16 @@ export default function (args = {}) {
             }
             return;
         }
+        if (slotSwaps < SLOT_SWAPS_MAX && !color({ ...ICON_WHITE, image: img, roi: SLOT_ROI, count: SLOT_POTION_PX }).hit) {
+            if (++slotMiss < 2) return;
+            slotSwaps++;
+            slotSwap = { at: now, picked: false };
+            potionHoldUntil = now + 2 * PREP_MENU_MS + 100;
+            tap(ITEM_OPEN);
+            mark("potion", `slot without the potion: swap ${slotSwaps}`);
+            return;
+        }
+        slotMiss = 0;
         addItem({ kind: "potion", k: -1, src: "potion", atMs: now, cMs: now, untilMs: now + 1500, why: `hp ${Math.round(hpNow * 100)}% safe` });
     }
 
@@ -2844,7 +2872,7 @@ export default function (args = {}) {
         `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}, ringBad ${ringBad}`);
     const defense = { timedSweeps, holdFut: foS, split: fsS, chain: hcS };
-    const potion = { taps: presses.potion, healed: potionsUsed, ...potS };
+    const potion = { taps: presses.potion, healed: potionsUsed, slotSwaps, ...potS };
     const sorted = [...offHoldS.heldMs].sort((a, b) => a - b);
     const off = {
         qi: { ...qpS, execShownToTapMs: qpShownToTap, bossDropPx: qpBossDrop },

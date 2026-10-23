@@ -19,6 +19,7 @@ globalThis.match = (template) => ({ hit: !!cfg.match?.(template, time) });
 globalThis.touch = {
     down(p, id) {
         if (id === 0) stick = p;
+        cfg.onTap?.(p);
         touches.push({ op: "down", p, id, at: time, stick: [...stick] });
     },
     move(p, id) {
@@ -50,6 +51,8 @@ globalThis.color = ({ roi: [x, y], lower }) => {
         return { hit: true, results: [{ box: [150, 300, 400, 20], count: 9999 }] };
     }
     else if (y === 648 && x === 1004) box = [1004, 648, 34, 39];
+    // the item slot (SLOT_ROI): the potion's white gourd unless cfg.slot(time) says the other item is there
+    else if (y === 650 && x === 683 && !(cfg.slot && !cfg.slot(time))) box = [690, 655, 20, 20];
     return box ? { hit: true, results: [{ box, count: 999 }] } : { hit: false, results: [] };
 };
 globalThis.infer = (model) => {
@@ -304,6 +307,17 @@ const tests = {
         assert.ok(result.events.some((e) => e[2] === "potion" && e[3].startsWith("tap")), "the drink never went out");
         assert.equal(result.potion.healed, 1, `the heal was not counted: ${JSON.stringify(result.potion)}`);
         assert.equal(result.potion.fails, 0, `the heal was treated as a failed drink: ${JSON.stringify(result.potion)}`);
+    },
+    "a drink with the other item in the slot swaps it back first"() {
+        // the slot holds the poison: ITEM_OPEN, ITEM_PICK 600 ms later, then the drink once the slot reads the potion
+        let swapped = false;
+        const opts = { hp: () => 0.2, contacts: [], tell: [], slot: () => swapped };
+        const ts = run({ ms: 4000, potions: 1 }, { ...opts, onTap: (p) => { if (p[0] === 702 && p[1] === 575) swapped = true; } });
+        const downs = ts.touches.filter((t) => t.op === "down" && t.id === 1).map((t) => `${t.p[0]},${t.p[1]}`);
+        const open = downs.indexOf("700,633"), pick = downs.indexOf("702,575"), drink = downs.indexOf("700,690");
+        assert.ok(open >= 0 && pick > open, `no swap: ${downs}`);
+        assert.ok(drink > pick, `the drink did not follow the swap: ${downs}`);
+        assert.equal(ts.result.potion.slotSwaps, 1);
     },
     "a late potion heal after a hit during the drink is still counted"() {
         // Drink at 20%, take a real blow to 10%, then the delayed heal shows 50% (before the retry): no hit on the rise, the late heal
