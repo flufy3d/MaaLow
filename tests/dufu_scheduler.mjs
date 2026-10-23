@@ -127,6 +127,18 @@ const tests = {
         assert.ok(dodges.length >= 1, "the later contact was not dodged");
         assert.ok(result.events.some((e) => e[2] === "press" && e[3].startsWith("dodge")), "no dodge press");
     },
+    "parryJitter moves every 卸势 by its offset"() {
+        // the same three contacts: [5, 5] presses each 卸势 5 frames earlier, [-3, -3] 3 frames later
+        const downs = (a) => run({ phase: 2, ...a }, {}).touches.filter((t) => t.op === "down" && t.id === 1).map((t) => t.at);
+        const base = downs({}), early = downs({ parryJitter: [5, 5] }), late = downs({ parryJitter: [-3, -3] });
+        assert.ok(base.length >= 2, `base presses: ${base}`);
+        assert.equal(early.length, base.length);
+        assert.equal(late.length, base.length);
+        base.forEach((t, i) => {
+            assert.ok(Math.abs(t - early[i] - 5 * frameMs) <= frameMs + 1, `early ${early[i]} vs ${t}`);
+            assert.ok(Math.abs(late[i] - t - 3 * frameMs) <= frameMs + 1, `late ${late[i]} vs ${t}`);
+        });
+    },
     "phase 2 parries the def head's dodges"() {
         const { result, dodges, touches } = run({ phase: 2 }, { def: 2 });
         assert.equal(dodges.length, 0, `phase 2 dodged: ${dodges.map((d) => d.at)}`);

@@ -277,7 +277,7 @@ const SLOT_POTION_PX = 10;
 
 /** @typedef {{probs: number[], arg: number, p: number, label: string}} HeadOut */
 /** @typedef {{combo: HeadOut, stage: HeadOut, fut: number[][], def: number[][], tell: HeadOut}} Pred */
-/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, rearms?: number, relocked?: boolean}} PlanItem */
+/** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, rearms?: number, relocked?: boolean, jit?: number}} PlanItem */
 
 /**
  * @param {{ms?: number, potions?: number, prep?: boolean, phase?: number, trace?: boolean | "feat", head?: string, defDodgeP?: number}} [args] ms: run length
@@ -291,6 +291,14 @@ export default function (args = {}) {
     const maxPotions = args.potions ?? 1;
     const phase = args.phase === 2 ? 2 : 1;
     const headModel = args.head ?? MODEL;
+    // args.parryJitter [lo, hi] (frames, exploration, default off): each fut item draws an integer offset in [lo, hi]
+    // once and is pressed that much earlier (+) / later (-) than ISSUE_LEAD_MS, re-arms included; the press mark
+    // carries it ("jit+3f") for the offline timing study of the phase-2 big red moves (teacher: 卸势 at their own time)
+    const jitter = Array.isArray(args.parryJitter) ? args.parryJitter : null;
+    /** @returns {number} */
+    const drawJit = () => (jitter ? jitter[0] + Math.floor(Math.random() * (jitter[1] - jitter[0] + 1)) : 0);
+    /** The press lead of a fut item. @param {PlanItem | {jit?: number}} it */
+    const leadOf = (it) => ISSUE_LEAD_MS + (it.jit ?? 0) * FRAME_MS;
     const defDodgeP = phase === 2 && typeof args.defDodgeP === "number" ? args.defDodgeP : null; // @see defAction
     // args.flare2 true: phase 2 dodges a flare tell at its first report (flare2Tick); off by default: A/B r078-r093 8 vs 8
     // rounds, hits/min 9.9 vs 10.05, median life 109 vs 119 s (no difference), so phase 1 anchored dodges stay
@@ -678,7 +686,7 @@ export default function (args = {}) {
         it.pressedAt = 0;
         it.kind = kind === "avoid" && !inCurtain ? "parry" : kind;
         it.cMs = cMs;
-        it.atMs = cMs - ISSUE_LEAD_MS;
+        it.atMs = cMs - leadOf(it);
         it.untilMs = cMs + MISS_GRACE_MS;
         it.relocked = false;
         it.held = false;
@@ -769,7 +777,8 @@ export default function (args = {}) {
                 if (now - lastAvoidDropAt < 500) return;
                 lastAvoidDropAt = now;
             }
-            addItem({ kind: t.kind, k, src: "fut", cMs: t.cMs, atMs: t.cMs - ISSUE_LEAD_MS, untilMs: t.cMs + MISS_GRACE_MS, why: `pred k${k}${t.covers ? " covers both" : ""}` });
+            const jit = drawJit();
+            addItem({ kind: t.kind, k, src: "fut", cMs: t.cMs, atMs: t.cMs - ISSUE_LEAD_MS - jit * FRAME_MS, untilMs: t.cMs + MISS_GRACE_MS, jit, why: `pred k${k}${t.covers ? " covers both" : ""}` });
         } else if (!main.committed && !main.pressedAt) {
             if (Math.abs(t.cMs - main.cMs) > REVISE_MOVE_MS || t.kind !== main.kind) {
                 revisions++;
@@ -777,7 +786,7 @@ export default function (args = {}) {
                 main.kind = t.kind;
             }
             main.cMs = t.cMs;
-            main.atMs = t.cMs - ISSUE_LEAD_MS;
+            main.atMs = t.cMs - leadOf(main);
             main.untilMs = t.cMs + MISS_GRACE_MS;
         } else if (main.pressedAt && (main.rearms ?? 0) < REPRESS_MAX
                    && t.cMs - main.cMs > REVISE_MOVE_MS
@@ -790,10 +799,13 @@ export default function (args = {}) {
             rearmItem(main, main.kind, t.cMs, `contact moved +${Math.round(moved / FRAME_MS)}f`);
         }
         if (t.branchMs) {
-            if (!br) addItem({ kind: t.kind, k, src: "fut", branch: true, cMs: t.branchMs, atMs: t.branchMs - ISSUE_LEAD_MS, untilMs: t.branchMs + MISS_GRACE_MS, t1Ms: t.cMs, why: "branch (bimodal)" });
+            if (!br) {
+                const jit = drawJit();
+                addItem({ kind: t.kind, k, src: "fut", branch: true, cMs: t.branchMs, atMs: t.branchMs - ISSUE_LEAD_MS - jit * FRAME_MS, untilMs: t.branchMs + MISS_GRACE_MS, t1Ms: t.cMs, jit, why: "branch (bimodal)" });
+            }
             else if (!br.pressedAt) {
                 br.cMs = t.branchMs;
-                br.atMs = t.branchMs - ISSUE_LEAD_MS;
+                br.atMs = t.branchMs - leadOf(br);
                 br.untilMs = t.branchMs + MISS_GRACE_MS;
                 br.t1Ms = t.cMs;
             }
@@ -943,7 +955,7 @@ export default function (args = {}) {
             lastParryC = it.cMs;
             lastItemParryAt = lastParryAt;
             if (it.src !== "insure") pressedSinceHit = true;
-            mark("press", `parry k${it.k} ${it.src} c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f ${it.why}`);
+            mark("press", `parry k${it.k} ${it.src} c+${Math.round((it.cMs - lastParryAt) / FRAME_MS)}f ${it.why}${it.jit ? ` jit${it.jit > 0 ? "+" : ""}${it.jit}f` : ""}`);
         } else if (it.kind === "dodge") {
             // fut plans have no direction yet: resolve it at dispatch, so a cancelled plan does not consume a side
             if (!it.dir) it.dir = nextDir();
