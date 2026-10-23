@@ -261,8 +261,9 @@ const tests = {
         run({}, { def: 2 });
         assert.deepEqual([...heads], ["dufu/unified_head9s.onnx"]);
         const base = run({ phase: 2 }, { def: 2 }).touches;
-        assert.deepEqual(run({ phase: 2, head: "dufu/unified_head_p2.onnx" }, { def: 2 }).touches, base);
-        assert.deepEqual([...heads], ["dufu/unified_head_p2.onnx"]);
+        assert.deepEqual([...heads], ["dufu/unified_head_p2.onnx"], "phase 2 defaults to its own head");
+        assert.deepEqual(run({ phase: 2, head: "dufu/unified_head9s.onnx" }, { def: 2 }).touches, base);
+        assert.deepEqual([...heads], ["dufu/unified_head9s.onnx"]);
     },
     "phase 1 touches do not depend on phase / trace args"() {
         const base = run({}, { def: 2 }).touches;

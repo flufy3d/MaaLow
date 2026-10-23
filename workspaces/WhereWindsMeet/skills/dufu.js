@@ -25,6 +25,7 @@ import { argmax, futStats, headOut, softmax } from "./lib/dufu-math.js";
 export const meta = { description: "独夫 phase one (args.phase 2: phase two): model defense (卸势 / dodge / potion) + offense (near gate, 处决, 奇术)", timeout: 660_000 };
 
 const MODEL = "dufu/unified_head9s.onnx", BACK_MODEL = "dufu/unified_back9.onnx";
+const MODEL_P2 = "dufu/unified_head_p2.onnx"; // phase 2's head (tools/dufu_train), the default with args.phase 2
 const T = 30; // ring / seq window (frames)
 const F = 192; // backbone features per frame
 const A = 15; // aux columns per frame
@@ -171,7 +172,7 @@ const CAD_GAP_EDGES = [330, 345, 360, 380, 450, 600, 1000]; // the result's gap 
 // QP_EXEC_AFTER_MS after its sighting, but no later than QP2_EXEC_BY_MS after the candidate (真气 stayed empty
 // ~7.3-8 s in the windows without 处决). @see qpApproach
 const QP2_WALK_AFTER_MS = 300, QP2_WALK_MAX_MS = 4000, QP2_EXEC_BY_MS = 6000;
-// args.head swaps the head model (default MODEL), e.g. "dufu/unified_head_p2.onnx" (tools/dufu_train, same IO / slices).
+// args.head swaps the head model (default MODEL, MODEL_P2 with phase 2), e.g. "dufu/unified_head_p2e.onnx" (same IO / slices).
 // run length: the loop ends this long before the call's timeout (meta.timeout or --timeout), so a long ms ends as
 // "time" with its result (and the trace's last chunk) instead of being killed. The default 600 s run under the 660 s
 // meta.timeout is not clipped.
@@ -327,7 +328,7 @@ const SLOT_POTION_PX = 10;
 export default function (args = {}) {
     const maxPotions = args.potions ?? 1;
     const phase = args.phase === 2 ? 2 : 1;
-    const headModel = args.head ?? MODEL;
+    const headModel = args.head ?? (phase === 2 ? MODEL_P2 : MODEL);
     // args.parryJitter [lo, hi] (frames, exploration, default off): each fut item draws an integer offset in [lo, hi]
     // once and is pressed that much earlier (+) / later (-) than ISSUE_LEAD_MS, re-arms included; the press mark
     // carries it ("jit+3f") for the offline timing study of the phase-2 big red moves (teacher: 卸势 at their own time)

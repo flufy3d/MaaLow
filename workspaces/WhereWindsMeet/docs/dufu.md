@@ -62,15 +62,15 @@ dufu.js 现在只有一套行为：2026-10-20 第 737 轮的参数组合（当�
 老师：红光多、卸势能接，金光照闪；阶段二没有幕布。跑法：
 
 ```
-uv run python workspaces/WhereWindsMeet/tools/dufu_rounds.py data/p2 --n 10 --pull --heads dufu/unified_head_p2.onnx
-uv run maalow do skill dufu --args '{"phase":2,"head":"dufu/unified_head_p2.onnx","ms":900000}' --timeout 960000
+uv run python workspaces/WhereWindsMeet/tools/dufu_rounds.py data/p2 --n 10 --pull
+uv run maalow do skill dufu --args '{"phase":2,"ms":900000}' --timeout 960000
 ```
 
 `dufu_rounds.py` 每轮：进场 → 录像 → `dufu {"phase":2,"trace":"feat"}` → 停录 → 取 trace → `event_pad`（App 内存里只留最近 1000 条事件，trace 事件每条约 90 KB，堆积了 `GET /events` 会 OOM，`skills/event_pad.js` 用小事件把它们挤出去）。每轮存 `data/p2/rNNN/`（result、trace、args、录像 id），`--alt '[{...},{...}]'` 逐轮交替参数做 A/B。
 
 `phase:2` 的行为：开局不上毒、不切道具格（老师：实战二阶段接着一阶段打，没有上毒的空窗期；道具格只放药，喝药前读到不是药才换回来）；任务栏的「阶段二」不算结束；fut/def 头的普通闪避改成卸势；不进幕布（tell 幕布类 / 暗场 / 图像规则都关）；气竭读空 300 ms 还没看到处决按钮就往前走（每段最多 4 秒，按钮一出现就停），走过的话最晚读空后 6 秒点处决。
 
-**阶段二 head**（`unified_head_p2.onnx`，`tools/dufu_train/`）：back9 冻结，从 head9s 微调第二层 GRU 和输出头，trace 里存的就是设备上的 back9 特征；标签按旧文档（掉血帧 −5、卸势成功的真气台阶）。交叉验证覆盖率 61% → 92%，误触发持平；幕布误报清零。
+**阶段二 head**（`unified_head_p2.onnx`，`phase:2` 时默认用它，`head` 参数可换；`tools/dufu_train/`）：back9 冻结，从 head9s 微调第二层 GRU 和输出头，trace 里存的就是设备上的 back9 特征；标签按旧文档（掉血帧 −5、卸势成功的真气台阶）。交叉验证覆盖率 61% → 92%，误触发持平；幕布误报清零。
 
 **现状**（每组 8 轮交替，轮间波动很大，少于 8 对 8 看不出东西）：
 
@@ -96,8 +96,8 @@ uv run maalow do skill dufu --args '{"phase":2,"head":"dufu/unified_head_p2.onnx
 
 **卸势时机分析**（89 轮，`data/tmp/p2timing/`）：大部分红色招没有各自的特殊时机，卸势在接触前 3–9 帧按下就接得住；挨打主要来自对接触时间的预测偏差（第一次按键的提前量四分位 11–35 帧）。有特定时机的只找到一类：红色水平亮线出现后 12–21 帧落地的招，在亮线后 +6 帧（+3..+15）按，成功率约 95%，估计每分钟少挨约 0.3 下（还没做：图像检测每次约 33 ms）。抓取过场（1/254）、重击后约 28 帧的火球齐射（4/102）怎么按都接不住，只能接住或闪开第一下；金光有一招能把满血直接打成重伤（r162）。
 
-**红线卸势锚点**（`redLine`，阶段二，默认关，还没上机）：`--args '{"phase":2,"head":"dufu/unified_head_p2.onnx","redLine":true}'`（数字 = 起点后几帧，默认 6）。每帧读红线（`lib/dufu-reads.js` `redLine`）：x=400 / 680 两条 4 px 竖条找细红块，候选行再用 120 px 短条、全宽 3 行带（≥220 px、跨度 ≥300）和上下 18–30 px 的 12 行侧带（平均行 < 0.25 倍）确认，行范围 y 152–470；平时 2 次 color()，有候选 3–6 次（估计约 2–3 ms/帧，按 hp/qi/lit 约 0.8 ms/次推算；均值超过 5 ms 自动隔帧）。离线回放 29 轮 7.6k 帧（`data/tmp/p2timing/rl/`）：真红线起点 +2 帧内检出 62%，比离线规则多报的帧 0.7%。时间：分析里是按键时刻（Date.now()）减视频起点帧，视频帧对应抓帧时刻，所以锚点 = 红线帧的抓帧时刻（img.time − img.age_ms）+ 6 帧，LATENCY_F 已含在统计里；实际按下约在起点 +6..+8 帧。规则：一段红线（帧间隔 ≤3.5 帧）只算一次；ok / 挨打读数落在起点前 2 帧到后 6 帧（即接触后 8 帧内的冲击闪光）就忽略，已排的卸势撤掉；窗口 [+3, +15] 帧：之前要按的 fut 卸势推到锚点，窗口里已有 fut 卸势就不另加，否则加一个 red 卸势（等 CD / 锁定，过了窗口就放弃）；窗口里按过一次后其余的撤掉。结果里 `redLine`：onsets / ignored / moved / covered / presses / pressF（实际按下在起点后几帧）/ after（按后第一个 ok / 挨打）/ readMs / calls。
+**红线卸势锚点**（`redLine`，阶段二，默认关，上机没有改善，见上表）：`--args '{"phase":2,"redLine":true}'`（数字 = 起点后几帧，默认 6）。每帧读红线（`lib/dufu-reads.js` `redLine`）：x=400 / 680 两条 4 px 竖条找细红块，候选行再用 120 px 短条、全宽 3 行带（≥220 px、跨度 ≥300）和上下 18–30 px 的 12 行侧带（平均行 < 0.25 倍）确认，行范围 y 152–470；平时 2 次 color()，有候选 3–6 次（估计约 2–3 ms/帧，按 hp/qi/lit 约 0.8 ms/次推算；均值超过 5 ms 自动隔帧）。离线回放 29 轮 7.6k 帧（`data/tmp/p2timing/rl/`）：真红线起点 +2 帧内检出 62%，比离线规则多报的帧 0.7%。时间：分析里是按键时刻（Date.now()）减视频起点帧，视频帧对应抓帧时刻，所以锚点 = 红线帧的抓帧时刻（img.time − img.age_ms）+ 6 帧，LATENCY_F 已含在统计里；实际按下约在起点 +6..+8 帧。规则：一段红线（帧间隔 ≤3.5 帧）只算一次；ok / 挨打读数落在起点前 2 帧到后 6 帧（即接触后 8 帧内的冲击闪光）就忽略，已排的卸势撤掉；窗口 [+3, +15] 帧：之前要按的 fut 卸势推到锚点，窗口里已有 fut 卸势就不另加，否则加一个 red 卸势（等 CD / 锁定，过了窗口就放弃）；窗口里按过一次后其余的撤掉。结果里 `redLine`：onsets / ignored / moved / covered / presses / pressF（实际按下在起点后几帧）/ after（按后第一个 ok / 挨打）/ readMs / calls。
 
-**节拍卸势**（`cadence`，阶段二，默认关，还没上机；依据和规格见 `tools/dufu_train/README.md` 的离线回放和「dufu.js 集成规格」）：`--args '{"phase":2,"head":"dufu/unified_head_p2e.onnx","cadence":0.1}'`（数字 = 门限 G，回放 0.05 ≈ 115 按键/分，0.1 ≈ 100，0.15 ≈ 88）。G = head 输出 lead1f（out[133..178]，softmax）第 2–16 帧档之和；head 没有这 46 列（输出不足 179）时节拍不开，结果 `cadence.off` 写原因。脚本记「游戏最后一次执行的卸势」exeAt（任何来源的卸势落指：距 exeAt ≥ 330 ms 或其后有 ok 才算执行，否则记为被锁吞掉），锁到 exeAt + 330（有 ok 解锁）；每帧 G ≥ 门限、锁结束 +15 ms、距上次卸势 ≥ 220 ms、不在硬直 / 喝药保持 / 闪避 / 气竭窗口、100 ms 内没有要按的闪避、没有待按的药，就按一下卸势（标记 `press parry cadence G0.xx`）。紧急喝药（hp ≤ 15% 或已等 2.5 s）时节拍最多让 600 ms。开着时不跑 syncK（fut 卸势、分支、重按、relock 等待）、expire 的重按、挨打逃脱和保险卸势；金光 / tell 闪避、处决照旧；喝药的安静条件改成 G < 门限（不看 fut1 质量）；进攻（近身门的各动作、横刀整套起手、远距贴近、奇术 / 追击）要求 G < 门限；红线锚点的卸势也要等节拍的锁，两者不会在一次锁里各按一下。结果里 `cadence`：presses、touches（全部卸势落指）、swallowed（估计被锁吞掉的）、openShare（门限开着的帧比例）、gapHist / gapMs（相邻卸势落指间隔，应集中在 345–380 ms）、yields、wait（门限开着但没按的原因计数）。
+**节拍卸势**（`cadence`，阶段二，默认关，上机没有改善，见上表；依据和规格见 `tools/dufu_train/README.md` 的离线回放和「dufu.js 集成规格」）：`--args '{"phase":2,"head":"dufu/unified_head_p2e.onnx","cadence":0.1}'`（数字 = 门限 G，回放 0.05 ≈ 115 按键/分，0.1 ≈ 100，0.15 ≈ 88）。G = head 输出 lead1f（out[133..178]，softmax）第 2–16 帧档之和；head 没有这 46 列（输出不足 179）时节拍不开，结果 `cadence.off` 写原因。脚本记「游戏最后一次执行的卸势」exeAt（任何来源的卸势落指：距 exeAt ≥ 330 ms 或其后有 ok 才算执行，否则记为被锁吞掉），锁到 exeAt + 330（有 ok 解锁）；每帧 G ≥ 门限、锁结束 +15 ms、距上次卸势 ≥ 220 ms、不在硬直 / 喝药保持 / 闪避 / 气竭窗口、100 ms 内没有要按的闪避、没有待按的药，就按一下卸势（标记 `press parry cadence G0.xx`）。紧急喝药（hp ≤ 15% 或已等 2.5 s）时节拍最多让 600 ms。开着时不跑 syncK（fut 卸势、分支、重按、relock 等待）、expire 的重按、挨打逃脱和保险卸势；金光 / tell 闪避、处决照旧；喝药的安静条件改成 G < 门限（不看 fut1 质量）；进攻（近身门的各动作、横刀整套起手、远距贴近、奇术 / 追击）要求 G < 门限；红线锚点的卸势也要等节拍的锁，两者不会在一次锁里各按一下。结果里 `cadence`：presses、touches（全部卸势落指）、swallowed（估计被锁吞掉的）、openShare（门限开着的帧比例）、gapHist / gapMs（相邻卸势落指间隔，应集中在 345–380 ms）、yields、wait（门限开着但没按的原因计数）。
 
 **挨打归因**（4 轮 p2 头，`data/tmp/p2hits/`）：模型每次都有计划和按键。掉血大头是金光开场的一串（43%，抓取一次 5 下约 24% 血）、按了卸势仍挨打的单发（35%，按键时机分布和成功的一样，像是招本身接不住：血龙横扫、台阶上的远程齐射 / 喷火、火焰鬼面、地面爆裂）、红色连段后续（18%）。boss 掉血一半来自处决（每次约 16%），陌刀蓄力在阶段二几乎不放（冷蓄力被禁、热蓄力很少满足）。
