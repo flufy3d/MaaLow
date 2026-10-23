@@ -387,16 +387,15 @@ const tests = {
         assert.ok(taps[1] - taps[0] >= 220 && taps[1] - taps[0] < 300, `after the ok: ${taps[1] - taps[0]} ms`);
         assert.equal(result.cadence.swallowed, 0);
     },
-    "phase 2 cadence waits out a stagger and plans no escape / insurance 卸势"() {
-        // a 5% blow read at ~1200 ms: 300 ms stagger
-        const { result, touches } = run({ phase: 2, head: P2E, cadence: 0.1, ms: 3000 }, { gate: (t) => t >= 1000, hp: (t) => t < 1200 ? 0.8 : 0.75 });
+    "phase 2 cadence is not gated by a hit and plans no post-hit fallback 卸势"() {
+        // a 30% real-fight blow read at ~1200 ms: cadence keeps its ~345 ms beat without any stagger wait
+        const { result, touches } = run({ phase: 2, head: P2E, cadence: 0.1, ms: 3000 }, { gate: (t) => t >= 1000, hp: (t) => t < 1200 ? 0.8 : 0.5 });
         const hit = result.events.find((e) => e[2] === "hit");
         assert.ok(hit, "no hit");
         const taps = parryTaps(touches);
-        assert.ok(!taps.some((t) => t > hit[1] && t < hit[1] + 300), `a tap in the stagger: ${taps} / hit ${hit[1]}`);
-        assert.ok(taps.some((t) => t >= hit[1] + 300 && t < hit[1] + 300 + 2 * frameMs), `no tap at the stagger end: ${taps}`);
-        assert.ok(result.cadence.wait.stagger > 0, JSON.stringify(result.cadence.wait));
-        assert.ok(!result.events.some((e) => e[2] === "escape" || (e[2] === "press" && /hitEscape|posthit/.test(e[3]))), "an escape / insurance 卸势");
+        assert.ok(taps.some((t) => t > hit[1] && t < hit[1] + 250), `cadence gated after hit: ${taps} / hit ${hit[1]}`);
+        assert.equal(result.cadence.wait.stagger, undefined, JSON.stringify(result.cadence.wait));
+        assert.ok(!result.events.some((e) => e[2] === "press" && /posthit/.test(e[3])), "a post-hit fallback 卸势 with cadence on");
     },
     "phase 2 cadence yields to an urgent potion and waits out the drink"() {
         const { result, touches } = run({ phase: 2, head: P2E, cadence: 0.1, ms: 4000, potions: 1 }, { gate: () => true, hp: (t) => t < 1500 ? 0.8 : 0.1 });
@@ -481,6 +480,30 @@ const tests = {
         const hits = result.events.filter((e) => e[2] === "hit");
         assert.equal(hits.length, 1, `expected one hit: ${hits.map((e) => e[3])}`);
         assert.ok(hits[0][3].startsWith("80%->75%"), `unexpected hit text: ${hits[0][3]}`);
+    },
+    "a heavy 30% hit does not block defense 卸势, uses only PARRY_CD_MS relock within 300 ms, and falls back when quiet"() {
+        // Real-fight 30% blow (70%->40%) at 1200 ms with a follow-up contact at 1750 ms (due ~1260 ms, inside the old
+        // 500 ms stagger) and a drifting re-arm to 1980 ms (due ~1480 ms, > PARRY_CD_MS 220 ms and < PARRY_RELOCK_MS
+        // 330 ms after the first press). Both must press without stagger block or 330 ms fake relock.
+        const { result, touches } = run({ ms: 2600 }, {
+            hp: (t) => t < 1200 ? 0.70 : 0.40,
+            contacts: [], def: 1,
+            futFn: (t) => t < 1220 ? null : t < 1400 ? 1750 : 1980,
+        });
+        const hit = result.events.find((e) => e[2] === "hit");
+        assert.ok(hit && hit[3].startsWith("70%->40%"), `hit: ${hit?.[3]}`);
+        const taps = parryTaps(touches);
+        assert.ok(taps.length >= 2, `expected follow-up + re-arm presses, got ${taps}`);
+        assert.ok(taps[0] > hit[1] && taps[0] < hit[1] + 150, `first defense press held after hit: ${taps[0]} vs hit ${hit[1]}`);
+        assert.ok(taps[1] - taps[0] >= 220 && taps[1] - taps[0] < 320, `post-hit press imposed 330 ms relock: gap ${taps[1] - taps[0]} (${taps})`);
+        assert.equal(result.blocked.stagger, undefined);
+        assert.equal(result.insurePresses, 0, "fallback fired despite a planned press");
+        // Quiet model after a hit: one post-hit fallback 卸势 ~250 ms after onHit
+        const quiet = run({ ms: 2500 }, { hp: (t) => t < 1200 ? 0.70 : 0.40, contacts: [], tell: [] });
+        const qHit = quiet.result.events.find((e) => e[2] === "hit");
+        const qTaps = parryTaps(quiet.touches);
+        assert.equal(quiet.result.insurePresses, 1);
+        assert.ok(qTaps.length === 1 && qTaps[0] >= qHit[1] + 250 && qTaps[0] < qHit[1] + 330, `fallback tap ${qTaps} vs hit ${qHit[1]}`);
     },
     "a potion 20%->40% is not a hit and the heal is not swallowed"() {
         // Drink at 20%, the bar fills to 40%, then a real blow takes it to 35%: exactly one hit, based on the heal.

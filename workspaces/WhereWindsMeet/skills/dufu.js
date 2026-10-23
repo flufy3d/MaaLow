@@ -2,8 +2,8 @@
 // feature + 15 aux columns into the device's feature ring -> causal GRU head dufu/unified_head9s.onnx (no image input,
 // seq [1,30,207] read from the ring) -> combo / stage / fut1-3 / def1-3 / tell -> a defense plan (卸势 / dodge / potion)
 // rebuilt every frame, frozen near its press, executed under the button cooldowns. Around it: the flare (金光) anchored
-// dodges, the curtain (幕布) gap rules and timed sweep dodges, the hit chain (stagger by drop, the escape 卸势, the
-// relock wait), the safe drink, and the offense (the near gate after a 卸势 ok, the committed 横刀 set, the far
+// dodges, the curtain (幕布) gap rules and timed sweep dodges, the post-hit fallback 卸势 and relock wait, the safe
+// drink, and the offense (the near gate after a 卸势 ok, the committed 横刀 set, the far
 // close-in, the 气竭 window with 处决, 奇术, the 横刀 ok follow-up). Slow reads only run on the frame budget's leftover.
 // The behavior is the 2026-10-20 r737 baseline (the args it ran with are the constants here); docs/dufu.md has the
 // numbers and what was tried.
@@ -73,7 +73,6 @@ const BRANCH_MIN_P = 0.2, BRANCH_SEP_BINS = 5, BRANCH_KEEP_P = 0.25; // bimodal 
 const BRANCH_LATE_MS = 400; // an unreleased branch this stale: drop
 const TRIG_TH = 0.45; // the timing-head trigger (S1 = fut bins 1-5): a contact this likely within 4-19 frames acts
 const DODGE_MIN_P = 0.5; // def1 "dodge" below this is treated as parry (the dodge class over-fires in fights)
-const HOLD_MIN_LEAD = 4; // frames: a press held by the hit stagger goes at its end only with this much lead left
 // repress: a pressed fut item whose contact moved >= REPRESS_GAP_FRAMES later (the 横刀 long wind-ups) or that is
 // about to expire while the fresh fut still shows a contact within REPRESS_LOOK_FRAMES is re-armed, at most REPRESS_MAX
 // times (the old one-shot flag left a stale pressed k0 in the slot, 726 t7251).
@@ -100,14 +99,14 @@ const SWEEP_DARK_LAG_F = 3.3, SWEEP_HIT_LAG_F = 7.2; // device sync time - sweep
 const DODGE_SHOW_F = 0.65; // a dodge tap shows white this long after a 卸势 tapped at the same moment would light
 const SWEEP_LATE_MS = 100, SWEEP_GAP_MS = 300, SWEEP_QUIET_MS = 600, SWEEP_DARK_GAP_MS = 500, SWEEP_HIT_NEAR_F = 10;
 
-// the hit chain. The stagger follows the read drop ([maxDrop, ms], first row that fits). After a hit up to
-// HIT_ESC_MAX_DROP one 卸势 goes at the stagger's end (not in / just after the curtain, not while drinking, not when a
-// plan 卸势 goes within HIT_ESC_YIELD_F), else one post-hit insurance 卸势 there (skipped when the plan has a pending
-// item or pressed since the hit). A 卸势 within PARRY_RELOCK_MS of the last one, nothing back since and the same believed
-// contact (<= RELOCK_SAME_F apart, or a re-armed / insurance one) waits for the game's lock to end; with less than
-// RELOCK_MIN_LEAD_F lit lead left there it is dropped.
-const STAGGER_BY_DROP = [[0.04, 100], [0.065, 300], [1, 500]];
-const HIT_ESC_MAX_DROP = 0.065, HIT_ESC_WIN_F = 4, HIT_ESC_YIELD_F = 3;
+// post-hit & relock. Defense is never gated after a hit (the HP drop already lags ~5 f behind the blow); offense /
+// walk pause POST_HIT_MS, and one fallback 卸势 (src "insure") goes there when no defense press went since the hit and
+// no plan item is pending (not in / just after the curtain, not while drinking, not with cadence on). A 卸势 within
+// POST_HIT_RELOCK_MS after a hit keeps only PARRY_CD_MS (if the blow's stun swallowed it, the game did not start a
+// PARRY_RELOCK_MS lock). Otherwise a 卸势 within PARRY_RELOCK_MS of the last one, nothing back since and the same
+// believed contact (<= RELOCK_SAME_F apart, or a re-armed / insurance one) waits for the game's lock to end; with less
+// than RELOCK_MIN_LEAD_F lit lead left there it is dropped.
+const POST_HIT_MS = 250, POST_HIT_RELOCK_MS = 300;
 const PARRY_RELOCK_MS = 330, RELOCK_SAME_F = 8, RELOCK_MIN_LEAD_F = 2;
 const LATENCY_F = 5; // press -> on screen, frames
 // phase 2 (teacher, 2026-10-23): most blows there are red-light (红光) ones a 卸势 takes; 金光 must still be dodged.
@@ -157,10 +156,10 @@ const RL_CONTACT_F = 16, RL_MISS_F = 30, RL_COST_MS = 5, RL_COST_N = 30;
 // G = sum of lead1f bins CAD_LO..CAD_HI. exeAt = the game's last executed 卸势 as we believe it: on every 卸势 touch (any
 // source) exeAt = now when now - exeAt >= CAD_LOCK_MS or an ok came since exeAt, else the touch is swallowed by the
 // game's lock. lockEnd = an ok since exeAt ? 0 : exeAt + CAD_LOCK_MS. Each frame (before executePlan) a 卸势 goes when
-// G >= th, now >= lockEnd + CAD_PAD_MS, PARRY_CD_MS since the last 卸势, not in stagger / potion hold / dodge / a 气竭
+// G >= th, now >= lockEnd + CAD_PAD_MS, PARRY_CD_MS since the last 卸势, not in potion hold / dodge / a 气竭
 // window, no dodge item due within CAD_DODGE_MS, no potion item waiting, and no urgent drink yield (up to CAD_YIELD_MS
-// per urgent spell). With it on, syncK (fut items, branches, re-presses, relock waits), expire's re-presses, the hit
-// escape and the post-hit insurance 卸势 are off; tell / flare dodges, the potion (its quiet test is G < th), the offense
+// per urgent spell). With it on, syncK (fut items, branches, re-presses, relock waits), expire's re-presses and the
+// post-hit fallback 卸势 are off; tell / flare dodges, the potion (its quiet test is G < th), the offense
 // (starts only with G < th: a 卸势 lets a held 蓄力 go), 处决 and the red-line anchor (it waits out the same lock) stay.
 const CAD_OFF = 133, CAD_N = 46, CAD_LO = 2, CAD_HI = 16;
 const CAD_LOCK_MS = PARRY_RELOCK_MS, CAD_PAD_MS = 15, CAD_DODGE_MS = 100, CAD_YIELD_MS = 600;
@@ -210,7 +209,7 @@ const POTION_SETTLE_MS = 2500, POTION_WAIT_MAX_MS = 2500;
 // upDue; every defense touch lets a held 蓄力 go first (a finger still down restarts it).
 // m30 / m40 / m60: fut1 mass of a contact within 1-30 / 1-40 / 1-60 f.
 // The near gate: an ok within OFF_OK_MS or the boss bar down >= OFF_DROP_PX within OFF_DROP_WIN_MS (damage 0-5 s after
-//   an ok took boss px 95%, later 32%), m30 <= OFF_GATE_VETO_TH, no combo veto, not in curtain / dodge / stagger /
+//   an ok took boss px 95%, later 32%), m30 <= OFF_GATE_VETO_TH, no combo veto, not in curtain / dodge /
 //   potion / OFF_OK_AFTER_HIT_MS after a hit / OFF_AFTER_TELL_MS after a tell. In it: hot 蓄力 (热血难凉; a switch to
 //   陌刀 only for that), else back to 横刀; 唤千军 on a fresh ok while still 陌刀; 横刀 轻蓄力 (held 轻击) as the filler.
 //   A 蓄力 starts only with m60 < OFF_CHARGE_FREE (a 卸势 0-500 ms after the release leaves 0 damage). No cold 蓄力:
@@ -470,7 +469,7 @@ export default function (args = {}) {
     const pressIdx = []; // frame indices (frameIdx space) a button press was issued at
     let lastParryAt = 0, lastDodgeAt = 0, lastPotionAt = 0, lastWalkAt = 0;
     let lastOkAt = 0, lastHitAt = 0;
-    let staggerUntil = 0, potionHoldUntil = 0;
+    let potionHoldUntil = 0;
     /** @type {number | null} */
     let hpNow = null;
     // The confirmed injury baseline: `hpNow` is the latest read (display, potion), `hpBase` only follows a drop or an
@@ -500,13 +499,9 @@ export default function (args = {}) {
     let flareLastFireAt = 0, flareFirstAt = 0, flareLastArg = -1; // the current flare episode's onset
     let flareSeenAt = 0; // the image flare rule's last hit
     let sweepAt = 0, sweepK = 1, sweepSrc = "", lastDarkAt = 0, timedSweeps = 0; // the timed sweep dodges
-    // the hit chain: the pending escape, the last 卸势's believed contact / plan press, counts
-    /** @type {{hitAt: number, at: number} | null} */
-    let esc = null;
-    let lastParryC = 0, lastItemParryAt = 0;
+    // relock: the last 卸势's believed contact, counts
+    let lastParryC = 0;
     const hcS = {
-        stagger: /** @type {Record<string, number>} */ ({}),
-        esc: { scheduled: 0, parry: 0, yieldPlan: 0, superseded: 0, late: 0, skip: /** @type {Record<string, number>} */ ({}) },
         relock: { delayed: 0, pressed: 0, gaveUp: 0, bySrc: /** @type {Record<string, number>} */ ({}) },
     };
     // the cadence 卸势 (@see CAD_OFF): on / why off, the gate value, the believed executed 卸势, the drink yield, stats
@@ -595,7 +590,7 @@ export default function (args = {}) {
     let plan = [];
     let headCalls = 0, ready = 0, looks = 0, reason = "time";
     let hits = 0, oks = 0, misses = 0, late = 0, revisions = 0, branches = 0, branchDrops = 0;
-    let holds = 0, holdPresses = 0, insurePresses = 0, pressedSinceHit = false, rerepresses = 0;
+    let insurePresses = 0, pressedSinceHit = false, rerepresses = 0;
     const presses = { parry: 0, dodge: 0, potion: 0, walk: 0 };
     /** @type {Record<string, number>} */
     const blocked = {};
@@ -627,10 +622,7 @@ export default function (args = {}) {
             cadHas = out.length >= CAD_OFF + CAD_N;
             cadOn = cadHas;
             if (!cadHas) cadS.off = `${headModel}: ${out.length} outputs, no lead1f at ${CAD_OFF}..${CAD_OFF + CAD_N - 1}`;
-            else {
-                esc = null; // a hit before the first output (the ring filling) planned the old chain
-                plan = plan.filter((x) => x.src !== "insure");
-            }
+            else plan = plan.filter((x) => x.src !== "insure"); // a hit before the first output planned the fallback
             mark("cadence", cadOn ? `on: G (lead1f ${CAD_LO}-${CAD_HI}f) >= ${cadTh}` : `off (${cadS.off})`);
         }
         if (!cadOn) return;
@@ -1064,6 +1056,7 @@ export default function (args = {}) {
             inDodge = false;
         }
         lastDodgeAt = Date.now();
+        pressedSinceHit = true;
     }
     /** @param {PlanItem} it @param {number} now */
     function press(it, now) {
@@ -1075,7 +1068,6 @@ export default function (args = {}) {
             presses.parry++;
             it.pressedAt = lastParryAt;
             lastParryC = it.cMs;
-            lastItemParryAt = lastParryAt;
             if (it.src !== "insure") pressedSinceHit = true;
             // a fut 卸势 held for a red line's anchor (@see redLineTick)
             const moved = it.src !== "red" && rlEp && it.floorMs === rlEp.at ? ` redline +${((lastParryAt - rlEp.on) / FRAME_MS).toFixed(1)}f moved` : "";
@@ -1112,7 +1104,6 @@ export default function (args = {}) {
     function pressBlocked(it, now) {
         // the offense is deliberately absent: offBusyUntil / offHold only gate offense. A defense press goes regardless;
         // tap() only lets a held 蓄力 go first (offYield).
-        if (now < staggerUntil) return "stagger";
         if (now < potionHoldUntil && it.kind !== "dodge") return "potion"; // a dodge keeps the drink
         if (inDodge) return "dodge";
         if (it.kind === "parry" && now - lastParryAt < PARRY_CD_MS) return "parry cd";
@@ -1155,10 +1146,11 @@ export default function (args = {}) {
                 continue;
             }
             if (it.src === "insure") {
-                // post-hit insurance: fires at the stagger's end; blocked -> retry (until expiry); skipped when the
-                // plan already has a pending item or pressed since the hit
-                if (pressBlocked(it, now)) continue;
-                if (relockAt(now, it.cMs, true)) continue; // retried until it expires
+                // post-hit fallback: fires POST_HIT_MS after a hit when no defense press went since and no plan item is live
+                if (inCurtain) {
+                    dropItem(it, "posthit: curtain");
+                    continue;
+                }
                 if (pressedSinceHit) {
                     dropItem(it, "posthit: plan pressed");
                     continue;
@@ -1167,6 +1159,8 @@ export default function (args = {}) {
                     dropItem(it, "posthit: plan live");
                     continue;
                 }
+                if (pressBlocked(it, now)) continue;
+                if (relockAt(now, it.cMs, true)) continue; // retried until it expires
                 tap(PARRY);
                 lastParryAt = Date.now();
                 pressFrame(frameIdx);
@@ -1179,7 +1173,7 @@ export default function (args = {}) {
                 continue;
             }
             if (it.src === "red") {
-                // the red-line 卸势: waits out the CD / stagger / relock while its window lasts (redLineTick ends it)
+                // the red-line 卸势: waits out the CD / relock while its window lasts (redLineTick ends it)
                 const why = pressBlocked(it, now) || (relockAt(now, it.cMs, true) ? "relock" : "")
                     || (cadOn && now < cadLockEnd() ? "cadence lock" : ""); // not inside a cadence 卸势's lock
                 if (why) {
@@ -1216,69 +1210,28 @@ export default function (args = {}) {
             }
             if (why) {
                 blocked[why] = (blocked[why] ?? 0) + 1;
-                if (why === "stagger" && !it.branch && it.cMs - now >= HOLD_MIN_LEAD * FRAME_MS) {
-                    if (!it.held) {
-                        it.held = true;
-                        holds++;
-                        mark("hold", `${it.kind} k${it.k} stagger, ${Math.round((it.cMs - now) / FRAME_MS)}f lead left`);
-                    }
-                    continue; // keep the item: retry every frame until the stagger ends
-                }
                 mark("blocked", `${it.kind} k${it.k} ${why}`);
                 dropItem(it, `blocked ${why}`);
                 continue;
             }
-            if (it.held && it.cMs - now < HOLD_MIN_LEAD * FRAME_MS) {
-                dropItem(it, "held: too late");
-                continue;
-            }
             press(it, now);
-            if (it.held) holdPresses++;
             if (it.relocked) hcS.relock.pressed++;
         }
     }
     /**
-     * When a 卸势 for believed contact cMs may go (0 = now): the last 卸势 is younger than PARRY_RELOCK_MS, nothing (ok /
-     * hit) came back since, and it is the same contact (same = a re-armed / insurance press, or believed contacts <=
-     * RELOCK_SAME_F apart; a different contact after an ok is never locked in-game).
+     * When a 卸势 for believed contact cMs may go (0 = now): the last 卸势 is younger than PARRY_RELOCK_MS (PARRY_CD_MS
+     * when that 卸势 went within POST_HIT_RELOCK_MS after a hit), nothing (ok / hit) came back since, and it is the same
+     * contact (same = a re-armed / insurance press, or believed contacts <= RELOCK_SAME_F apart; a different contact
+     * after an ok is never locked in-game).
      * @param {number} now @param {number} cMs @param {boolean} same
      */
     function relockAt(now, cMs, same) {
         if (!lastParryAt) return 0;
-        const end = lastParryAt + PARRY_RELOCK_MS;
+        const lockMs = lastHitAt && lastParryAt > lastHitAt && lastParryAt - lastHitAt < POST_HIT_RELOCK_MS ? PARRY_CD_MS : PARRY_RELOCK_MS;
+        const end = lastParryAt + lockMs;
         if (now >= end || lastOkAt >= lastParryAt || lastHitAt >= lastParryAt) return 0;
         if (!same && Math.abs(cMs - lastParryC) > RELOCK_SAME_F * FRAME_MS) return 0;
         return end;
-    }
-    /** The escape 卸势 at the hit's stagger end, unless a plan 卸势 goes then. @param {number} now */
-    function hitEscTick(now) {
-        if (!esc || now < esc.at) return;
-        const yieldF = HIT_ESC_YIELD_F * FRAME_MS;
-        if ((lastItemParryAt > esc.hitAt && lastItemParryAt >= esc.at - yieldF)
-            || plan.some((o) => o.kind === "parry" && o.src !== "insure" && !o.pressedAt && !o.branch && o.atMs <= now + yieldF)) {
-            esc = null;
-            hcS.esc.yieldPlan++;
-            mark("escape", "parry: a plan 卸势 goes now");
-            return;
-        }
-        if (now > esc.at + HIT_ESC_WIN_F * FRAME_MS) {
-            hcS.esc.late++;
-            mark("escape", `parry given up (+${now - esc.at} ms past the stagger end)`);
-            esc = null;
-            return;
-        }
-        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil || now - lastParryAt < PARRY_CD_MS) return;
-        if (relockAt(now, now + ISSUE_LEAD_MS, true)) return;
-        const hitAt = esc.hitAt;
-        esc = null;
-        hcS.esc.parry++;
-        const c = now + ISSUE_LEAD_MS;
-        tap(PARRY);
-        lastParryAt = Date.now();
-        lastParryC = c;
-        pressFrame(frameIdx);
-        presses.parry++;
-        mark("press", `parry k-1 hitEscape +${now - hitAt}ms c+${Math.round((c - lastParryAt) / FRAME_MS)}f`);
     }
     /** The cadence 卸势 (@see CAD_OFF), per frame after syncPlan, before executePlan. @param {number} now */
     function cadenceTick(now) {
@@ -1294,7 +1247,6 @@ export default function (args = {}) {
         if (cadG < cadTh) return;
         const why = now < cadLockEnd() + CAD_PAD_MS ? "lock"
             : now - lastParryAt < PARRY_CD_MS ? "parry cd"
-            : now < staggerUntil ? "stagger"
             : now < potionHoldUntil ? "potion"
             : inDodge ? "dodge"
             : qp.shown ? "qi"
@@ -1390,52 +1342,28 @@ export default function (args = {}) {
         hits++;
         lastHitAt = now;
         pressedSinceHit = false;
-        const drop = before - after;
-        let stg = STAGGER_BY_DROP[STAGGER_BY_DROP.length - 1][1];
-        const row = STAGGER_BY_DROP.find((x) => drop <= x[0] + 1e-9);
-        if (row) stg = row[1];
-        hcS.stagger[stg] = (hcS.stagger[stg] ?? 0) + 1;
-        staggerUntil = Math.max(staggerUntil, now + stg);
-        // keep the unpressed items that still target a future contact (the fresh fut head often goes quiet during the
-        // stagger and never rebuilds them); only stale / consumed ones go
+        // keep the unpressed items that still target a future contact (the fresh fut head often goes quiet after a
+        // blow and never rebuilds them); only stale / consumed / old post-hit ones go
         const n = plan.length;
         /** @type {PlanItem[]} */
         const keep = [];
         for (const it of plan) {
-            if (!it.pressedAt && it.cMs > now + 2 * FRAME_MS) keep.push(it);
+            if (!it.pressedAt && it.src !== "insure" && it.cMs > now + 2 * FRAME_MS) keep.push(it);
             else mark("plan", `- ${it.kind} k${it.k} hit ${it.pressedAt ? "pressed" : "stale"}`);
         }
         plan = keep;
         mark("hit", `${Math.round(before * 100)}%->${Math.round(after * 100)}% (${n - keep.length}/${n} dropped, ${keep.length} kept)`);
-        mark("stagger", `${stg} ms (drop ${Math.round(drop * 1000) / 10}%)`);
         // a hit in the curtain is a sweep: re-sync when unsynced or near a predicted sweep
         if (inCurtain || now - curtainLastAt < CURTAIN_GONE_MS) {
             const est = now - SWEEP_HIT_LAG_F * FRAME_MS;
             const valid = sweepAt && est - sweepAt <= (SWEEP_N + 0.5) * SWEEP_PERIOD_MS;
             const j = valid ? Math.round((est - sweepAt) / (SWEEP_PERIOD_MS)) : 0;
             if (!valid || (j >= 1 && Math.abs(est - sweepAt - j * SWEEP_PERIOD_MS) <= SWEEP_HIT_NEAR_F * FRAME_MS)) sweepSync(est, "hit");
+            return;
         }
-        // one escape 卸势 at this hit's stagger end, else the insurance one (heavy blows, curtain, potion); a newer hit
-        // supersedes a pending escape
-        if (esc) {
-            hcS.esc.superseded++;
-            mark("escape", "superseded by a new hit");
-        }
-        esc = null;
-        if (cadOn) return; // no escape / insurance 卸势: after the stagger the cadence presses while its gate is open
-        const skip = inCurtain || now - curtainLastAt < CURTAIN_GONE_MS ? "curtain"
-            : now < potionHoldUntil || potionPend || plan.some((x) => x.kind === "potion") ? "potion"
-            : drop > HIT_ESC_MAX_DROP ? "heavy" : "";
-        if (skip) {
-            hcS.esc.skip[skip] = (hcS.esc.skip[skip] ?? 0) + 1;
-            mark("escape", `skip (${skip})`);
-            addItem({ kind: "parry", k: -1, src: "insure", cMs: now + stg, atMs: now + stg,
-                      untilMs: now + stg + 30 * FRAME_MS, why: "posthit narrow" });
-        } else {
-            esc = { hitAt: now, at: staggerUntil };
-            hcS.esc.scheduled++;
-            mark("escape", `parry at +${staggerUntil - now} ms`);
-        }
+        if (cadOn || now < potionHoldUntil || potionPend || plan.some((x) => x.kind === "potion")) return;
+        addItem({ kind: "parry", k: -1, src: "insure", cMs: now + POST_HIT_MS + ISSUE_LEAD_MS, atMs: now + POST_HIT_MS,
+                  untilMs: now + POST_HIT_MS + 30 * FRAME_MS, why: "posthit" });
     }
     /** @param {number} now */
     function onOk(now) {
@@ -1723,7 +1651,7 @@ export default function (args = {}) {
                 sweepK++;
                 continue;
             }
-            if (inDodge || now < staggerUntil || now < potionHoldUntil || now - lastDodgeAt < SWEEP_GAP_MS) return; // retry
+            if (inDodge || now < potionHoldUntil || now - lastDodgeAt < SWEEP_GAP_MS) return; // retry
             pressDodge("back");
             pressFrame(frameIdx);
             presses.dodge++;
@@ -2118,7 +2046,7 @@ export default function (args = {}) {
         if (potionPend || now - lastPotionFailAt < POTION_RETRY_MS || potionTaps >= POTION_MAX_TAPS) return;
         if (lastPotionOkAt && now - lastPotionOkAt < POTION_SETTLE_MS) return; // the bar still fills
         if (!potionDueAt) potionDueAt = now;
-        if (now < staggerUntil || now < potionHoldUntil || inDodge) return;
+        if (now < potionHoldUntil || inDodge) return;
         if (plan.some((it) => it.kind === "potion")) return;
         const why = potionUnsafe(now);
         if (why) {
@@ -2143,7 +2071,7 @@ export default function (args = {}) {
     }
 
     // ========================================================================================================= offense
-    // Reads plan / pred / lastHitAt / lastOkAt / staggerUntil / inDodge / inCurtain / potionHoldUntil / bossNow / qiNow /
+    // Reads plan / pred / lastHitAt / lastOkAt / inDodge / inCurtain / potionHoldUntil / bossNow / qiNow /
     // qiEmpty; writes its own state, plus the unpressed plan items it drops in a 气竭 window.
     let offUpAt = 0, offTouched = false; // OFF_CONTACT is down until offUpAt (0: up)
     let grabHoldAt = 0; // the first tell of the current held 蓄力 (@see offHoldAbort)
@@ -2358,7 +2286,7 @@ export default function (args = {}) {
     /** @param {number} now */
     function offWalkTick(now) {
         if (!offWalking) return;
-        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil) offWalkStop("defense");
+        if (inDodge || inCurtain || now - lastHitAt < POST_HIT_MS || now < potionHoldUntil) offWalkStop("defense");
         else if (now >= offWalkUntil) offWalkStop("time");
     }
     /** Each action's 1.2 s result: the boss px it took, a hit within 1 s; the whiff loop. @param {number} now */
@@ -2537,7 +2465,6 @@ export default function (args = {}) {
         if (!pred) return "no pred";
         if (inCurtain) return "curtain";
         if (inDodge) return "dodge";
-        if (now < staggerUntil) return "stagger";
         if (now < potionHoldUntil) return "potion";
         if (potionDue()) return "potion due";
         if (now - lastHitAt < OFF_OK_AFTER_HIT_MS) return "after-hit";
@@ -2558,7 +2485,7 @@ export default function (args = {}) {
     }
     /** A committed step may tap now: only the defense's own states hold it. @param {number} now */
     function commitCan(now) {
-        if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || now < offBusyUntil || bossNow <= 50) return false;
+        if (inCurtain || inDodge || now - lastHitAt < POST_HIT_MS || now < potionHoldUntil || now < offBusyUntil || bossNow <= 50) return false;
         if (offHold || offWalking || potionDue()) return false;
         return !plan.some((it) => !it.pressedAt && Math.abs(it.atMs - now) <= 100); // not on top of a defense press
     }
@@ -2596,7 +2523,7 @@ export default function (args = {}) {
     }
     /** Far for OFF_FAR_MS: one close-in (燃此魂 / 突进 when lit, else a forward push). @param {number} now */
     function farCloseIn(now) {
-        if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || bossNow <= 50 || potionDue()) return false;
+        if (inCurtain || inDodge || now - lastHitAt < POST_HIT_MS || now < potionHoldUntil || bossNow <= 50 || potionDue()) return false;
         if (offM30 > OFF_VETO_TH || cadGate() || plan.some((it) => !it.pressedAt && it.atMs - now <= OFF_GUARD_MS)) return false;
         const far = now - okFarSince;
         okFarSince = now; // re-armed
@@ -2760,7 +2687,7 @@ export default function (args = {}) {
     function p6Busy(now) {
         if (inCurtain) return "curtain";
         if (inDodge) return "dodge";
-        if (now < staggerUntil) return "stagger";
+        if (now - lastHitAt < POST_HIT_MS) return "after-hit";
         if (now < potionHoldUntil || potionDue()) return "potion";
         if (offHold || offWalking || hd || now < offBusyUntil) return "busy";
         return "";
@@ -2909,7 +2836,7 @@ export default function (args = {}) {
     /** @param {number} now @param {boolean} post */
     function qpLight(now, post) {
         if (offHold || offWalking || now < offBusyUntil) return;
-        if (inDodge || inCurtain || now < staggerUntil || now < potionHoldUntil || potionDue()) return;
+        if (inDodge || inCurtain || now - lastHitAt < POST_HIT_MS || now < potionHoldUntil || potionDue()) return;
         if (plan.some((x) => !x.pressedAt && x.atMs - now < QP_PENDING_MS)) return; // a tell dodge is about to go
         if (now - qp.lastLight < QP_LIGHT_MS) return;
         // 陌刀: switch to 横刀 first (once a window), no 陌刀 轻击 (teacher, 2026-10-23)
@@ -2968,7 +2895,7 @@ export default function (args = {}) {
             qpWalkEnd(now, "cap");
             return;
         }
-        if (offWalking || inDodge || now < staggerUntil || now < potionHoldUntil) return;
+        if (offWalking || inDodge || now - lastHitAt < POST_HIT_MS || now < potionHoldUntil) return;
         if (offHold && offHold.src !== "qi") offRelease(now, "qi approach", true);
         if (offHold || hd || now < offBusyUntil) return;
         if (offWalk(now, QP_CHASE_MS, "qi approach")) qp2S.pushes++;
@@ -3176,7 +3103,6 @@ export default function (args = {}) {
                 offenseGuard(now2);
                 cadenceTick(now2);
                 executePlan(now2);
-                hitEscTick(Date.now());
                 sweepTick(Date.now());
                 expire(now2);
                 potionTick(Date.now());
@@ -3219,7 +3145,7 @@ export default function (args = {}) {
     const backS = stats(tMs.back), headS = stats(tMs.head), readS = stats(tMs.reads), loopS = stats(tMs.loop);
     const readyPct = headCalls ? Math.round((ready / headCalls) * 1000) / 10 : 0;
     log(`dufu over (${reason}): ${looks} looks, head ${ready}/${headCalls} ready (${readyPct}%), ${presses.parry} parry / ${presses.dodge} dodge / ${presses.potion} potion / ${presses.walk} walk, lock ${lockTaps} taps, halt ${halts} (${haltDowns} downs held back, ${pageHeld} on the page), ` +
-        `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), holds ${holds} (${holdPresses} pressed), posthit ${insurePresses}, re-press ${rerepresses}, blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
+        `${hits} hits, ${oks} ok, ${misses} misses, ${revisions} revisions, ${late} late, branches ${branches} (${branchDrops} dropped), posthit ${insurePresses}, re-press ${rerepresses}, blocked ${JSON.stringify(blocked)}, skipped ${JSON.stringify(skips)}`);
     log(`ms: back ${JSON.stringify(backS)}, head ${JSON.stringify(headS)}, reads ${JSON.stringify(readS)}, loop ${JSON.stringify(loopS)}, ringBad ${ringBad}`);
     const defense = { timedSweeps, holdFut: foS, split: fsS, chain: hcS };
     const potion = { taps: presses.potion, healed: potionsUsed, slotSwaps, ...potS };
@@ -3241,7 +3167,7 @@ export default function (args = {}) {
     log(`off: ${JSON.stringify(off)}`);
     return {
         reason, ...(reason === "cleared" ? { clearedAtMs } : {}), looks, ready, headCalls, readyPct, ringBad,
-        presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, holds, holdPresses, insurePresses, rerepresses,
+        presses, blocked, late, misses, hits, oks, revisions, branches, branchDrops, skips, insurePresses, rerepresses,
         defense, potion, off,
         ms: { back: backS, head: headS, reads: readS, loop: loopS },
         start, events,
