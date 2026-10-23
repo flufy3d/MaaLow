@@ -68,7 +68,7 @@ uv run maalow do skill dufu --args '{"phase":2,"head":"dufu/unified_head_p2.onnx
 
 `dufu_rounds.py` 每轮：进场 → 录像 → `dufu {"phase":2,"trace":"feat"}` → 停录 → 取 trace → `event_pad`（App 内存里只留最近 1000 条事件，trace 事件每条约 90 KB，堆积了 `GET /events` 会 OOM，`skills/event_pad.js` 用小事件把它们挤出去）。每轮存 `data/p2/rNNN/`（result、trace、args、录像 id），`--alt '[{...},{...}]'` 逐轮交替参数做 A/B。
 
-`phase:2` 的行为：任务栏的「阶段二」不算结束；fut/def 头的普通闪避改成卸势；不进幕布（tell 幕布类 / 暗场 / 图像规则都关）；气竭读空 300 ms 还没看到处决按钮就往前走（每段最多 4 秒，按钮一出现就停），走过的话最晚读空后 6 秒点处决。
+`phase:2` 的行为：开局不上毒、不切道具格（老师：实战二阶段接着一阶段打，没有上毒的空窗期；道具格只放药，喝药前读到不是药才换回来）；任务栏的「阶段二」不算结束；fut/def 头的普通闪避改成卸势；不进幕布（tell 幕布类 / 暗场 / 图像规则都关）；气竭读空 300 ms 还没看到处决按钮就往前走（每段最多 4 秒，按钮一出现就停），走过的话最晚读空后 6 秒点处决。
 
 **阶段二 head**（`unified_head_p2.onnx`，`tools/dufu_train/`）：back9 冻结，从 head9s 微调第二层 GRU 和输出头，trace 里存的就是设备上的 back9 特征；标签按旧文档（掉血帧 −5、卸势成功的真气台阶）。交叉验证覆盖率 61% → 92%，误触发持平；幕布误报清零。
 

@@ -1410,7 +1410,9 @@ export default function (args = {}) {
         };
         // a round may start with the poison still in the slot (the last one's swap back failed)
         if (!potionIn() && !swapTo(true, "potion")) mark("prep", "no potion in the slot at the start");
-        const poisoned = swapTo(false, "poison");
+        // phase 2: no poison (teacher, 2026-10-23: the real fight goes on from phase 1 with no quiet start to coat the
+        // weapon, so the item slot is not switched at all)
+        const poisoned = phase !== 2 && swapTo(false, "poison");
         if (poisoned) step(POTION, PREP_USE_MS);
         const back = !poisoned || swapTo(true, "potion");
         // 增益 is 陌刀's (横刀 has 爆发 there): switch first when the round starts on 横刀
@@ -1424,7 +1426,7 @@ export default function (args = {}) {
         if (w !== "modao") mark("prep", `weapon ${w ?? "unknown"}: 增益 may be the wrong button`);
         step(BUFF, PREP_USE_MS);
         step(QISHU, PREP_USE_MS);
-        mark("prep", `${poisoned ? "poison" : "NO POISON"} + ${back ? "potion back" : "POTION NOT BACK"} + 增益 + 伤害 (${w ?? "unknown"}) in ${Date.now() - start} ms`);
+        mark("prep", `${poisoned ? "poison" : phase === 2 ? "no poison (phase 2)" : "NO POISON"} + ${back ? "potion back" : "POTION NOT BACK"} + 增益 + 伤害 (${w ?? "unknown"}) in ${Date.now() - start} ms`);
     }
 
     // --- round start: walk in, in short bursts, until the boss bar shows
