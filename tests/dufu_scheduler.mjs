@@ -85,6 +85,12 @@ globalThis.infer = (model) => {
     }
     const tell = cfg.tell.find(([from, to]) => time >= from && time < to);
     if (tell) { out[70] = -8; out[70 + tell[2]] = 8; }
+    if (model.includes("p2e")) {
+        // head p2e: out[77..132] (fut1f / ours / cont / land, unused here) + lead1f out[133..178]. cfg.gate(time) true:
+        // a contact 8 f out (G ~1), else none (bin 45, G ~0)
+        for (let i = 77; i < 133; i++) out.push(-8);
+        for (let b = 0; b < 46; b++) out.push(b === (cfg.gate?.(time) ? 8 : 45) ? 8 : -8);
+    }
     return { ready: true, output: out };
 };
 
@@ -99,6 +105,9 @@ function run(args = {}, options = {}) {
     const dodges = touches.filter((t) => t.op === "down" && t.id === 2);
     return { result, dodges, touches, sent };
 }
+const P2E = "dufu/unified_head_p2e.onnx";
+/** the 卸势 taps' times */
+const parryTaps = (ts) => ts.filter((t) => t.op === "down" && t.p[0] === 952 && t.p[1] === 495).map((t) => t.at);
 
 const tests = {
     "model dodges alternate left and right"() {
@@ -341,6 +350,89 @@ const tests = {
         const p1 = run({ redLine: true }, opts);
         assert.equal(p1.result.redLine, undefined);
         assert.deepEqual(p1.touches, run({}, { def: 2 }).touches, "phase 1 changed by redLine");
+    },
+    "phase 2 cadence presses every ~345 ms while the gate is open, none while it is closed"() {
+        // the gate open 1000-2500 ms; the default contacts (1500 / 3000 / 4500) plan no fut 卸势 with the cadence on
+        const { result, touches } = run({ phase: 2, head: P2E, cadence: 0.1, ms: 4000 }, { gate: (t) => t >= 1000 && t < 2500 });
+        const taps = parryTaps(touches);
+        assert.ok(taps.length >= 4, `taps: ${taps}`);
+        assert.ok(taps[0] >= 1000 && taps[0] < 1000 + 2 * frameMs, `first tap ${taps[0]}`);
+        assert.ok(taps.every((t) => t < 2500 + 2 * frameMs), `a tap with the gate closed: ${taps}`);
+        taps.slice(1).forEach((t, i) => {
+            const g = t - taps[i];
+            assert.ok(g >= 345 && g <= 380, `gap ${g} (${taps})`);
+        });
+        const marks = result.events.filter((e) => e[2] === "press");
+        assert.equal(marks.length, taps.length);
+        assert.ok(marks.every((e) => e[3] === "parry cadence G1.00"), marks.map((e) => e[3]).join(" / "));
+        assert.equal(result.cadence.on, true);
+        assert.equal(result.cadence.presses, taps.length);
+        assert.equal(result.cadence.swallowed, 0);
+        assert.equal(Object.values(result.cadence.gapHist).reduce((a, b) => a + b, 0), taps.length - 1);
+        assert.ok(result.cadence.openShare > 0.3 && result.cadence.openShare < 0.5, `open share ${result.cadence.openShare}`);
+        assert.ok(!result.events.some((e) => e[2] === "plan" && e[3].includes(" fut ")), "a fut item with the cadence on");
+        // closed all run: no 卸势 at all
+        assert.equal(parryTaps(run({ phase: 2, head: P2E, cadence: 0.1 }, {}).touches).length, 0);
+    },
+    "phase 2 cadence: an ok unlocks the next 卸势 early"() {
+        const gate = (t) => t >= 1000 && t < 2500;
+        const first = parryTaps(run({ phase: 2, head: P2E, cadence: 0.1, ms: 3000 }, { gate }).touches)[0];
+        // the boss's 真气 drops 15 px 2 frames after the first 卸势: an ok
+        const { result, touches } = run({ phase: 2, head: P2E, cadence: 0.1, ms: 3000 }, { gate, qi: (t) => t < first + 2 * frameMs ? 300 : 285 });
+        assert.equal(result.oks, 1);
+        const taps = parryTaps(touches);
+        assert.equal(taps[0], first);
+        assert.ok(taps[1] - taps[0] >= 220 && taps[1] - taps[0] < 300, `after the ok: ${taps[1] - taps[0]} ms`);
+        assert.equal(result.cadence.swallowed, 0);
+    },
+    "phase 2 cadence waits out a stagger and plans no escape / insurance 卸势"() {
+        // a 5% blow read at ~1200 ms: 300 ms stagger
+        const { result, touches } = run({ phase: 2, head: P2E, cadence: 0.1, ms: 3000 }, { gate: (t) => t >= 1000, hp: (t) => t < 1200 ? 0.8 : 0.75 });
+        const hit = result.events.find((e) => e[2] === "hit");
+        assert.ok(hit, "no hit");
+        const taps = parryTaps(touches);
+        assert.ok(!taps.some((t) => t > hit[1] && t < hit[1] + 300), `a tap in the stagger: ${taps} / hit ${hit[1]}`);
+        assert.ok(taps.some((t) => t >= hit[1] + 300 && t < hit[1] + 300 + 2 * frameMs), `no tap at the stagger end: ${taps}`);
+        assert.ok(result.cadence.wait.stagger > 0, JSON.stringify(result.cadence.wait));
+        assert.ok(!result.events.some((e) => e[2] === "escape" || (e[2] === "press" && /hitEscape|posthit/.test(e[3]))), "an escape / insurance 卸势");
+    },
+    "phase 2 cadence yields to an urgent potion and waits out the drink"() {
+        const { result, touches } = run({ phase: 2, head: P2E, cadence: 0.1, ms: 4000, potions: 1 }, { gate: () => true, hp: (t) => t < 1500 ? 0.8 : 0.1 });
+        const drink = touches.filter((t) => t.op === "down" && t.id === 1 && t.p[0] === 700 && t.p[1] === 690).map((t) => t.at);
+        assert.ok(drink.length >= 1, "no drink");
+        const taps = parryTaps(touches);
+        const before = taps.filter((t) => t < drink[0]);
+        assert.ok(before.length >= 1 && drink[0] - before[before.length - 1] >= 400, `the drink ${drink[0]} after the 卸势 ${before}`);
+        assert.ok(!taps.some((t) => t > drink[0] && t < drink[0] + 2000), `a 卸势 in the drink hold: ${taps} / ${drink}`);
+        assert.ok(result.cadence.yields >= 1 && result.cadence.wait.yield > 0, JSON.stringify(result.cadence));
+        assert.ok(result.cadence.wait.potion > 0, JSON.stringify(result.cadence.wait));
+    },
+    "phase 2 cadence and the red line never press twice inside one lock"() {
+        for (const [from, ageMs] of [[1000, 30], [1150, 30], [1250, 0]]) {
+            const { result, touches } = run({ phase: 2, head: P2E, cadence: 0.1, redLine: true, ms: 3000 },
+                { gate: (t) => t >= 1000 && t < 2500, redLine: (t) => t >= from && t < from + 300 ? 300 : null, ageMs });
+            const taps = parryTaps(touches);
+            assert.ok(taps.length >= 3, `taps: ${taps}`);
+            taps.slice(1).forEach((t, i) => assert.ok(t - taps[i] >= 330, `line at ${from}: gap ${t - taps[i]} (${taps})`));
+            assert.equal(result.cadence.swallowed, 0);
+            assert.equal(result.redLine.onsets, 1);
+        }
+    },
+    "the cadence is off without lead1f, in phase 1 and by default (touches unchanged)"() {
+        const p2 = run({ phase: 2 }, { def: 2 }).touches;
+        // a p2e head without cadence: the extra columns change nothing
+        assert.deepEqual(run({ phase: 2, head: P2E }, { def: 2, gate: () => true }).touches, p2, "phase 2 + p2e head changed");
+        // cadence with a head without lead1f: off, with why
+        const noLead = run({ phase: 2, head: "dufu/unified_head_p2.onnx", cadence: 0.1 }, { def: 2 });
+        assert.deepEqual(noLead.touches, p2, "cadence without lead1f changed phase 2");
+        assert.equal(noLead.result.cadence.on, false);
+        assert.ok(/no lead1f/.test(noLead.result.cadence.off), noLead.result.cadence.off);
+        assert.ok(noLead.result.events.some((e) => e[2] === "cadence" && e[3].startsWith("off")), "no off mark");
+        // phase 1 ignores it
+        const p1 = run({}, { def: 2 }).touches;
+        const p1c = run({ head: P2E, cadence: 0.1 }, { def: 2, gate: () => true });
+        assert.deepEqual(p1c.touches, p1, "phase 1 changed by cadence");
+        assert.equal(p1c.result.cadence, undefined);
     },
     "health prefers the red bar over a low-HP grey overread"() {
         // 737 f5970-6051: the grey mask read 21% on a 17% red bar (bright tip / hit flash). The red read is the bar.

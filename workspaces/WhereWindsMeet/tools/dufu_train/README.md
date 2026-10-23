@@ -46,6 +46,9 @@ uv run --with numpy --with opencv-python-headless python workspaces/WhereWindsMe
 | `train.py` | 蒸馏 + 监督微调、交叉验证、导出 |
 | `evaluate.py` | 用 onnxruntime 给任意 head 文件打分 |
 | `check_align.py` | 用录像核对标签时间 |
+| `replay.py` | 卸势按键策略的离线回放评估器（`validate` / `tune`），含现行调度器的近似和节拍策略 |
+| `cache_heads.py` | 把 head 在每一行的输出缓存给 replay.py |
+| `train_press.py` | 训练 lead1f 分支，导出 `unified_head_p2e.onnx`（head p2 原样 + 追加列） |
 
 ## 标签
 
@@ -72,3 +75,75 @@ S1 = fut1 的 4–19 帧档概率和，调度器在 S1 ≥ 0.45（`TRIG_TH`）�
 - 阶段二很多 S1 高的行后面既没掉血也没有真气台阶。在录像里看，一部分是 boss 离得远、真的没打过来，另一部分是招打空了，或者卸势了但真气没动。后者在标签里算“没有接触”，所以误触发数字偏高，模型也会被往保守方向拉。
 - 掉血的对时很紧：录像里血条台阶相对行时刻的帧差，在同一轮内 75% 落在中位数 ±1 帧以内（399 次掉血）。卸势 ok 的接触时间取的是真气台阶出现的时刻，没有像掉血那样减 5 帧（沿用阶段一的定义）。112 个 ok 里约 70% 和掉血那一列一致，约 30% 的录像台阶要早 6–12 帧。这些可能是 trace 的真气读数滞后，也可能是录像读数器把别的台阶当成了这一次；但这些 ok 前我方卸势按下的间隔（约 10 帧）和其余 ok 一样，所以暂按 trace 时间。
 - 录像和 trace 的时钟每轮差一个常数（r001 约 7 帧，r002 约 4 帧，可能是录像开始的延迟），所以 `check_align.py` 只看同一轮里的相对值。
+
+## 卸势按键策略：离线回放（`replay.py`）
+
+```
+# head p2 每行输出缓存（GPU 约 10 秒；replay 读 data/tmp/p2policy/heads/<head>/rNNN.npy）
+uv run --with torch --index https://download.pytorch.org/whl/cu130 --with onnx --with onnxruntime \
+    python workspaces/WhereWindsMeet/tools/dufu_train/cache_heads.py data/p2 unified_head_p2
+# 评估器自检：记录的按键 / 模拟的现行调度器 vs 实际挨打
+uv run --with numpy python workspaces/WhereWindsMeet/tools/dufu_train/replay.py validate data/p2
+# 节拍策略门限网格 + 按轮 5 折选参（--extra 加上 p2e 分支的 out-of-fold 输出；网格结果缓存在 data/tmp/p2policy/tune_grid.pkl）
+uv run --with numpy python workspaces/WhereWindsMeet/tools/dufu_train/replay.py tune data/p2 --extra unified_head_p2e_oof \
+    --gates 0.02 0.05 0.1 0.15 0.2 0.3 0.4 0.5 --his 16 24 --budgets 60 120
+# p2e：5 折 out-of-fold（给 tune 用），再用全部轮次导出 model/dufu/unified_head_p2e.onnx + .json
+uv run --with torch --index https://download.pytorch.org/whl/cu130 --with onnx --with onnxruntime \
+    python workspaces/WhereWindsMeet/tools/dufu_train/train_press.py data/p2 --no-export
+... train_press.py data/p2 --cv 0 --final-epochs 2
+```
+
+**回放**：逐行重放 trace，策略在第 i 行看到该行的 head 输出（设备同款 30 行窗口）和自己的按键 / 反馈历史，决定这一帧按不按卸势。按键时刻 = 行的 loop 时间 + 21 ms（trace 实测：按键标记在所属行之后 18–26 ms）。约束：脚本冷却 220 ms；游戏锁 330 ms（距上一次*生效*的卸势不到 330 ms 的按键被吞，期间有 ok 则解锁）；挨打硬直（按掉血查表，从检测到掉血起算）和喝药后 2 s 内不按；闪避、喝药按记录原样保留。
+
+**结果模型**：每个接触（labels.py）的有效按键 = 前一个接触之后、提前量 ≥2 帧的最后一次生效按键；提前量 = 接触（截图时钟）− 按键时刻，延迟已含在内。P(ok) = 记录数据拟合的「ok 率–提前量」曲线（fresh 接触，每帧一档：2–10 帧约 0.85，11 帧 .76，12 帧 .65，13 帧 .56，14 帧 .46，15 帧 .31，≥16 帧约 0），其他类别同形状乘系数（postHit 0.57，quick 1.0，chainHeavy 0.04）；没有有效按键用该类别的无按键 ok 率。金光（aux flare）和抓取后续几下保持记录结果，不归卸势策略管。抽样结果驱动后续状态（ok 解锁、挨打进入硬直），计分用期望（Σ 1−P(ok)），多个种子平均；区间是按轮 bootstrap。
+
+**有效性**（只在 head p2 没训练过的 r043 之后的轮次上测）：
+
+| 轮次 | 实际可卸挨打/分 | 结果模型 + 实际按键 | 模拟调度器 |
+|---|---|---|---|
+| 默认调度（77 轮） | 8.50 | 8.37 | 8.23 |
+| parryJitter（30 轮） | 7.25 | 7.15 | 7.34 |
+| leadF 11 + secondTapF 13（8 轮） | 9.55 | 9.75 | 9.86 |
+| p2d + defDodgeP（8 轮，曲线外推） | 9.13 | 9.64 | – |
+
+逐轮相关 0.86–0.88。模拟调度器的按键 ~98/分（实际 ~106），有效按键提前量四分位 5.9/8.7/12.2（实际 5.9/9.0/12.7）。leadF 在同一批 16 轮上模拟出 +0.65/分（变差），实机对照也是变差。
+
+限制：开环——head 的输入是记录的 trace，里面有记录的按键（aux since_parry / pressed / since_ok，画面里的卸势姿势），boss 后续出招按记录的结果走。p2e 分支把三列 aux 换成常数，去掉了前一种；画面的那种去不掉（同一真实提前量下，「1–8 帧前按过」的行门限值高 0.02–0.06，分不清是泄漏还是调度器本来就在该按的时候按）。「空按只花一次锁」这一点有数据支撑：上一下空按 330–450 ms 后再按，ok 率 .88–.94（n 约 250），和单按一样；但节拍策略每分钟按 115–160 下，比记录数据多，冷却不止 330 ms 的惩罚（例如连续空按）没法从数据排除——2 s 内有 ≥3 次空按时 ok 率 .82 vs .88，加这个惩罚（`--spam 0.93`）结论不变。
+
+**结果**（123 轮、244 分钟，r043–r165；可卸 = fresh + postHit + quick + chainHeavy）：
+
+| 策略 | 可卸挨打/分 | 与现行之差 [95%] | 全部挨打/分 | 按键/分 | 有效按键在 3–9 帧 |
+|---|---|---|---|---|---|
+| 现行调度器（模拟） | 7.90 | – | 10.28 | 94 | 49% |
+| 期望值策略（fut1f × 曲线；等预测上更好的时刻，4 帧内） | 7.79–9.76 | −0.09 … +1.88 | | 61–96 | |
+| 节拍，门限 = fut1f，CV（不限按键） | 5.65 | −2.25 [−2.51, −1.93] | 8.03 | 160 | 59% |
+| 节拍，门限 = fut1f，CV（≤120 按键/分） | 6.58 | −1.32 [−1.56, −1.09] | 8.96 | 114 | 55% |
+| **节拍，门限 = p2e lead1f，CV（≤120 按键/分）** | **5.87** | **−2.03 [−2.29, −1.74]** | **8.25** | 115 | 59% |
+| 节拍，门限 = p2e lead1f，CV（≤现行 94 按键/分） | 6.40 | −1.50 [−1.73, −1.26] | 8.78 | 91 | 57% |
+| 上限：已知真实接触，提前 3–9 帧按一下 | 4.96 | −2.94 | 7.34 | 21 | 94% |
+
+lead1f 门限是 out-of-fold 的（5 折按轮号，见下）。fut1f 的门限校准很差（预测 P(2–20 帧内有接触) 平均 0.56，实际 0.19；39% 的行 ≥0.7），只能靠多按；lead1f 平均 0.30，30% 的行 <0.05（实际 0.02），同样的命中少按约 25%。
+
+结论：卸势时机的空间主要在「按得密」而不是「算得准」——ok 窗口（2–10 帧，约 300 ms）和锁（330 ms）差不多长，锁一结束就再按，有效按键就落在窗口里。期望值策略（等预测上更好的时刻）比现行更差：接触往后拖时预测也一直往后挪。就算时机完美（上限一行），全部挨打也只到约 7.3/分：金光 ~1.2、抓取 ~1.3、postHit / chainHeavy、窗口内仍有约 15% 失败，都不是按键时机能解决的。
+
+### `unified_head_p2e.onnx`（`train_press.py`）
+
+head p2 原样（out[0:133] 与 p2 逐字节相同），后面追加 46 列 `lead1f`：下一次接触相对「现在按下」的提前量（帧，0..44 每帧一档 + none），提前量 = 接触 − （本行 loop 时间 + 21 ms），即和上面的按键时钟一致，设备上不用再换算截图延迟。分支是 head p2 两层 GRU 的拷贝（两层都训练）+ 新线性层，输入里 since_parry / pressed / since_ok 换成常数（10 / 0 / 10）：输出不依赖我方按键历史，回放评估才成立，设备上也不会因为自己按了就更想按。单独 ONNX 也可以，但追加列只要一次调用（PC 上 0.24 → 0.47 ms），现有切片不动。
+
+训练：labels.py 的接触，σ=1 帧高斯软标签，行权重同 labels.targets，前方 0–20 帧有接触的行 ×4（`--pos-w`）；跳过 r058–r067。5 折按轮号（`--cv 5 --no-export` 把每轮的 out-of-fold 输出写到 `data/tmp/p2policy/heads/unified_head_p2e_oof/`，replay 的 `--extra` 读它），最佳 epoch 1–3（很快过拟合），导出用全部 156 轮训 2 个 epoch（`--cv 0 --final-epochs 2`）。导出模型在 r043 之后的轮次上门限开启比例比 OOF 低 3–5 个百分点（同门限少按一点）。
+
+### dufu.js 集成规格（阶段二，节拍卸势）
+
+只在 `phase === 2` 且 head 是 p2e 时启用；out[0:133] 与 p2 相同，tell / combo / def / 进攻 / 喝药里读 head 的地方都不用改。
+
+- **输入**：`lead = softmax(out, 133, 46)`；门限值 `G = Σ lead[b], b = 2..METRO_HI`（bin b = 提前量 [b, b+1) 帧，时钟就是本帧 loop 时间 + 约 21 ms，不用再减截图延迟）。
+- **状态**：新增 `exeAt` = 脚本推算的「游戏最后一次执行的卸势」。每次卸势落指（任何来源）时：`if (now - exeAt >= LOCK_MS || lastOkAt > exeAt) exeAt = now`。`lockEnd = lastOkAt > exeAt ? 0 : exeAt + LOCK_MS`。
+- **规则**（每帧，decode 之后、executePlan 之前）：`G >= METRO_G && now >= lockEnd + METRO_PAD_MS && now - lastParryAt >= PARRY_CD_MS && now >= staggerUntil && now >= potionHoldUntil && !inDodge && !qp.shown && !dodgeDue(now) && !potionYield(now)` → `tap(PARRY)`，`mark("press", "parry metro G0.xx")`。
+  - `dodgeDue(now)`：plan 里有未按的 tell 闪避且 `atMs - now <= 100`（闪避优先，回放没模拟金光，保守起见）。
+  - `potionYield(now)`：喝药到期且紧急（`hpNow <= POTION_URGENT` 或已等 `POTION_WAIT_MAX_MS`）时，节拍停最多 600 ms 让药按出去。不紧急时药照现有 `potionUnsafe` 等门限关着的空档（g 0.1 时每分钟约 6.5 段 ≥1.2 s 的空档，g 0.05 约 4.7 段；fut1f 门限只有 1.5 段）。
+- **常数**：`METRO_HI = 16`，`METRO_G = 0.05`（回放 ~115 按键/分，可卸挨打 −2.0/分）；想和现行按键量持平用 `0.1`（~100/分，−1.7）或 `0.15`（~88/分，−1.4）。`LOCK_MS = 330`（= `PARRY_RELOCK_MS`），`METRO_PAD_MS = 15`，`PARRY_CD_MS = 220` 不变。
+- **替换掉的**（阶段二）：syncK 的 fut 卸势项（k0–k2、branch、contact moved / second tap / late fill 重按、relock 等待）、expire 里的重按、hitEscTick 和挨打后的 insurance 卸势（硬直一结束、门限开着，节拍自己就会按）。阶段二 def 头的闪避本来就改成了卸势，所以 syncK 在阶段二可以整个不跑。
+- **保留的**：tell / 金光闪避（slowFlare、flareHold / split、锚点）、喝药计划、进攻、气竭处决、锁定 / 进场等。
+- **进攻**：tap() 会让按着的蓄力先放（offYield）。门限开着就是「20 帧内可能有招」，进攻起手应同样避开：冷 / 热蓄力和整套横刀起手前要求 `G < METRO_G`（在现有 OFF_CHARGE_FREE / offHorizon 判断之外再加一条）。回放没模拟进攻，这一条是保守建议。
+- **只有 head p2 时的退路**：`G = Σ fut1f[d]`，d 满足 `d - lag ∈ [2, 16]`，`lag = (now + 21 - 截图时刻) / 33.3`；fut1f 校准差，门限 0.4–0.5 对应 ~117–103 按键/分、可卸挨打 −1.4 / −0.8（≤120 按键时 CV 选的就是这一档）。
+- **上机要看的**：按键间隔分布（应集中在 340–380 ms）；有效按键前 330–450 ms 内有一次空按时的 ok 率（记录数据 .88–.94，按得更密后要确认没变）；被锁吞掉的按键数；挨打/分按类别（fresh / postHit / quick），8 对 8 交替。

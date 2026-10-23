@@ -14,7 +14,8 @@
 // phase 2 (args.phase): the quest line reads 阶段二 from the start there, so only the 成功 page / death / time end the
 // run; the fut/def heads' plain dodges become 卸势 (@see defAction); no curtain; 金光 dodges at the first report with a
 // per-frame image rule (@see FLARE2_P); a 气竭 spell without 处决 walks in (@see QP2_WALK_AFTER_MS); args.redLine: a 卸势
-// anchored on the red line some red moves show first (@see RL_DELAY_F).
+// anchored on the red line some red moves show first (@see RL_DELAY_F); args.cadence (with head unified_head_p2e): the
+// 节拍 卸势 replaces the planned ones (@see CAD_OFF).
 import { stats } from "./lib/stats.js";
 import { BOSS_FULL, ICON_WHITE, ME_X, bossPx, countAtLeast, gapNow, health, litNow, readMean, readQi, redLine, seeFlash } from "./lib/dufu-reads.js";
 import { COMBO6_LABELS, DEF_LABELS, FUT_CENTER, FUT_HI, FUT_LABELS, FUT_LO, STAGE_LABELS, TELL_LABELS } from "./lib/dufu-labels.js";
@@ -148,6 +149,21 @@ const FLARE2_IMG = false;
 // the last RL_COST_N reads passes RL_COST_MS.
 const RL_DELAY_F = 6, RL_GAP_F = 3.5, RL_IGNORE_F = 8, RL_FB_LAG_F = 6, RL_WIN_LO_F = 3, RL_WIN_HI_F = 15;
 const RL_CONTACT_F = 16, RL_MISS_F = 30, RL_COST_MS = 5, RL_COST_N = 30;
+// phase 2 cadence (节拍) 卸势 (args.cadence = the gate threshold G, default off; tools/dufu_train/README.md "dufu.js 集成规格",
+// replay.py). Needs a head with the lead1f block (unified_head_p2e.onnx: out[CAD_OFF .. CAD_OFF + CAD_N - 1], the next
+// contact's lead from a tap issued now in frames, bins 0..44 + none, on the tap clock: loop time + ~21 ms, no capture
+// lag to take off); a head without it (fewer outputs) leaves the cadence off (result cadence.off says why).
+// G = sum of lead1f bins CAD_LO..CAD_HI. exeAt = the game's last executed 卸势 as we believe it: on every 卸势 touch (any
+// source) exeAt = now when now - exeAt >= CAD_LOCK_MS or an ok came since exeAt, else the touch is swallowed by the
+// game's lock. lockEnd = an ok since exeAt ? 0 : exeAt + CAD_LOCK_MS. Each frame (before executePlan) a 卸势 goes when
+// G >= th, now >= lockEnd + CAD_PAD_MS, PARRY_CD_MS since the last 卸势, not in stagger / potion hold / dodge / a 气竭
+// window, no dodge item due within CAD_DODGE_MS, no potion item waiting, and no urgent drink yield (up to CAD_YIELD_MS
+// per urgent spell). With it on, syncK (fut items, branches, re-presses, relock waits), expire's re-presses, the hit
+// escape and the post-hit insurance 卸势 are off; tell / flare dodges, the potion (its quiet test is G < th), the offense
+// (starts only with G < th: a 卸势 lets a held 蓄力 go), 处决 and the red-line anchor (it waits out the same lock) stay.
+const CAD_OFF = 133, CAD_N = 46, CAD_LO = 2, CAD_HI = 16;
+const CAD_LOCK_MS = PARRY_RELOCK_MS, CAD_PAD_MS = 15, CAD_DODGE_MS = 100, CAD_YIELD_MS = 600;
+const CAD_GAP_EDGES = [330, 345, 360, 380, 450, 600, 1000]; // the result's gap histogram (ms)
 // phase 2 气竭: in 4 of 9 windows the boss stood staggered at mid / far range and 处决 (shown only within reach) never
 // came. With phase 2, QP2_WALK_AFTER_MS after the qiPlan candidate (真气 read empty) with no 处决 button, walk forward
 // (lock-on keeps the camera on the boss) in QP_CHASE_MS pushes until the button shows, at most QP2_WALK_MAX_MS per
@@ -300,12 +316,13 @@ const SLOT_POTION_PX = 10;
 /** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"insure"|"red", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, rearms?: number, relocked?: boolean, jit?: number, onMs?: number, floorMs?: number}} PlanItem */
 
 /**
- * @param {{ms?: number, potions?: number, prep?: boolean, phase?: number, trace?: boolean | "feat", head?: string, defDodgeP?: number, redLine?: boolean | number}} [args] ms: run length
+ * @param {{ms?: number, potions?: number, prep?: boolean, phase?: number, trace?: boolean | "feat", head?: string, defDodgeP?: number, redLine?: boolean | number, cadence?: number}} [args] ms: run length
  *     (default 10 min; clipped to the call's timeout less END_MARGIN_MS); potions: drinks allowed (default 1); prep: poison
  *     + buffs at the start (default on; the scheduler test turns it off); phase: 1 (default) or 2, the arena's 阶段
  *     (@see defAction, clearedCheck); trace: per-frame trace events (@see TRACE_EVENT); head: the head model (default
  *     MODEL; same IO as unified_head9s, e.g. the phase-2 "dufu/unified_head_p2.onnx"); defDodgeP: phase 2 only, a def-head
- *     contact with P(dodge) >= this is dodged instead of 卸势 (default: never; @see defAction)
+ *     contact with P(dodge) >= this is dodged instead of 卸势 (default: never; @see defAction); cadence: phase 2 only,
+ *     the 节拍 卸势's gate threshold (e.g. 0.05 / 0.1 / 0.15; needs a head with lead1f; @see CAD_OFF)
  */
 export default function (args = {}) {
     const maxPotions = args.potions ?? 1;
@@ -333,6 +350,8 @@ export default function (args = {}) {
     const curtainOn = phase !== 2; // phase two has no curtain (the note above END_MARGIN_MS)
     // args.redLine (phase 2, default off): the red-line 卸势 anchor; true = onset + RL_DELAY_F, a number = that many frames
     const redLineF = phase === 2 && args.redLine ? (typeof args.redLine === "number" ? args.redLine : RL_DELAY_F) : 0;
+    // args.cadence (phase 2, default off): the 节拍 卸势's gate threshold; on once the first head output has lead1f
+    const cadTh = phase === 2 && typeof args.cadence === "number" && args.cadence > 0 ? args.cadence : 0;
 
     const start = Date.now();
     const untilMs = Math.min(args.ms ?? 600_000, remaining() - END_MARGIN_MS);
@@ -394,6 +413,7 @@ export default function (args = {}) {
     function tap(p, ms = 50) {
         if (heldBack(p)) return;
         offYield("tap");
+        if (cadTh && p === PARRY) cadTouch(Date.now());
         tdown(p, 1);
         upDue = { c: 1, at: Date.now() + ms };
     }
@@ -467,6 +487,28 @@ export default function (args = {}) {
         esc: { scheduled: 0, parry: 0, yieldPlan: 0, superseded: 0, late: 0, skip: /** @type {Record<string, number>} */ ({}) },
         relock: { delayed: 0, pressed: 0, gaveUp: 0, bySrc: /** @type {Record<string, number>} */ ({}) },
     };
+    // the cadence 卸势 (@see CAD_OFF): on / why off, the gate value, the believed executed 卸势, the drink yield, stats
+    let cadOn = false, cadG = 0, exeAt = 0, cadLastTouch = 0, cadYieldFrom = 0, cadPressAt = 0;
+    /** @type {boolean | null} */ let cadHas = null; // the head has the lead1f block (null = no output yet)
+    const cadS = { off: "", presses: 0, touches: 0, swallowed: 0, frames: 0, openFrames: 0, yields: 0,
+                   wait: /** @type {Record<string, number>} */ ({}), gapHist: /** @type {Record<string, number>} */ ({}), gaps: /** @type {number[]} */ ([]) };
+    const cadGate = () => cadOn && cadG >= cadTh; // a cadence 卸势 may come any frame: no offense start / no drink
+    const cadLockEnd = () => (lastOkAt > exeAt ? 0 : exeAt + CAD_LOCK_MS);
+    /** A 卸势 touch (any source): the game executes it unless inside the lock of the last executed one. @param {number} t */
+    function cadTouch(t) {
+        if (!cadOn) return;
+        cadS.touches++;
+        if (cadLastTouch) {
+            const g = t - cadLastTouch;
+            cadS.gaps.push(g);
+            const i = CAD_GAP_EDGES.findIndex((e) => g < e);
+            const k = i < 0 ? `>=${CAD_GAP_EDGES[CAD_GAP_EDGES.length - 1]}` : i === 0 ? `<${CAD_GAP_EDGES[0]}` : `${CAD_GAP_EDGES[i - 1]}-${CAD_GAP_EDGES[i]}`;
+            cadS.gapHist[k] = (cadS.gapHist[k] ?? 0) + 1;
+        }
+        cadLastTouch = t;
+        if (!exeAt || t - exeAt >= CAD_LOCK_MS || lastOkAt > exeAt) exeAt = t;
+        else cadS.swallowed++;
+    }
     // flareHold: the hold's start (0 = off), the last flare_other report, the episode's anchored item
     let foFrom = 0, foLastAt = 0;
     /** @type {PlanItem | null} */
@@ -558,6 +600,24 @@ export default function (args = {}) {
             def: [0, 1, 2].map((i) => softmax(out, 55 + i * 5, 5)),
             tell: headOut(softmax(out, 70, 7), TELL_LABELS),
         };
+        if (!cadTh) return;
+        if (cadHas === null) {
+            cadHas = out.length >= CAD_OFF + CAD_N;
+            cadOn = cadHas;
+            if (!cadHas) cadS.off = `${headModel}: ${out.length} outputs, no lead1f at ${CAD_OFF}..${CAD_OFF + CAD_N - 1}`;
+            else {
+                esc = null; // a hit before the first output (the ring filling) planned the old chain
+                plan = plan.filter((x) => x.src !== "insure");
+            }
+            mark("cadence", cadOn ? `on: G (lead1f ${CAD_LO}-${CAD_HI}f) >= ${cadTh}` : `off (${cadS.off})`);
+        }
+        if (!cadOn) return;
+        const p = softmax(out, CAD_OFF, CAD_N);
+        let g = 0;
+        for (let b = CAD_LO; b <= CAD_HI; b++) g += p[b];
+        cadG = g;
+        cadS.frames++;
+        if (g >= cadTh) cadS.openFrames++;
     }
     const seqData = () => {
         const pad = T - ring.length;
@@ -1098,7 +1158,8 @@ export default function (args = {}) {
             }
             if (it.src === "red") {
                 // the red-line 卸势: waits out the CD / stagger / relock while its window lasts (redLineTick ends it)
-                const why = pressBlocked(it, now) || (relockAt(now, it.cMs, true) ? "relock" : "");
+                const why = pressBlocked(it, now) || (relockAt(now, it.cMs, true) ? "relock" : "")
+                    || (cadOn && now < cadLockEnd() ? "cadence lock" : ""); // not inside a cadence 卸势's lock
                 if (why) {
                     if (!it.held) {
                         it.held = true;
@@ -1197,6 +1258,45 @@ export default function (args = {}) {
         presses.parry++;
         mark("press", `parry k-1 hitEscape +${now - hitAt}ms c+${Math.round((c - lastParryAt) / FRAME_MS)}f`);
     }
+    /** The cadence 卸势 (@see CAD_OFF), per frame after syncPlan, before executePlan. @param {number} now */
+    function cadenceTick(now) {
+        if (!cadOn || !pred) return;
+        // an urgent drink: the cadence stops up to CAD_YIELD_MS so the potion gets its gap after our last touch
+        const urgent = potionDue() && !potionPend && ((hpNow != null && hpNow <= POTION_URGENT) || (potionDueAt > 0 && now - potionDueAt >= POTION_WAIT_MAX_MS));
+        if (!urgent) cadYieldFrom = 0;
+        else if (!cadYieldFrom) {
+            cadYieldFrom = now;
+            cadS.yields++;
+            mark("cadence", `yield to the potion (hp ${Math.round((hpNow ?? 0) * 100)}%)`);
+        }
+        if (cadG < cadTh) return;
+        const why = now < cadLockEnd() + CAD_PAD_MS ? "lock"
+            : now - lastParryAt < PARRY_CD_MS ? "parry cd"
+            : now < staggerUntil ? "stagger"
+            : now < potionHoldUntil ? "potion"
+            : inDodge ? "dodge"
+            : qp.shown ? "qi"
+            : plan.some((x) => x.kind === "dodge" && !x.pressedAt && x.atMs - now <= CAD_DODGE_MS) ? "dodge due"
+            : plan.some((x) => x.kind === "potion" && !x.pressedAt) ? "potion due"
+            : cadYieldFrom && now - cadYieldFrom < CAD_YIELD_MS ? "yield"
+            : "";
+        if (why) {
+            inc(cadS.wait, why);
+            return;
+        }
+        tap(PARRY);
+        lastParryAt = Date.now();
+        lastParryC = lastParryAt + ISSUE_LEAD_MS;
+        pressFrame(frameIdx);
+        presses.parry++;
+        pressedSinceHit = true;
+        cadS.presses++;
+        cadPressAt = lastParryAt;
+        mark("press", `parry cadence G${cadG.toFixed(2)}`);
+    }
+    const cadResult = () => ({ th: cadTh, on: cadOn, ...(cadS.off ? { off: cadS.off } : {}), presses: cadS.presses, touches: cadS.touches,
+        swallowed: cadS.swallowed, openShare: cadS.frames ? Math.round((cadS.openFrames / cadS.frames) * 1000) / 1000 : 0, frames: cadS.frames,
+        gapHist: cadS.gapHist, gapMs: stats(cadS.gaps), yields: cadS.yields, wait: cadS.wait });
     /** @param {number} now */
     function expire(now) {
         for (const it of [...plan]) {
@@ -1232,7 +1332,7 @@ export default function (args = {}) {
                 inCurtain = false;
                 mark("curtain", "over");
             }
-        } else {
+        } else if (!cadOn) { // the cadence replaces the fut items (@see CAD_OFF)
             for (let k = 0; k < 3; k++) syncK(now, k);
         }
         tellPlan(now);
@@ -1300,6 +1400,7 @@ export default function (args = {}) {
             mark("escape", "superseded by a new hit");
         }
         esc = null;
+        if (cadOn) return; // no escape / insurance 卸势: after the stagger the cadence presses while its gate is open
         const skip = inCurtain || now - curtainLastAt < CURTAIN_GONE_MS ? "curtain"
             : now < potionHoldUntil || potionPend || plan.some((x) => x.kind === "potion") ? "potion"
             : drop > HIT_ESC_MAX_DROP ? "heavy" : "";
@@ -1837,7 +1938,7 @@ export default function (args = {}) {
             if (!ep.inWin) {
                 ep.inWin = true;
                 const by = plan.find((x) => x.pressedAt === lastParryAt);
-                inc(rlS.windowPressBy, by?.src === "red" ? "red" : by && by.floorMs === ep.at ? "moved" : by ? by.src : "other");
+                inc(rlS.windowPressBy, by?.src === "red" ? "red" : by && by.floorMs === ep.at ? "moved" : by ? by.src : cadOn && cadPressAt === lastParryAt ? "cadence" : "other");
             }
             // the window has its 卸势: no second one up to its end
             for (const x of fut) {
@@ -1903,10 +2004,13 @@ export default function (args = {}) {
         if (offHold || offWalking || now < offBusyUntil) return "offense";
         if (now - lastHitAt < (urgent ? Math.min(POTION_QUIET_MS, POTION_URGENT_QUIET_MS) : POTION_QUIET_MS)) return "after-hit";
         if (urgent) return "";
+        // the cadence: its gate is the quiet test (no fut items; the fut1 mass below is not used)
+        if (cadGate()) return "gate";
         if (plan.some((it) => !it.pressedAt && it.kind !== "potion" && it.atMs - now <= POTION_PLAN_MS)) return "plan";
         const t = pred?.tell;
         if (t && t.arg !== 0 && t.p >= TELL_TH) return "tell";
         if (!pred) return "no pred";
+        if (cadOn) return "";
         let m = 0;
         for (let i = 0; i < POTION_MASS_BINS; i++) m += futBin(0, i);
         if (m >= POTION_MASS_TH) return "mass";
@@ -2419,8 +2523,8 @@ export default function (args = {}) {
     }
     /** Action a fits now (no gate here): its horizon below OFF_VETO_TH, no plan item before it can be cut. @param {string} a @param {number} now */
     function okCan(a, now) {
-        if (offHold || offWalking || hd || now < offBusyUntil || bossNow <= 50) return false;
-        const nc = Math.max(OFF_NO_CANCEL_MS[a] ?? 0, burstAt > 0 ? burstAt + OFF_NO_CANCEL_MS.burst - now : 0);
+        if (offHold || offWalking || hd || now < offBusyUntil || bossNow <= 50 || cadGate()) return false;
+        const nc =Math.max(OFF_NO_CANCEL_MS[a] ?? 0, burstAt > 0 ? burstAt + OFF_NO_CANCEL_MS.burst - now : 0);
         if (offHorizon(nc) >= OFF_VETO_TH) return false;
         return !plan.some((it) => !it.pressedAt && it.atMs - now <= nc + OFF_ABORT_MS);
     }
@@ -2465,7 +2569,7 @@ export default function (args = {}) {
     /** Far for OFF_FAR_MS: one close-in (燃此魂 / 突进 when lit, else a forward push). @param {number} now */
     function farCloseIn(now) {
         if (inCurtain || inDodge || now < staggerUntil || now < potionHoldUntil || bossNow <= 50 || potionDue()) return false;
-        if (offM30 > OFF_VETO_TH || plan.some((it) => !it.pressedAt && it.atMs - now <= OFF_GUARD_MS)) return false;
+        if (offM30 > OFF_VETO_TH || cadGate() || plan.some((it) => !it.pressedAt && it.atMs - now <= OFF_GUARD_MS)) return false;
         const far = now - okFarSince;
         okFarSince = now; // re-armed
         const w = offW;
@@ -2503,7 +2607,7 @@ export default function (args = {}) {
         if (okSwitchPend && now < okSwitchPend) offW = offWeaponNow() ?? offW; // after a switch: per frame, not 4 Hz
         const w = offW;
         const so = sinceOk(now);
-        if (!pend && w && burstReady(now) && now >= offSetRetryAt && commitCan(now)) {
+        if (!pend && w && burstReady(now) && now >= offSetRetryAt && commitCan(now) && !cadGate()) {
             hd = { step: w === "hengdao" ? "dash1" : "switch", stepAt: now, readyAt: 0, tapAt: 0, tries: 0, gone: false, goneAt: 0 };
             offSetS.started++;
             mark("off", `横刀 set start (${w}, committed) sok ${so} ${offState()}`);
@@ -2639,6 +2743,7 @@ export default function (args = {}) {
         if (t && t.arg !== 0 && t.p >= TELL_TH) return "tell";
         if (now - flareSeenAt < OFF_AFTER_TELL_MS) return "after-tell";
         if (offHorizon(nc) >= th) return "horizon";
+        if (cadGate()) return "gate";
         if (plan.some((it) => !it.pressedAt && it.atMs - now <= nc + OFF_ABORT_MS)) return "plan";
         return "";
     }
@@ -2990,7 +3095,7 @@ export default function (args = {}) {
     }
 
     log(`dufu start: ${BACK_MODEL} + ${headModel}, ${untilMs} ms${untilMs < (args.ms ?? 600_000) ? ` (ms ${args.ms ?? 600_000} clipped by the timeout)` : ""}, issueLead ${ISSUE_LEAD_MS} ms, potions ${maxPotions}` +
-        `${phase === 2 ? `, phase 2${defDodgeP != null ? ` defDodgeP ${defDodgeP}` : ""}` : ""}${args.trace ? `, trace ${traceFeat ? "aux+feat" : "aux"} (event ${TRACE_EVENT}, start ${start})` : ""}`);
+        `${phase === 2 ? `, phase 2${defDodgeP != null ? ` defDodgeP ${defDodgeP}` : ""}${cadTh ? ` cadence ${cadTh}` : ""}` : ""}${args.trace ? `, trace ${traceFeat ? "aux+feat" : "aux"} (event ${TRACE_EVENT}, start ${start})` : ""}`);
     if (args.prep ?? true) prep();
     let lastFrameStart = Date.now() - 35;
     try {
@@ -3041,6 +3146,7 @@ export default function (args = {}) {
                 syncPlan(now2);
                 if (redLineF) redLineTick(now2);
                 offenseGuard(now2);
+                cadenceTick(now2);
                 executePlan(now2);
                 hitEscTick(Date.now());
                 sweepTick(Date.now());
@@ -3103,6 +3209,7 @@ export default function (args = {}) {
     log(`defense: ${JSON.stringify(defense)}`);
     log(`potion: ${JSON.stringify(potion)}`);
     if (redLineF) log(`redLine: ${JSON.stringify(rlResult())}`);
+    if (cadTh) log(`cadence: ${JSON.stringify(cadResult())}`);
     log(`off: ${JSON.stringify(off)}`);
     return {
         reason, ...(reason === "cleared" ? { clearedAtMs } : {}), looks, ready, headCalls, readyPct, ringBad,
@@ -3112,6 +3219,7 @@ export default function (args = {}) {
         start, events,
         ...(phase === 2 ? { phase, flare2: { ...f2S, readMs: stats(f2S.readMs) }, qiWalk: { ...qp2S, capped: undefined } } : {}),
         ...(redLineF ? { redLine: rlResult() } : {}),
+        ...(cadTh ? { cadence: cadResult() } : {}),
         ...(args.trace ? { trace: { event: TRACE_EVENT, start, rows: traceN, chunks: traceChunks, feat: traceFeat } } : {}),
     };
 }
