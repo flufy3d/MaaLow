@@ -7,8 +7,11 @@
 // pick: round 363's re-entry went into 寄棺主's arena), and 开封皇宫 lists 黑衣贼 first. So 演练场 is tapped only when
 // the page title reads 独夫 (else: 开封皇宫 tab, then the 独夫 row found by OCR), and 开始演练 only on a panel titled
 // 独夫 with 绝境·浴血 / 阶段一 set (else stop: never start another boss or difficulty).
+// args.phase (2026-10-23): 1 (default) or 2. The panel must read 绝境·浴血 and 阶段<phase>; showing the other 阶段 it is
+// switched (the 演练阶段 dropdown, then its item) and read again before 开始演练. Anything else still stops.
+//   uv run maalow do skill dufu_enter --args '{"phase":2}'
 /** @type {SkillMeta} */
-export const meta = { description: "独夫演练场: enter the 独夫 training fight from wherever we are", timeout: 300_000 };
+export const meta = { description: "独夫演练场: enter the 独夫 training fight (args.phase 1 / 2) from wherever we are", timeout: 300_000 };
 
 /** @type {Box} */ const QUEST_ROI = [20, 125, 360, 80]; // tracked quest lines; in the arena: 独夫·绝境·浴血·阶段一 / 击败当前敌人
 /** @type {Box} */ const RETRY_ROI = [870, 645, 210, 75]; // 再次训练 on the death panel
@@ -31,6 +34,11 @@ export const meta = { description: "独夫演练场: enter the 独夫 training f
 /** @type {Point} */ const PANEL_CLOSE = [1035, 40];
 /** @type {Point} */ const START_BTN = [985, 679];
 /** @type {Point} */ const RETRY_BTN = [992, 679];
+// the 演练阶段 dropdown on the 演练场 panel and its items once open (screens verified 2026-10-23)
+/** @type {Point} */ const PHASE_DROPDOWN = [925, 246];
+/** @type {Record<number, Point>} */ const PHASE_ITEM = { 1: [830, 246], 2: [830, 274] };
+/** @type {Record<number, string>} */ const PHASE_TEXT = { 1: "阶段一", 2: "阶段二" };
+const PHASE_SWITCH_TRIES = 3, PHASE_MENU_MS = 800, PHASE_PICK_MS = 1200;
 
 /** OCR a text inside roi on the current screen. @param {string} text @param {Box} roi */
 function see(text, roi) {
@@ -49,22 +57,36 @@ function trialPage() {
     return ["野外首领", "镇守", "侠迹"].some((t) => list.includes(t));
 }
 
-export default function () {
+/** In the arena (pre-engage or engaged): "arena", else "". Phase 2: a quest line reading 阶段一 twice is the
+ * phase-one arena, an error (phase 1 keeps its old check: its quest line reads 阶段二 once cleared).
+ * @param {number} phase */
+function arena(phase) {
+    const quest = () => ocr({ image: screenshot(), roi: QUEST_ROI }).results.map((m) => m.text ?? "").join("|");
+    const q = quest();
+    if (!q.includes("击败当前敌人") && !q.includes("独夫·绝境")) return "";
+    if (phase === 2 && q.includes("阶段一") && !q.includes("阶段二") && quest().includes("阶段一")) {
+        throw new Error(`in the 独夫 阶段一 arena, asked for 阶段二 (${q}): leave it first`);
+    }
+    log(`arena: 独夫演练场 (${q})`);
+    return "arena";
+}
+
+/** @param {{phase?: number}} [args] phase: the 演练阶段 to start, 1 (default) or 2 */
+export default function (args = {}) {
+    const phase = args.phase === 2 ? 2 : 1;
+    const want = PHASE_TEXT[phase], other = PHASE_TEXT[3 - phase];
     runSkill("clear_popups", {});
-    let blank = 0;
+    let blank = 0, switches = 0;
     for (let i = 0; i < 60; i++) {
         if (remaining() < 30_000) break;
-        if (see("击败当前敌人", QUEST_ROI) || see("独夫·绝境", QUEST_ROI)) { // the fight is up (pre-engage or engaged)
-            log("arena: 独夫演练场");
-            return "arena";
-        }
+        if (arena(phase)) return "arena";
         if (see("再次训练", RETRY_ROI)) { // died: reset and keep going
             log("death panel: 再次训练");
             click(RETRY_BTN[0], RETRY_BTN[1]);
             sleep(7000);
             continue;
         }
-        if (see("开始演练", START_ROI)) { // the practice panel is open: only 独夫 / 绝境·浴血 / 阶段一
+        if (see("开始演练", START_ROI)) { // the practice panel is open: only 独夫 / 绝境·浴血 / 阶段<phase>
             const title = see("独夫", PANEL_TITLE_ROI);
             const diff = ocr({ image: screenshot(), roi: PANEL_DIFF_ROI }).results.map((m) => m.text ?? "").join("|");
             if (!title) { // another boss's panel: close it (its own back arrow), pick 独夫 on the page
@@ -73,18 +95,32 @@ export default function () {
                 sleep(1500);
                 continue;
             }
-            if (!diff.includes("绝境") || !diff.includes("阶段一")) {
-                throw new Error(`独夫 演练场 panel is not 绝境·浴血 阶段一 (${diff}): not starting`);
+            if (!diff.includes("绝境")) throw new Error(`独夫 演练场 panel is not 绝境·浴血 (${diff}): not starting`);
+            if (!diff.includes(want)) {
+                // the other 阶段: open the 演练阶段 dropdown, pick ours, and read the panel again (next pass)
+                if (!diff.includes(other) || switches >= PHASE_SWITCH_TRIES) {
+                    throw new Error(`独夫 演练场 panel is not 绝境·浴血 ${want} (${diff}${switches ? `, after ${switches} switches` : ""}): not starting`);
+                }
+                switches++;
+                log(`演练场 panel reads ${other}: switch to ${want} (#${switches})`);
+                click(PHASE_DROPDOWN[0], PHASE_DROPDOWN[1]);
+                sleep(PHASE_MENU_MS);
+                click(PHASE_ITEM[phase][0], PHASE_ITEM[phase][1]);
+                sleep(PHASE_PICK_MS);
+                continue;
             }
-            log("演练场 panel: 开始演练");
+            if (diff.includes(other)) { // both read (the dropdown still open?): read again
+                if (switches++ >= PHASE_SWITCH_TRIES) throw new Error(`独夫 演练场 panel reads both 阶段 (${diff}): not starting`);
+                log(`演练场 panel reads both ${want} and ${other}: read again`);
+                sleep(PHASE_PICK_MS);
+                continue;
+            }
+            log(`演练场 panel: ${want}, 开始演练`);
             click(START_BTN[0], START_BTN[1]);
             // the loading screen: touch nothing (live 2026-10-16: the menu-icon fallback hit the arena's exit icon)
             for (let w = 0; w < 25 && remaining() > 30_000; w++) {
                 sleep(2000);
-                if (see("击败当前敌人", QUEST_ROI) || see("独夫·绝境", QUEST_ROI)) {
-                    log("arena: 独夫演练场");
-                    return "arena";
-                }
+                if (arena(phase)) return "arena";
             }
             continue;
         }

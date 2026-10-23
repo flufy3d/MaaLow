@@ -5,9 +5,13 @@
 ```
 uv run maalow do skill dufu                                  # 默认 10 分钟、1 瓶药
 uv run maalow do skill dufu --args '{"ms":300000,"potions":0}'
+uv run maalow do skill dufu_enter --args '{"phase":2}'      # 阶段二：面板不是阶段二就用演练阶段下拉框切过去
+uv run maalow do skill dufu --args '{"phase":2,"trace":true}'
 ```
 
-结束原因：`cleared`（成功页模板连续两次命中，或任务栏出现「阶段二」）、`dead`（再次训练按钮 / 长时间灰屏）、`time`。
+结束原因：`cleared`（成功页模板连续两次命中，或任务栏出现「阶段二」，后者只在阶段一）、`dead`（再次训练按钮 / 长时间灰屏）、`time`。超过约 10 分钟的 `ms` 要同时给 `--timeout`（ms + 60000），否则 CLI 在 660 秒断开；脚本在超时前 15 秒自己收尾。
+
+阶段二（2026-10-23 起，未实测）：老师说红光多、卸势能接，金光照闪。`phase:2` 时 fut/def 头的普通闪避改成卸势，金光仍然闪（做法见下）；阶段二没有幕布（老师确认），所以 tell 的幕布类、暗场连帧和图像规则都不再进入幕布（之前这些误报挡住了喝药，还触发了定时后闪）。按 4 轮挨打归因（金光开场占掉血 43%，金光亮线比红色爆击早约 10 帧；4/9 次气竭没处决），阶段二另有两条（未实测）：金光在首报时立刻闪（tell 首帧 argmax 是金光类且 p≥0.35，或图像规则本帧看到亮线；不再等锚点 / flareHold / flareSplit），左右交替、守闪避 CD；闪后 CD 过了还在报，且没挨打、近 400 ms 没有要按的卸势、近 14 帧没按过卸势，就再闪一次（每段至多一次）。图像规则每帧跑、不吃慢读预算（实测平均耗时超过 5 ms 就降到每 100 ms，结果里 `flare2.readMs` 有实测）。气竭：真气读空 300 ms 还没看到处决按钮就往前走（锁定让镜头对着 boss），每段真气空最多走 4 秒，按钮一出现就停，照常 2.6 秒后点处决，但走过的话最晚在真气读空后 6 秒点（结果里 `qiWalk`）。阶段一不变。`defDodgeP`（只在阶段二，默认不设 = 现状）：def 头某次接触的 P(dodge) ≥ 它就闪避而不卸势，配合按结果训练的 head（`tools/dufu_train` 的 `--def-from-outcome`，`unified_head_p2d.onnx`），未实测。`head` 参数换 head 模型，默认 head9s；阶段二微调的 head 是 `{"phase":2,"head":"dufu/unified_head_p2.onnx"}`，训练流程见 `tools/dufu_train/README.md`。`trace` 每个 backbone 帧记一行（时间、seq、15 列 aux，`"feat"` 再加 float16 特征），用 `event("dufu_trace")` 分块发出，跑完用 `/events?type=skill_event` 取（格式见 dufu.js 的 TRACE_EVENT 注释）。
 
 ## 当前基线
 

@@ -9,13 +9,18 @@
 // numbers and what was tried.
 //   maalow do skill dufu                       (10 min, 1 potion)
 //   maalow do skill dufu --args '{"ms":300000,"potions":0}'
+//   maalow do skill dufu --args '{"phase":2,"trace":true}'                       (阶段二 arena, dufu_enter phase 2)
+//   maalow do skill dufu --args '{"phase":2,"ms":900000}' --timeout 960000      (> ~10 min needs --timeout, @see END_MARGIN_MS)
+// phase 2 (args.phase): the quest line reads 阶段二 from the start there, so only the 成功 page / death / time end the
+// run; the fut/def heads' plain dodges become 卸势 (@see defAction); no curtain; 金光 dodges at the first report with a
+// per-frame image rule (@see FLARE2_P); a 气竭 spell without 处决 walks in (@see QP2_WALK_AFTER_MS).
 import { stats } from "./lib/stats.js";
 import { BOSS_FULL, ICON_WHITE, ME_X, bossPx, countAtLeast, gapNow, health, litNow, readMean, readQi, seeFlash } from "./lib/dufu-reads.js";
 import { COMBO6_LABELS, DEF_LABELS, FUT_CENTER, FUT_HI, FUT_LABELS, FUT_LO, STAGE_LABELS, TELL_LABELS } from "./lib/dufu-labels.js";
 import { argmax, futStats, headOut, softmax } from "./lib/dufu-math.js";
 
 /** @type {SkillMeta} */
-export const meta = { description: "独夫 phase one: model defense (卸势 / dodge / potion) + offense (near gate, 处决, 奇术)", timeout: 660_000 };
+export const meta = { description: "独夫 phase one (args.phase 2: phase two): model defense (卸势 / dodge / potion) + offense (near gate, 处决, 奇术)", timeout: 660_000 };
 
 const MODEL = "dufu/unified_head9s.onnx", BACK_MODEL = "dufu/unified_back9.onnx";
 const T = 30; // ring / seq window (frames)
@@ -102,6 +107,56 @@ const STAGGER_BY_DROP = [[0.04, 100], [0.065, 300], [1, 500]];
 const HIT_ESC_MAX_DROP = 0.065, HIT_ESC_WIN_F = 4, HIT_ESC_YIELD_F = 3;
 const PARRY_RELOCK_MS = 330, RELOCK_SAME_F = 8, RELOCK_MIN_LEAD_F = 2;
 const LATENCY_F = 5; // press -> on screen, frames
+// phase 2 (teacher, 2026-10-23): most blows there are red-light (红光) ones a 卸势 takes; 金光 must still be dodged.
+// So with args.phase 2 a def head "dodge" (fut items, their re-arms) is a 卸势; the flare tell dodges (tellPlan,
+// slowFlare) are untouched. Phase two has no curtain (幕布) at all (teacher, 2026-10-23; the head's curtain / dark
+// reports there are red-scene misreads that blocked potions and fired timed back dodges), so with phase 2 nothing enters
+// it: the tell's curtain class and dark runs are ignored and the image rule (slowCurtain) does not run. Phase 1 is
+// unchanged. @see defAction, curtainOn
+// phase 2 金光 (hit attribution of 4 rounds, 2026-10-23: the openers took 43% of the HP lost). The gold streak shows
+// ~10 f before the red blast (gold -6 f, blast +4 f); the anchored tell dodges (ANCHOR + flareHold / flareSplit) went
+// ~270 ms after the first report, at or after the blast, while the image rule's dodges mostly got out. So with phase 2
+// (@see flare2Tick) a flare report — the tell head's argmax a flare class (1-3) at p >= FLARE2_P (no second frame, the
+// first reports were p 0.35-0.49), or the image rule on this frame — dodges at once (atMs = now; no anchor, no hold /
+// split), left / right in turn, under DODGE_CD_MS; one episode = reports less than FLARE2_GAP_MS apart. One re-dodge
+// per episode when it is still reported after the CD, within FLARE2_REDODGE_MAX_MS of the first dodge, no hit since
+// it, no unpressed 卸势 due within FLARE2_PARRY_GUARD_MS and none pressed within ISSUE_LEAD_MS (the opener goes on with
+// two red blows ~0.87 s apart that the plan parries; a dodge must not cut those 卸势). The image rule runs every frame before the aux is built (not on the slow-read budget), every
+// FLARE2_SLOW_EVERY ms instead once its mean cost over the last FLARE2_COST_N reads passes FLARE2_COST_MS.
+const FLARE2_P = 0.35, FLARE2_GAP_MS = 20 * FRAME_MS, FLARE2_HIT_F = 10;
+const FLARE2_REDODGE_MAX_MS = 700, FLARE2_PARRY_GUARD_MS = 400;
+const FLARE2_COST_MS = 5, FLARE2_COST_N = 30, FLARE2_SLOW_EVERY = 100;
+// FLARE2_IMG off (r058-r067): the per-frame image rule cost ~33 ms a read (loop p50 27 -> 36 ms) and most of its phase-2
+// hits were red bursts / lens streaks, not gold; median life 170 -> 95 s. Phase 2 keeps the 400 ms slowFlare instead.
+const FLARE2_IMG = false;
+// phase 2 气竭: in 4 of 9 windows the boss stood staggered at mid / far range and 处决 (shown only within reach) never
+// came. With phase 2, QP2_WALK_AFTER_MS after the qiPlan candidate (真气 read empty) with no 处决 button, walk forward
+// (lock-on keeps the camera on the boss) in QP_CHASE_MS pushes until the button shows, at most QP2_WALK_MAX_MS per
+// 真气-empty spell; the button is then looked for every frame. After such a walk 处决 goes at the usual
+// QP_EXEC_AFTER_MS after its sighting, but no later than QP2_EXEC_BY_MS after the candidate (真气 stayed empty
+// ~7.3-8 s in the windows without 处决). @see qpApproach
+const QP2_WALK_AFTER_MS = 300, QP2_WALK_MAX_MS = 4000, QP2_EXEC_BY_MS = 6000;
+// args.head swaps the head model (default MODEL), e.g. "dufu/unified_head_p2.onnx" (tools/dufu_train, same IO / slices).
+// run length: the loop ends this long before the call's timeout (meta.timeout or --timeout), so a long ms ends as
+// "time" with its result (and the trace's last chunk) instead of being killed. The default 600 s run under the 660 s
+// meta.timeout is not clipped.
+const END_MARGIN_MS = 15_000;
+// trace (args.trace: true = aux, "feat" = aux + the 192-d feature), for training a new (phase-2) head offline. One row
+// per backbone frame: [wall ms - start (Date.now() of the frame's loop), stream seq, capture ms - start (img.time -
+// img.age_ms; -1 unknown), the 15 aux columns rounded to 3 decimals (as fed to the ring), ("feat": the feature as
+// float16 little-endian, base64, 512 chars)]. Transport: event(TRACE_EVENT, {start, phase, chunk, cols, rows}) every
+// TRACE_CHUNK rows and the rest when the loop ends. Why events (the move.js "goto" / live_run.py pattern, no app change):
+//   - the result value comes back only on a clean return (a teacher stop / timeout / error returns no value) and goes
+//     to stdout of `maalow do skill` (MBs into the caller's context); the event log keeps every chunk sent before a stop;
+//   - log() lines are capped at the run's last 200 (SkillRun.MAX_LOGS), so log chunks would be lost;
+//   - events: in memory (last 1000) for GET /api/v1/events?since=ID&type=skill_event, and in events.jsonl on the device
+//     (trimmed to the last 1000 past 4000 lines); a skill event's data has no size cap.
+// Size: aux rows ~90 bytes -> ~1.6 MB / 120 events per 10 min (~28 rows/s); "feat" adds 512 chars/row -> ~10 MB. The
+// last chunk is lost on a stop (event() throws then). Fetch right after the run (other events push old ones out):
+//   uv run python -c "import json; from maalow.client import Client; ev=[e for e in Client().get('/events?since=0&type=skill_event') if e.get('name')=='dufu_trace']; json.dump(ev, open('trace.json','w'))"
+const TRACE_EVENT = "dufu_trace", TRACE_CHUNK = 150;
+const TRACE_COLS = ["wall", "seq", "cap", "dt", "since_parry", "since_dodge", "since_potion", "since_walk", "pressed", "since_ok",
+    "hp", "qi", "boss", "lit", "mean", "dark3", "flare", "boss_up"];
 
 // potion (2.3 patch): a tap within 500 ms of our 卸势, or ~0.6 s after a blow, is ignored; a 卸势 or a blow in the
 // first ~0.7 s cancels the drink. So the drink waits for a quiet moment (POTION_QUIET_MS after a hit, POTION_GAP_MS
@@ -139,7 +194,7 @@ const POTION_SETTLE_MS = 2500, POTION_WAIT_MAX_MS = 2500;
 //   ~2 s, so the horizon must be clear that long. Out only once the cooldown shows; else retried.
 // The 横刀 ok follow-up: a 横刀 ok turns 重击 into the blue 爆发 disc for ~3 s; tap it FOLLOW_DELAY_MS after the ok
 //   (sooner is swallowed); the rest of the offense waits for it meanwhile.
-// The run ends at the 成功 page (deadCheck) or 阶段二 in the quest line.
+// The run ends at the 成功 page (deadCheck) or 阶段二 in the quest line (phase 1 only).
 const OFF_CONTACT = 3, OFF_TAP_MS = 40;
 const OFF_QUIET_BINS = 8, OFF_STRONG_BINS = 9;
 const OFF_GUARD_MS = 600, OFF_ABORT_MS = 150, OFF_AFTER_TELL_MS = 1500;
@@ -184,7 +239,7 @@ const OFF_T = {
     buff: ["combat/modao_buff.png", [793, 635, 64, 64]],
     qishu: ["combat/qishu_ready.png", [848, 493, 64, 64]],
 };
-const CLR_EVERY_MS = 400;
+const CLR_EVERY_MS = 400; // phase 1 only: in the 阶段二 arena the quest line reads 阶段二 from the start
 const QUEST_WHITE = { lower: [0, 0, 190], upper: [180, 70, 255], method: 40 };
 /** @type {Box} */ const PHASE2_TOP = [222, 140, 12, 4]; // 二: >= 8 px
 /** @type {Box} */ const PHASE2_BOTTOM = [220, 147, 16, 4]; // >= 10 px
@@ -225,14 +280,25 @@ const SLOT_POTION_PX = 10;
 /** @typedef {{kind: "parry"|"dodge"|"potion"|"avoid", dir: string, k: number, src: "fut"|"tell"|"potion"|"insure", atMs: number, cMs: number, untilMs: number, branch: boolean, t1Ms: number, pressedAt: number, committed: boolean, why: string, held?: boolean, repressed?: boolean, rearms?: number, relocked?: boolean}} PlanItem */
 
 /**
- * @param {{ms?: number, potions?: number, prep?: boolean}} [args] ms: run length (default 10 min); potions: drinks allowed
- *     (default 1); prep: poison + buffs at the start (default on; the scheduler test turns it off)
+ * @param {{ms?: number, potions?: number, prep?: boolean, phase?: number, trace?: boolean | "feat", head?: string, defDodgeP?: number}} [args] ms: run length
+ *     (default 10 min; clipped to the call's timeout less END_MARGIN_MS); potions: drinks allowed (default 1); prep: poison
+ *     + buffs at the start (default on; the scheduler test turns it off); phase: 1 (default) or 2, the arena's 阶段
+ *     (@see defAction, clearedCheck); trace: per-frame trace events (@see TRACE_EVENT); head: the head model (default
+ *     MODEL; same IO as unified_head9s, e.g. the phase-2 "dufu/unified_head_p2.onnx"); defDodgeP: phase 2 only, a def-head
+ *     contact with P(dodge) >= this is dodged instead of 卸势 (default: never; @see defAction)
  */
 export default function (args = {}) {
-    const untilMs = args.ms ?? 600_000;
     const maxPotions = args.potions ?? 1;
+    const phase = args.phase === 2 ? 2 : 1;
+    const headModel = args.head ?? MODEL;
+    const defDodgeP = phase === 2 && typeof args.defDodgeP === "number" ? args.defDodgeP : null; // @see defAction
+    // args.flare2 true: phase 2 dodges a flare tell at its first report (flare2Tick); off by default: A/B r078-r093 8 vs 8
+    // rounds, hits/min 9.9 vs 10.05, median life 109 vs 119 s (no difference), so phase 1 anchored dodges stay
+    const flare2On = phase === 2 && (args.flare2 ?? false); // @see flare2Tick
+    const curtainOn = phase !== 2; // phase two has no curtain (the note above END_MARGIN_MS)
 
     const start = Date.now();
+    const untilMs = Math.min(args.ms ?? 600_000, remaining() - END_MARGIN_MS);
     const until = start + untilMs;
     /** @type {[number, number, string, string][]} */
     const events = [];
@@ -492,6 +558,59 @@ export default function (args = {}) {
         }
     }
 
+    // --- the trace (@see TRACE_EVENT): rows of the frames since the last chunk
+    const traceFeat = args.trace === "feat";
+    /** @type {(number | string)[][]} */
+    let traceRows = [];
+    let traceN = 0, traceChunks = 0;
+    const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
+    /** float32 -> float16 bits (round to nearest; NaN -> inf). @param {number} v */
+    function half(v) {
+        f32[0] = v;
+        const x = u32[0], sign = (x >>> 16) & 0x8000, e = ((x >>> 23) & 0xff) - 112, m = x & 0x7fffff;
+        if (e >= 31) return sign | 0x7c00;
+        if (e <= 0) {
+            if (e < -10) return sign;
+            const mm = m | 0x800000, sh = 14 - e;
+            return sign | ((mm >> sh) + ((mm >> (sh - 1)) & 1));
+        }
+        return sign | (((e << 10) | (m >> 13)) + ((m >> 12) & 1)); // a carry into the exponent is still right
+    }
+    const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    /** The feature as float16 little-endian, base64. @param {number[]} f */
+    function featB64(f) {
+        /** @type {number[]} */
+        const b = [];
+        for (const v of f) {
+            const h = half(v);
+            b.push(h & 0xff, h >> 8);
+        }
+        let out = "";
+        for (let i = 0; i < b.length; i += 3) {
+            const n = (b[i] << 16) | ((b[i + 1] ?? 0) << 8) | (b[i + 2] ?? 0);
+            out += B64[n >> 18] + B64[(n >> 12) & 63] + (i + 1 < b.length ? B64[(n >> 6) & 63] : "=") + (i + 2 < b.length ? B64[n & 63] : "=");
+        }
+        return out;
+    }
+    /** @param {number} now @param {Image} im @param {number[]} aux @param {number[]} f */
+    function traceAdd(now, im, aux, f) {
+        /** @type {(number | string)[]} */
+        const row = [now - start, im.seq, im.time != null ? Math.round(im.time - (im.age_ms ?? 0)) - start : -1];
+        for (const v of aux) row.push(Math.round(v * 1000) / 1000);
+        if (traceFeat) row.push(featB64(f));
+        traceRows.push(row);
+        traceN++;
+        if (traceRows.length >= TRACE_CHUNK) traceFlush();
+    }
+    /** Send the rows so far (after a stop / timeout event() throws: those rows are lost). */
+    function traceFlush() {
+        if (!traceRows.length) return;
+        const rows = traceRows;
+        traceRows = [];
+        event(TRACE_EVENT, { start, phase, chunk: traceChunks, cols: traceFeat ? [...TRACE_COLS, "feat_f16_b64"] : TRACE_COLS, rows });
+        traceChunks++;
+    }
+
     // --- the 15 aux columns, frozen with each frame
     /** @param {number} dtMs @returns {number[]} */
     function buildAux(dtMs) {
@@ -526,6 +645,10 @@ export default function (args = {}) {
         for (let i = 1; i < 5; i++) if (p[i] > p[bi]) bi = i;
         if (bi === 0) return null;
         if (bi === 3) return /** @type {"avoid"} */ ("avoid");
+        // phase 2 + args.defDodgeP: a contact (parry / dodge class) with P(dodge) >= defDodgeP is dodged (a head trained
+        // with --def-from-outcome marks the blows a timely 卸势 did not take, e.g. unified_head_p2d.onnx)
+        if (phase === 2 && defDodgeP != null && (bi === 1 || bi === 2) && (p[2] ?? 0) >= defDodgeP) return /** @type {"dodge"} */ ("dodge");
+        if (bi === 2 && phase === 2) return /** @type {"parry"} */ ("parry"); // phase 2: a red-light blow, 卸势 (the note above END_MARGIN_MS)
         if (bi === 2) return (p[2] ?? 0) >= DODGE_MIN_P ? /** @type {"dodge"} */ ("dodge") : /** @type {"parry"} */ ("parry");
         return /** @type {"parry"} */ ("parry");
     }
@@ -701,14 +824,14 @@ export default function (args = {}) {
         if (t.arg >= 1 && t.arg <= 3) {
             if (now - flareLastFireAt > 20 * FRAME_MS || t.arg !== flareLastArg) {
                 flareFirstAt = now;
-                if (t.arg === 1) {
+                if (t.arg === 1 && !flare2On) { // flare2: no hold / split (@see flare2Tick)
                     if (foFrom) foEnd("new episode");
                     foFrom = now;
                     foItem = null;
                     foS.holds++;
                     mark("flarehold", `start (flare_other first report p${Math.round(t.p * 100)})`);
                 }
-                fsFrom = t.arg === 1 ? now : 0;
+                fsFrom = t.arg === 1 && !flare2On ? now : 0;
                 fsFast = null;
                 fsItem = null;
             }
@@ -716,10 +839,11 @@ export default function (args = {}) {
             flareLastArg = t.arg;
             if (t.arg === 1) foLastAt = now;
         }
+        if (flare2On) flare2Tick(now);
         fsTick(now);
         // The dark class fires at the curtain's black cover onset (233-252: 77/82 dark streaks p>=0.7 (>=2 f) sit at a
         // real episode). A 400 ms slow task would miss the short covers, so it lives here, in the per-frame tell path.
-        if (t.arg === 6 && t.p >= 0.7) {
+        if (curtainOn && t.arg === 6 && t.p >= 0.7) {
             // a dark run's first frame is a sweep (the cover onset or a later black sweep): sync the timed dodges
             if (now - lastDarkAt > SWEEP_DARK_GAP_MS) sweepSync(now - SWEEP_DARK_LAG_F * FRAME_MS, "dark");
             lastDarkAt = now;
@@ -736,7 +860,9 @@ export default function (args = {}) {
             curtainDarkSeen = 0;
         }
         if (t.p < TELL_TH || t.arg === 0 || t.arg === 6) return;
+        if (flare2On && t.arg >= 1 && t.arg <= 3) return; // flare2Tick's
         if (t.arg === 5) {
+            if (!curtainOn) return;
             if (!inCurtain) {
                 inCurtain = true;
                 curtainFirstAt = 0;
@@ -1481,6 +1607,76 @@ export default function (args = {}) {
         if (c1 - now < LATE_FRAMES * FRAME_MS) return;
         lastFlareDodgeAt = now;
         addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: c1, atMs: c1 - DODGE_LEAD.other * FRAME_MS, untilMs: c1 + MISS_GRACE_MS, why: "flare color" });
+    }
+
+    // --- phase 2 金光 (@see FLARE2_P): the image rule per frame, a dodge at the first report, one re-dodge
+    let f2From = 0, f2LastAt = 0, f2SeenSeq = -1, f2ReadAt = 0, f2ReDone = false;
+    /** @type {PlanItem | null} */ let f2First = null;
+    /** @type {number[]} */ const f2Cost = [];
+    const f2S = { episodes: 0, /** @type {Record<string, number>} */ bySrc: {}, dodges: 0, redodges: 0,
+                  /** @type {Record<string, number>} */ reSkip: {}, imgReads: 0, imgHits: 0, slowReads: 0, readMs: /** @type {number[]} */ ([]) };
+    /** Per frame before the aux (phase 2): seeFlash on this frame -> the flare aux column, flareSeenAt. @param {number} now */
+    function flare2Read(now) {
+        const slow = f2Cost.length >= FLARE2_COST_N && f2Cost.reduce((a, b) => a + b, 0) / f2Cost.length > FLARE2_COST_MS;
+        if (slow && now - f2ReadAt < FLARE2_SLOW_EVERY) return;
+        if (slow) f2S.slowReads++;
+        f2ReadAt = now;
+        const t0 = Date.now();
+        const seen = seeFlash(img);
+        const ms = Date.now() - t0;
+        f2Cost.push(ms);
+        if (f2Cost.length > FLARE2_COST_N) f2Cost.shift();
+        f2S.readMs.push(ms);
+        f2S.imgReads++;
+        flare = seen ? 1 : 0;
+        if (!seen) return;
+        f2S.imgHits++;
+        f2SeenSeq = img.seq;
+        if (now - flareSeenAt > 300) mark("flare", "gold + streak (per frame)");
+        flareSeenAt = now;
+    }
+    /** @param {number} now @param {string} why */
+    const flare2Item = (now, why) => addItem({ kind: "dodge", dir: nextDir(), k: -1, src: "tell", cMs: now + FLARE2_HIT_F * FRAME_MS,
+        atMs: now, untilMs: now + FLARE2_HIT_F * FRAME_MS + MISS_GRACE_MS, why });
+    /** Per head output (phase 2, from tellPlan): a flare report dodges now; one re-dodge. @param {number} now */
+    function flare2Tick(now) {
+        const t = pred?.tell;
+        const tell = !!t && t.arg >= 1 && t.arg <= 3 && t.p >= FLARE2_P;
+        const seen = f2SeenSeq === img.seq;
+        if (!t || (!tell && !seen)) return;
+        const src = tell ? `${TELL_LABELS[t.arg]} p${Math.round(t.p * 100)}` : "image";
+        if (!f2From || now - f2LastAt > FLARE2_GAP_MS) {
+            f2From = now;
+            f2First = null;
+            f2ReDone = false;
+            f2S.episodes++;
+            inc(f2S.bySrc, tell ? TELL_LABELS[t.arg] : "image");
+            mark("flare2", `episode (${src})`);
+        }
+        f2LastAt = now;
+        if (!f2First || (!f2First.pressedAt && !plan.includes(f2First))) {
+            // the first dodge (again when the last one was dropped unpressed, e.g. blocked)
+            if (inDodge || now - lastDodgeAt < DODGE_CD_MS) return;
+            f2First = flare2Item(now, `flare2 first ${src} +${Math.round((now - f2From) / FRAME_MS)}f`);
+            f2S.dodges++;
+            return;
+        }
+        if (!f2First.pressedAt || f2ReDone) return;
+        const s = now - f2First.pressedAt;
+        if (s < DODGE_CD_MS || inDodge || now - lastDodgeAt < DODGE_CD_MS) return;
+        /** @param {string} why */
+        const skip = (why) => {
+            inc(f2S.reSkip, why);
+            f2ReDone = true;
+            mark("flare2", `no re-dodge (${why})`);
+        };
+        if (s > FLARE2_REDODGE_MAX_MS) return skip("late");
+        if (lastHitAt >= f2First.pressedAt) return skip("hit");
+        if (plan.some((x) => x.kind === "parry" && !x.pressedAt && x.atMs - now <= FLARE2_PARRY_GUARD_MS)) return skip("parry due");
+        if (now - lastParryAt < ISSUE_LEAD_MS) return skip("parry pressed"); // its window is still to come
+        f2ReDone = true;
+        f2S.redodges++;
+        flare2Item(now, `flare2 re-dodge ${src} +${Math.round(s / FRAME_MS)}f after the first`);
     }
 
     // --- potion (@see POTION_QUIET_MS)
@@ -2331,7 +2527,7 @@ export default function (args = {}) {
     }
 
     // --- 气竭: the window clocked from the 处决 button's first sighting (@see QP_EXEC_AFTER_MS)
-    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, switchAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, seenAt: 0, lostAt: 0 };
+    const qp = { zeroRun: 0, cand: 0, shown: 0, tapAt: 0, switchAt: 0, lastLight: 0, lastMatch: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, seenAt: 0, lostAt: 0, walkFrom: 0 };
     const qpS = { windows: 0, fakes: 0, execs: 0, lost: 0, lights: 0, postLights: 0, futDrops: 0, preDrops: 0, btnLost: 0, chases: 0, reseenTaps: 0 };
     /** @type {number[]} */ const qpShownToTap = [];
     /** @type {number[]} */ const qpBossDrop = [];
@@ -2376,8 +2572,41 @@ export default function (args = {}) {
         mark("qi", `qiPlan window over (${why}) after ${now - qp.shown} ms: ${qp.lights} + ${qp.post} 轻击, 处决 ` +
             `${qp.tapAt ? `at ${qp.tapAt - qp.shown} ms` : "not tapped"}, boss ${qp.boss0} -> ${bossNow} px, ${qp.futDrops} fut items dropped`);
         if (offHold && offHold.src === "qi") offRelease(now, "window over", true);
-        if (offWalking && offWalkWhy === "qi chase") offWalkStop("window over");
-        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, switchAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, seenAt: 0, lostAt: 0 });
+        if (offWalking && (offWalkWhy === "qi chase" || offWalkWhy === "qi approach")) offWalkStop("window over");
+        Object.assign(qp, { cand: 0, shown: 0, tapAt: 0, switchAt: 0, lastLight: 0, lights: 0, post: 0, lateMarked: false, boss0: 0, futDrops: 0, seenAt: 0, lostAt: 0, walkFrom: 0 });
+    }
+    // phase 2: walk in while 真气 is empty and 处决 does not show (@see QP2_WALK_AFTER_MS)
+    let qpWalkOn = false;
+    const qp2S = { walks: 0, pushes: 0, shown: 0, capped: false, caps: 0, /** @type {Record<string, number>} */ ends: {}, walkMs: /** @type {number[]} */ ([]) };
+    /** @param {number} now */
+    function qpApproach(now) {
+        if (qp2S.capped || now - qp.cand < QP2_WALK_AFTER_MS) return;
+        if (!qp.walkFrom) {
+            qp.walkFrom = now;
+            qpWalkOn = true;
+            qp2S.walks++;
+            mark("qi", `qiPlan: no 处决 ${now - qp.cand} ms after 真气 empty: walking in`);
+        }
+        if (now - qp.walkFrom >= QP2_WALK_MAX_MS) {
+            qp2S.capped = true;
+            qp2S.caps++;
+            qpWalkEnd(now, "cap");
+            return;
+        }
+        if (offWalking || inDodge || now < staggerUntil || now < potionHoldUntil) return;
+        if (offHold && offHold.src !== "qi") offRelease(now, "qi approach", true);
+        if (offHold || hd || now < offBusyUntil) return;
+        if (offWalk(now, QP_CHASE_MS, "qi approach")) qp2S.pushes++;
+    }
+    /** The approach is over (the walk stays counted in qp.walkFrom until the window ends). @param {number} now @param {string} why */
+    function qpWalkEnd(now, why) {
+        if (!qpWalkOn) return;
+        qpWalkOn = false;
+        inc(qp2S.ends, why);
+        if (why === "处决 shows") qp2S.shown++;
+        qp2S.walkMs.push(now - qp.walkFrom);
+        if (offWalking && offWalkWhy === "qi approach") offWalkStop(why);
+        mark("qi", `qiPlan: walk in over (${why}) after ${now - qp.walkFrom} ms`);
     }
     /** @param {number} now */
     function qpTick(now) {
@@ -2392,25 +2621,30 @@ export default function (args = {}) {
         // the 处决 button: every QI_EXEC_EVERY frames while 真气 is low, every frame once it is due; it may show before
         // 真气 reads empty
         const low = qp.cand > 0 || (qiNow >= 0 && qiNow <= QP_EXEC_QI_MAX && bossNow > 50);
-        const due = qp.shown > 0 && !qp.tapAt && now - qp.shown >= QP_EXEC_AFTER_MS;
+        const due = qp.shown > 0 && !qp.tapAt && (now - qp.shown >= QP_EXEC_AFTER_MS || (qp.walkFrom > 0 && now - qp.cand >= QP2_EXEC_BY_MS));
         let ex = false;
-        if ((low || qp.shown) && !qp.tapAt && (due || qp.lostAt > 0 || now - qp.lastMatch >= QI_EXEC_EVERY * FRAME_MS)) {
+        if ((low || qp.shown) && !qp.tapAt && (due || qp.lostAt > 0 || qp.walkFrom > 0 || now - qp.lastMatch >= QI_EXEC_EVERY * FRAME_MS)) {
             qp.lastMatch = now;
             ex = perFrame("exec", (im) => match("combat/execute.png", { image: im, roi: EXEC_ROI, threshold: EXEC_TH }).hit);
         }
+        if (back) qp2S.capped = false; // a new 真气-empty spell may walk again
         if (!qp.shown) {
             if (ex && !back) {
                 qp.shown = now;
                 qp.seenAt = now;
                 qp.boss0 = bossNow;
                 qpS.windows++;
+                if (qp.walkFrom) qpWalkEnd(now, "处决 shows");
                 walkOff();
-                mark("qi", `qiPlan: 处决 shows ${qp.cand ? `${now - qp.cand} ms after 真气 empty` : `before 真气 read empty (真气 ${qiNow})`}`);
+                mark("qi", `qiPlan: 处决 shows ${qp.cand ? `${now - qp.cand} ms after 真气 empty` : `before 真气 read empty (真气 ${qiNow})`}` +
+                    `${qp.walkFrom ? ` (walked in ${now - qp.walkFrom} ms)` : ""}`);
             } else if (qp.cand && (back || now - qp.cand > QP_CAND_MS)) {
                 qpS.fakes++;
+                if (qp.walkFrom) qpWalkEnd(now, back ? "真气 back" : "timeout");
+                qp.walkFrom = 0;
                 mark("qi", `qiPlan: no 处决 in ${now - qp.cand} ms (${back ? "真气 back" : "timeout"}): not 衰弱`);
                 qp.cand = 0;
-            }
+            } else if (phase === 2 && qp.cand) qpApproach(now);
             return;
         }
         if (back) return qpEnd(now, "真气 back");
@@ -2469,6 +2703,7 @@ export default function (args = {}) {
     }
     /** @param {number} now @returns {boolean} the run is over (cleared) */
     function clearedCheck(now) {
+        if (phase === 2) return false; // the 阶段二 arena's quest line reads 阶段二 all along: deadCheck's 成功 page ends it
         if (now - clrAt < CLR_EVERY_MS) return false;
         clrAt = now;
         clrPhase2 = clrPhase2Now() ? clrPhase2 + 1 : 0;
@@ -2489,8 +2724,8 @@ export default function (args = {}) {
             if (meanRing.length > 3) meanRing.shift();
             dark3 = Math.min(...meanRing) < 20 ? 1 : 0;
         } },
-        { name: "curtain", every: CURTAIN_EVERY, at: 0, active: () => true, run: slowCurtain },
-        { name: "flare", every: FLARE_EVERY, at: 0, active: () => true, run: slowFlare },
+        { name: "curtain", every: CURTAIN_EVERY, at: 0, active: () => curtainOn, run: slowCurtain },
+        { name: "flare", every: FLARE_EVERY, at: 0, active: () => phase !== 2 || !FLARE2_IMG, run: slowFlare }, // phase 2 + FLARE2_IMG: flare2Read
         { name: "officons", every: OFF_ICON_EVERY, at: 0, active: () => !hd && !qp.shown, run: offIconsRead },
     ];
 
@@ -2512,7 +2747,8 @@ export default function (args = {}) {
         return im;
     }
 
-    log(`dufu start: ${BACK_MODEL} + ${MODEL}, ${untilMs} ms, issueLead ${ISSUE_LEAD_MS} ms, potions ${maxPotions}`);
+    log(`dufu start: ${BACK_MODEL} + ${headModel}, ${untilMs} ms${untilMs < (args.ms ?? 600_000) ? ` (ms ${args.ms ?? 600_000} clipped by the timeout)` : ""}, issueLead ${ISSUE_LEAD_MS} ms, potions ${maxPotions}` +
+        `${phase === 2 ? `, phase 2${defDodgeP != null ? ` defDodgeP ${defDodgeP}` : ""}` : ""}${args.trace ? `, trace ${traceFeat ? "aux+feat" : "aux"} (event ${TRACE_EVENT}, start ${start})` : ""}`);
     if (args.prep ?? true) prep();
     let lastFrameStart = Date.now() - 35;
     try {
@@ -2537,17 +2773,19 @@ export default function (args = {}) {
             }
             approach(now);
             lockCheck(now);
+            if (phase === 2 && FLARE2_IMG) flare2Read(now);
             const dtMs = lastEntryT ? Math.min(300, Math.max(10, now - lastEntryT)) : FRAME_MS;
             const aux = buildAux(dtMs);
             const b = timed("back", () => infer(BACK_MODEL, { ...BACK, image: img, history: [{ name: "seq", aux }] }));
             if (b.ready && b.output) {
                 ring.push({ f: b.output, aux, t: now });
+                if (args.trace) traceAdd(now, img, aux, b.output);
                 if (ring.length > T) ring.shift();
                 lastEntryT = now;
                 frameIdx++;
                 if (ring.length >= MIN_RING) {
                     headCalls++;
-                    const h = timed("head", () => infer(MODEL, { post: "none", extra: [{ name: "seq", dim: [1, T, D], ring: true }] }));
+                    const h = timed("head", () => infer(headModel, { post: "none", extra: [{ name: "seq", dim: [1, T, D], ring: true }] }));
                     if (h.ready && h.output) {
                         ready++;
                         checkRing(h);
@@ -2596,6 +2834,7 @@ export default function (args = {}) {
         tup(0);
         if (offTouched) touch.up(OFF_CONTACT);
         if (offWalking) strideF(0);
+        if (args.trace) traceFlush();
     }
     if (qp.shown) qpEnd(Date.now(), "run over");
     if (foFrom) foEnd("run over");
@@ -2626,5 +2865,7 @@ export default function (args = {}) {
         defense, potion, off,
         ms: { back: backS, head: headS, reads: readS, loop: loopS },
         start, events,
+        ...(phase === 2 ? { phase, flare2: { ...f2S, readMs: stats(f2S.readMs) }, qiWalk: { ...qp2S, capped: undefined } } : {}),
+        ...(args.trace ? { trace: { event: TRACE_EVENT, start, rows: traceN, chunks: traceChunks, feat: traceFeat } } : {}),
     };
 }

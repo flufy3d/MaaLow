@@ -7,13 +7,15 @@ import { health } from "../workspaces/WhereWindsMeet/skills/lib/dufu-reads.js";
 const epoch = 1_800_000_000_000;
 const frameMs = 1000 / 30;
 const centers = [2, 5, 8, 11, 14, 17.5, 22, 27.5, 35.5, 50.5];
-let time, cfg, touches, stick;
+let time, cfg, touches, stick, sent, heads;
 Date.now = () => epoch + time;
 globalThis.sleep = (ms) => { time += ms; };
 globalThis.log = () => {};
+globalThis.remaining = () => 3_600_000;
+globalThis.event = (name, data) => { sent.push({ name, data: JSON.parse(JSON.stringify(data)) }); };
 globalThis.frame = () => ({ seq: Math.floor(time / frameMs) });
 globalThis.screenshot = () => ({ seq: Math.floor(time / frameMs) });
-globalThis.match = () => ({ hit: false });
+globalThis.match = (template) => ({ hit: !!cfg.match?.(template, time) });
 globalThis.touch = {
     down(p, id) {
         if (id === 0) stick = p;
@@ -38,12 +40,21 @@ globalThis.color = ({ roi: [x, y], lower }) => {
         if (w < 4) return { hit: false, results: [] };
         box = [415, 681, w, 5];
     } else if (y === 27 && x === 347) box = [347, 27, 386, 6];
-    else if (y === 35 && x === 347) box = [347, 35, 300, 6];
+    else if (y === 35 && x === 347) {
+        // the boss's 真气: cfg.qi(time) px (0 = read empty), null = not read; default 300
+        const q = cfg.qi ? cfg.qi(time) : 300;
+        if (q != null) box = [347, 35, q, 6];
+    }
+    else if (x === 150 && y === 120 && cfg.flash?.(time)) {
+        // seeFlash's gold line / orange streak (FLASH_ROI): one long horizontal blob
+        return { hit: true, results: [{ box: [150, 300, 400, 20], count: 9999 }] };
+    }
     else if (y === 648 && x === 1004) box = [1004, 648, 34, 39];
     return box ? { hit: true, results: [{ box, count: 999 }] } : { hit: false, results: [] };
 };
 globalThis.infer = (model) => {
-    if (model.includes("back")) return { ready: true, output: new Array(192).fill(0) };
+    if (model.includes("back")) return { ready: true, output: cfg.feat ? cfg.feat(time) : new Array(192).fill(0) };
+    heads.add(model);
     const out = new Array(77).fill(-8);
     out[0] = out[16] = out[70] = 8;
     for (let k = 0; k < 3; k++) {
@@ -57,6 +68,7 @@ globalThis.infer = (model) => {
         const bin = centers.reduce((best, c, i) => Math.abs(c - f) < Math.abs(centers[best] - f) ? i : best, 0);
         out[32] = out[55] = -8;
         out[22 + bin] = out[55 + (cfg.defFn ? cfg.defFn(time) : cfg.def)] = 8;
+        if (cfg.defLogits) cfg.defLogits.forEach((v, i) => { out[55 + i] = v; }); // def1 logits (none, parry, dodge, avoid, -)
     }
     const tell = cfg.tell.find(([from, to]) => time >= from && time < to);
     if (tell) { out[70] = -8; out[70 + tell[2]] = 8; }
@@ -66,11 +78,13 @@ globalThis.infer = (model) => {
 function run(args = {}, options = {}) {
     time = 0;
     touches = [];
+    sent = [];
+    heads = new Set();
     stick = [175, 569];
     cfg = { contacts: [1500, 3000, 4500], tell: [], def: 2, hp: () => 1, ...options };
     const result = dufu({ ms: 5100, potions: 0, prep: false, ...args });
     const dodges = touches.filter((t) => t.op === "down" && t.id === 2);
-    return { result, dodges, touches };
+    return { result, dodges, touches, sent };
 }
 
 const tests = {
@@ -109,6 +123,128 @@ const tests = {
         });
         assert.ok(dodges.length >= 1, "the later contact was not dodged");
         assert.ok(result.events.some((e) => e[2] === "press" && e[3].startsWith("dodge")), "no dodge press");
+    },
+    "phase 2 parries the def head's dodges"() {
+        const { result, dodges, touches } = run({ phase: 2 }, { def: 2 });
+        assert.equal(dodges.length, 0, `phase 2 dodged: ${dodges.map((d) => d.at)}`);
+        const parries = touches.filter((t) => t.op === "down" && t.id === 1);
+        assert.equal(parries.length, 3, `expected one 卸势 per contact: ${parries.map((t) => t.at)}`);
+        assert.ok(result.events.every((e) => !(e[2] === "press" && e[3].startsWith("dodge"))), "a dodge press in phase 2");
+    },
+    "phase 2 defDodgeP dodges the def head's dodges at or above it, phase 1 ignores it"() {
+        const opts = { def: 1, defLogits: [-8, 0, 0.5, -8, -8] }; // P(dodge) 0.62, argmax dodge
+        const parries = (t) => t.filter((x) => x.op === "down" && x.id === 1);
+        const off = run({ phase: 2 }, opts);
+        assert.equal(off.dodges.length, 0, "phase 2 without defDodgeP dodged");
+        const on = run({ phase: 2, defDodgeP: 0.6 }, opts);
+        assert.equal(on.dodges.length, 3, `expected one dodge per contact: ${on.dodges.map((d) => d.at)}`);
+        assert.equal(parries(on.touches).length, 0, "a 卸势 with defDodgeP 0.6");
+        const high = run({ phase: 2, defDodgeP: 0.7 }, opts);
+        assert.equal(high.dodges.length, 0, "P(dodge) 0.62 dodged at defDodgeP 0.7");
+        assert.deepEqual(high.touches, off.touches);
+        // a parry-argmax contact with P(dodge) 0.38 dodges at a low threshold
+        assert.equal(run({ phase: 2, defDodgeP: 0.3 }, { def: 1, defLogits: [-8, 0.5, 0, -8, -8] }).dodges.length, 3);
+        assert.deepEqual(run({ defDodgeP: 0.6 }, opts).touches, run({}, opts).touches, "phase 1 changed by defDodgeP");
+    },
+    "phase 2 dodges a flare at its first report, and once more while it lasts"() {
+        const opts = { contacts: [], tell: [[900, 960, 1], [960, 1500, 2]], futFn: () => null };
+        const p1 = run({}, opts).dodges;
+        const { result, dodges } = run({ phase: 2, flare2: true }, opts);
+        assert.equal(dodges.length, 2, `expected the first dodge and one re-dodge: ${dodges.map((d) => d.at)}`);
+        assert.ok(dodges[0].at < 900 + frameMs, `the first dodge is not at the first report: ${dodges[0].at}`);
+        assert.ok(dodges[0].at < p1[0].at - 5 * frameMs, `not earlier than phase 1's anchored dodge: ${dodges[0].at} vs ${p1[0].at}`);
+        assert.ok(dodges[1].at - dodges[0].at >= 500 && dodges[1].at < 1500, `the re-dodge is not after the CD while reported: ${dodges[1].at}`);
+        assert.deepEqual(dodges.map((d) => d.stick), [[92, 569], [258, 569]], "left / right in turn");
+        assert.ok(result.events.some((e) => e[2] === "press" && e[3].includes("flare2 first")), "no flare2 press");
+        assert.equal(result.flare2.redodges, 1);
+    },
+    "phase 2 does not re-dodge into a due 卸势"() {
+        // the opener's red blow after the blast is the plan's (a 卸势 due within FLARE2_PARRY_GUARD_MS): no re-dodge
+        const { result, dodges, touches } = run({ phase: 2, flare2: true }, { contacts: [], tell: [[900, 1700, 1]], futFn: (t) => t < 1300 ? null : 1900 });
+        assert.equal(dodges.length, 1, `dodges: ${dodges.map((d) => d.at)}`);
+        assert.ok(touches.some((t) => t.op === "down" && t.id === 1 && t.at > 1300), "the 卸势 did not go");
+        assert.equal(Object.values(result.flare2.reSkip).reduce((a, b) => a + b, 0), 1, JSON.stringify(result.flare2.reSkip));
+        assert.equal(result.flare2.redodges, 0);
+    },
+    "phase 2 walks in while 真气 is empty and 处决 does not show"() {
+        // 真气 empty from 1 s, 处决 within reach from 2.5 s: walk forward from ~0.3 s after the candidate until the
+        // button, then 处决 at the usual 2.6 s after its sighting. Phase 1 stands still (unchanged).
+        const opts = { contacts: [], qi: (t) => t < 1000 ? 300 : 0, match: (tpl, t) => tpl === "combat/execute.png" && t >= 2500 };
+        // forward pushes after the round-start walk-in (the boss bar shows at once here)
+        const fwd = (ts) => ts.filter((t) => t.op === "move" && t.id === 0 && t.p[0] === 175 && t.p[1] === 486 && t.at > 500);
+        const p1 = run({ ms: 6000 }, opts);
+        assert.equal(fwd(p1.touches).length, 0, "phase 1 walked");
+        const p2 = run({ phase: 2, ms: 6000 }, opts);
+        const w = fwd(p2.touches);
+        assert.ok(w.length >= 2 && w[0].at >= 1300 && w[0].at < 1600, `walk start: ${w.map((t) => t.at)}`);
+        assert.ok(w.every((t) => t.at < 2500), `walked after the button: ${w.map((t) => t.at)}`);
+        const ups = p2.touches.filter((t) => t.op === "up" && t.id === 0 && t.at >= 2500 && t.at < 2500 + 2 * frameMs);
+        assert.ok(ups.length >= 1, "the walk did not stop at the button");
+        const exec = (r) => r.touches.filter((t) => t.op === "down" && t.id === 3 && t.p[0] === 852 && t.p[1] === 430).map((t) => t.at);
+        const e2 = exec(p2), e1 = exec(p1);
+        assert.equal(e2.length, 1, `处决 taps: ${e2}`);
+        assert.ok(e2[0] >= 5100 && e2[0] < 5100 + 2 * frameMs, `处决 at ${e2[0]}`);
+        assert.equal(e1.length, 1, `phase 1 处决 taps: ${e1}`);
+        assert.deepEqual(p2.result.qiWalk.ends, { "处决 shows": 1 });
+    },
+    "phase 2's walk in stops at its cap"() {
+        const opts = { contacts: [], qi: (t) => t < 1000 ? 300 : 0 };
+        const { result, touches } = run({ phase: 2, ms: 7500 }, opts);
+        const w = touches.filter((t) => t.op === "move" && t.id === 0 && t.p[1] === 486 && t.at > 500).map((t) => t.at);
+        assert.ok(w.length >= 6, `pushes: ${w}`);
+        const start = w[0];
+        assert.ok(w[w.length - 1] < start + 4000, `pushed past the cap: ${w}`);
+        assert.ok(w[w.length - 1] > start + 3000, `stopped early: ${w}`);
+        assert.equal(result.qiWalk.caps, 1);
+        assert.equal(result.off.qi.windows, 0);
+    },
+    "phase 2 never enters the curtain (tell curtain / dark runs)"() {
+        const opts = { contacts: [], tell: [[600, 2500, 5], [2600, 3400, 6]], futFn: () => null };
+        const p1 = run({}, opts).result;
+        assert.ok(p1.events.some((e) => e[2] === "curtain"), "phase 1 should still enter the curtain");
+        const { result, dodges } = run({ phase: 2 }, opts);
+        assert.ok(result.events.every((e) => e[2] !== "curtain"), `phase 2 curtain: ${result.events.filter((e) => e[2] === "curtain").map((e) => e[3])}`);
+        assert.equal(dodges.length, 0, "phase 2 dodged without a contact");
+    },
+    "the head arg picks the head model"() {
+        run({}, { def: 2 });
+        assert.deepEqual([...heads], ["dufu/unified_head9s.onnx"]);
+        const base = run({ phase: 2 }, { def: 2 }).touches;
+        assert.deepEqual(run({ phase: 2, head: "dufu/unified_head_p2.onnx" }, { def: 2 }).touches, base);
+        assert.deepEqual([...heads], ["dufu/unified_head_p2.onnx"]);
+    },
+    "phase 1 touches do not depend on phase / trace args"() {
+        const base = run({}, { def: 2 }).touches;
+        assert.deepEqual(run({ phase: 1 }, { def: 2 }).touches, base);
+        assert.deepEqual(run({ trace: true }, { def: 2 }).touches, base);
+        assert.deepEqual(run({ trace: "feat" }, { def: 2 }).touches, base);
+    },
+    "the trace sends every backbone frame in chunks"() {
+        const feat = () => Array.from({ length: 192 }, (_, i) => (i - 96) / 7 + Math.floor(time / 100) * 1e-3);
+        const { result, sent } = run({ trace: "feat" }, { feat });
+        assert.ok(sent.length >= 2 && sent.every((e) => e.name === "dufu_trace"), `chunks: ${sent.length}`);
+        const rows = sent.flatMap((e) => e.data.rows);
+        assert.equal(rows.length, result.trace.rows);
+        assert.equal(sent.length, result.trace.chunks);
+        assert.deepEqual(sent.map((e) => e.data.chunk), sent.map((_, i) => i));
+        const cols = sent[0].data.cols;
+        assert.equal(cols.length, 3 + 15 + 1);
+        assert.ok(rows.every((r) => r.length === cols.length));
+        assert.ok(rows.every((r, i) => i === 0 || r[0] >= rows[i - 1][0]), "wall ms not monotonic");
+        // the float16 feature decodes back to the backbone output (3 significant digits)
+        const r = rows[rows.length - 1];
+        const bytes = Buffer.from(r[r.length - 1], "base64");
+        assert.equal(bytes.length, 384);
+        const t = r[0];
+        for (let i = 0; i < 192; i++) {
+            const h = bytes[2 * i] | (bytes[2 * i + 1] << 8);
+            const e = (h >> 10) & 31, m = h & 1023;
+            const v = (h & 0x8000 ? -1 : 1) * (e ? 2 ** (e - 15) * (1 + m / 1024) : 2 ** -14 * (m / 1024));
+            const want = (i - 96) / 7 + Math.floor(t / 100) * 1e-3;
+            assert.ok(Math.abs(v - want) <= Math.abs(want) / 1000 + 1e-4, `feat[${i}] ${v} vs ${want}`);
+        }
+        const aux = run({ trace: true }).sent.flatMap((e) => e.data.rows);
+        assert.ok(aux.every((x) => x.length === 18 && x.slice(3).every((v) => Math.round(v * 1000) / 1000 === v)));
     },
     "health prefers the red bar over a low-HP grey overread"() {
         // 737 f5970-6051: the grey mask read 21% on a 17% red bar (bright tip / hit flash). The red read is the bar.

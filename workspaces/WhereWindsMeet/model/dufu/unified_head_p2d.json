@@ -1,0 +1,673 @@
+{
+ "model": "phase-2 fine-tune of unified_head9s.onnx (same architecture / IO / 133-d slices; the backbone unified_back9.onnx is unchanged and was frozen - the head trained on its features from the trace). Supervised fut1-3 / fut1f / def1-3 from phase-2 contacts (hp drop - 5 f, 卸势 ok at the 真气 step; def dodge under a 金光 flare or where a timely 卸势 still got hit (--def-from-outcome; hits without a timely 卸势 unlabeled); combo / stage / ours / cont / land distilled from head9s; tell distilled with curtain (and non-dark 'dark') moved to none (phase two has no curtain). Use with args {\"phase\":2,\"head\":\"dufu/unified_head_p2d.onnx\"}. Trainer: tools/dufu_train/train.py.",
+ "io": {
+  "inputs": [
+   {
+    "name": "seq",
+    "shape": [
+     1,
+     30,
+     207
+    ],
+    "dtype": "float32",
+    "note": "the ONLY input: 30 steps oldest..current, each [192 backbone features | 15 aux], unchanged from v6. unified_head9s takes no image - the runtime must not capture / ROI-crop / resize a frame for the head any more (that was a deterministic no-op in unified_head9.onnx and cost ~15 ms per call)."
+   }
+  ],
+  "output": {
+   "name": "out",
+   "shape": [
+    1,
+    133
+   ],
+   "dtype": "float32",
+   "note": "v6 77 first (dufu.js reads offsets 0..76 unchanged), then the v8 slices; softmax per slice. Byte-identical to unified_head9.onnx's output for the same seq (the dropped image input provably never influenced it)."
+  }
+ },
+ "slices": [
+  {
+   "name": "combo",
+   "start": 0,
+   "len": 16,
+   "labels": [
+    "bg",
+    "single",
+    "g8-13",
+    "g14-19",
+    "g20-23",
+    "g24-27",
+    "g28-33",
+    "g34-40",
+    "end",
+    "x9",
+    "x10",
+    "x11",
+    "x12",
+    "x13",
+    "x14",
+    "x15"
+   ]
+  },
+  {
+   "name": "stage",
+   "start": 16,
+   "len": 6,
+   "labels": [
+    "bg",
+    "pre",
+    "next2",
+    "next3",
+    "next4+",
+    "done"
+   ]
+  },
+  {
+   "name": "fut1",
+   "start": 22,
+   "len": 11,
+   "labels": [
+    "1-3",
+    "4-6",
+    "7-9",
+    "10-12",
+    "13-15",
+    "16-19",
+    "20-24",
+    "25-30",
+    "31-40",
+    "41-60",
+    "none"
+   ]
+  },
+  {
+   "name": "fut2",
+   "start": 33,
+   "len": 11,
+   "labels": [
+    "1-3",
+    "4-6",
+    "7-9",
+    "10-12",
+    "13-15",
+    "16-19",
+    "20-24",
+    "25-30",
+    "31-40",
+    "41-60",
+    "none"
+   ]
+  },
+  {
+   "name": "fut3",
+   "start": 44,
+   "len": 11,
+   "labels": [
+    "1-3",
+    "4-6",
+    "7-9",
+    "10-12",
+    "13-15",
+    "16-19",
+    "20-24",
+    "25-30",
+    "31-40",
+    "41-60",
+    "none"
+   ]
+  },
+  {
+   "name": "def1",
+   "start": 55,
+   "len": 5,
+   "labels": [
+    "none",
+    "parry",
+    "dodge",
+    "curtain",
+    "unknown"
+   ]
+  },
+  {
+   "name": "def2",
+   "start": 60,
+   "len": 5,
+   "labels": [
+    "none",
+    "parry",
+    "dodge",
+    "curtain",
+    "unknown"
+   ]
+  },
+  {
+   "name": "def3",
+   "start": 65,
+   "len": 5,
+   "labels": [
+    "none",
+    "parry",
+    "dodge",
+    "curtain",
+    "unknown"
+   ]
+  },
+  {
+   "name": "tell",
+   "start": 70,
+   "len": 7,
+   "labels": [
+    "none",
+    "flare_other",
+    "flare_grab",
+    "flare_slam",
+    "sweep",
+    "curtain",
+    "dark"
+   ]
+  },
+  {
+   "name": "fut1f",
+   "start": 77,
+   "len": 46,
+   "labels": [
+    "1f",
+    "2f",
+    "3f",
+    "4f",
+    "5f",
+    "6f",
+    "7f",
+    "8f",
+    "9f",
+    "10f",
+    "11f",
+    "12f",
+    "13f",
+    "14f",
+    "15f",
+    "16f",
+    "17f",
+    "18f",
+    "19f",
+    "20f",
+    "21f",
+    "22f",
+    "23f",
+    "24f",
+    "25f",
+    "26f",
+    "27f",
+    "28f",
+    "29f",
+    "30f",
+    "31f",
+    "32f",
+    "33f",
+    "34f",
+    "35f",
+    "36f",
+    "37f",
+    "38f",
+    "39f",
+    "40f",
+    "41f",
+    "42f",
+    "43f",
+    "44f",
+    "45f",
+    "none"
+   ]
+  },
+  {
+   "name": "ours",
+   "start": 123,
+   "len": 6,
+   "labels": [
+    "none",
+    "light",
+    "skill",
+    "burst",
+    "charge",
+    "execute"
+   ]
+  },
+  {
+   "name": "cont",
+   "start": 129,
+   "len": 2,
+   "labels": [
+    "no",
+    "yes"
+   ]
+  },
+  {
+   "name": "land",
+   "start": 131,
+   "len": 2,
+   "labels": [
+    "no",
+    "yes"
+   ]
+  }
+ ],
+ "v8_slices_note": {
+  "fut1f": "next contact (any type) in j+1 frames (j=0..44), 45 none (> 45 f or none). c_hat = t + sum_j p_j (j+1) / sum_{j<45} p_j; trained with Gaussian soft targets sigma 1 f",
+  "ours": "our own action on screen now (aux target; diagnostics only)",
+  "cont": "another boss contact within 30 f (offense gate's veto: use on the 0..12 f after a 卸势 ok)",
+  "land": "probability that an action pressed now takes boss px within 1.2 s (probe on the frozen GRU state + current aux; offense rounds' result lines)"
+ },
+ "aux": {
+  "order": [
+   "dt33",
+   "since_parry",
+   "since_dodge",
+   "since_potion",
+   "since_walk",
+   "press_last3",
+   "since_ok",
+   "hp",
+   "qi",
+   "boss_ratio",
+   "lit",
+   "mean",
+   "dark3",
+   "flare",
+   "boss_bar"
+  ],
+  "normalization": {
+   "dt33": "realized dt between consecutive kept frames / 33.33, clip 0.5..3; first step = 1.0",
+   "since_parry": "frames since last parry press / 3.0, cap 10 (0.1s units), 10 when none yet",
+   "since_dodge": "same, dodge press",
+   "since_potion": "same, potion press",
+   "since_walk": "same, walk press",
+   "press_last3": "1 if any of the last 3 frames (t-2..t) had a press from any of the 4 buttons, else 0",
+   "since_ok": "frames since last successful parry (ok contact) / 3.0, cap 10",
+   "hp": "clip(hp, 0, 1)",
+   "qi": "clip(qi / 385, 0, 1)",
+   "boss_ratio": "clip(boss_cur / 386, 0, 1) (boss current, fallback boss max)",
+   "lit": "clip(glow / 500, 0, 1)",
+   "mean": "clip(frame mean / 255, 0, 1)",
+   "dark3": "1 if min(mean[t-2..t]) < 20 else 0",
+   "flare": "1 if raw flare flag of the current frame",
+   "boss_bar": "1 if boss bar present (boss > 50)"
+  },
+  "note": "unchanged from v6"
+ },
+ "window": {
+  "T": 30,
+  "note": "runtime keeps the last 30 captured frames 1:1 (irregular ~35ms); feed oldest..current."
+ },
+ "device_calls": [
+  {
+   "name": "backbone",
+   "call": "infer(\"dufu/unified_back9.onnx\", {roi:[120,30,840,530],size:96,resize:\"area\",color:\"rgb\",mean:0,std:1,frames:[0],post:\"none\"})"
+  },
+  {
+   "name": "head",
+   "call": "infer(\"dufu/unified_head_p2d.onnx\", {seq:<current 30x207 window>, extra:[{name:\"seq\",dim:[1,30,207],data_b64:\"<base64>\"}]})",
+   "out": "out: 133-d (see slices)",
+   "note": "seq-only, no image/roi: do not feed the head a screenshot any more. The window travels as the compact `data_b64` - RFC 4648 standard base64, padding included, of the little-endian packed float32 array (24840 B -> 33120 chars; the same bytes as the old `data` JSON float array, ~33 kB instead of ~62 kB of text per call). Row-major, oldest frame first, each step = [192 backbone features | 15 aux, order below]."
+  }
+ ],
+ "provenance": {
+  "kind": "phase2-finetune",
+  "base": "unified_head9s.onnx",
+  "base_md5": "3c98c1d33b39ef2afade1e2fb9fc7b09",
+  "head_md5": "9ed8c3b4f57c05b17d9fe42de8f3d6b2",
+  "trained": "2026-10-23 05:56",
+  "data": "data/p2",
+  "rounds_fit": [
+   "r001",
+   "r002",
+   "r003",
+   "r004",
+   "r005",
+   "r006",
+   "r007",
+   "r008",
+   "r009",
+   "r010",
+   "r011",
+   "r012",
+   "r013",
+   "r014",
+   "r015",
+   "r016",
+   "r017",
+   "r018",
+   "r019",
+   "r020",
+   "r021",
+   "r022",
+   "r023",
+   "r024",
+   "r025",
+   "r026",
+   "r027",
+   "r028",
+   "r029",
+   "r030",
+   "r031",
+   "r032",
+   "r033",
+   "r034",
+   "r035",
+   "r036",
+   "r037",
+   "r038",
+   "r039",
+   "r040",
+   "r041",
+   "r042",
+   "r043",
+   "r044",
+   "r045",
+   "r046",
+   "r047",
+   "r048",
+   "r049",
+   "r050",
+   "r051",
+   "r052",
+   "r053",
+   "r054",
+   "r055",
+   "r056",
+   "r057",
+   "r068",
+   "r069",
+   "r070",
+   "r071",
+   "r072",
+   "r073",
+   "r074",
+   "r075",
+   "r076"
+  ],
+  "validation": "5-fold by round number % 5, out-of-fold",
+  "labels": {
+   "rounds": 66,
+   "rows": 115140,
+   "minutes": 88.23,
+   "contacts": 1771,
+   "hit": 1223,
+   "ok": 548,
+   "flare_dodge": 122,
+   "masked_rows": 11461,
+   "unsure_rows": 23560,
+   "outcome_unk": 734,
+   "outcome_pf": 331,
+   "outcome_unk_flare": 32,
+   "outcome_ok_flare": 38,
+   "outcome_pf_flare": 52,
+   "outcome_ok": 510,
+   "outcome_grab": 74
+  },
+  "epochs": 10,
+  "fold_best_epochs": [
+   9,
+   7,
+   10,
+   9,
+   10
+  ],
+  "config": {
+   "name": "unified_head_p2d",
+   "base": "D:\\Projects\\MaaLow\\workspaces\\WhereWindsMeet\\model\\dufu\\unified_head9s.onnx",
+   "cv": 5,
+   "val_every": 5,
+   "epochs": 30,
+   "patience": 5,
+   "bs": 128,
+   "lr": 0.0001,
+   "w_fine": 0.5,
+   "w_def": 0.5,
+   "w_kd": 1.0,
+   "w_tell": 1.0,
+   "kd_fut": 0.05,
+   "l2sp": 0.001,
+   "pos_w": 6.0,
+   "train": "gru2",
+   "seed": 0,
+   "no_export": false,
+   "def_from_outcome": true,
+   "skip": "r058-r067,r077-r999",
+   "out": null
+  },
+  "metrics_note": "cov = share of contacts with S1 (fut1 bins 4-19 f) >= 0.45 on a head row 19..3 f before it; false = alive head rows with S1 >= th and no contact within 25 f, per minute (runs: consecutive such rows count once); sweep = the same at other thresholds",
+  "val_original": {
+   "cov_hit": 0.5596707818930041,
+   "cov_ok": 0.716636197440585,
+   "cov_dodge": 0.7131147540983607,
+   "cov_all": 0.6083995459704881,
+   "n_hit": 1215,
+   "n_ok": 547,
+   "n_dodge": 122,
+   "n_all": 1762,
+   "false_rows_per_min": 259.963682356053,
+   "false_runs_per_min": 33.167340953217156,
+   "minutes": 78.51096666666666,
+   "sweep": {
+    "0.3": {
+     "cov_all": 0.764472190692395,
+     "cov_hit": 0.731687242798354,
+     "cov_ok": 0.8372943327239488,
+     "false_runs_per_min": 37.17951929433213
+    },
+    "0.45": {
+     "cov_all": 0.6083995459704881,
+     "cov_hit": 0.5596707818930041,
+     "cov_ok": 0.716636197440585,
+     "false_runs_per_min": 33.167340953217156
+    },
+    "0.6": {
+     "cov_all": 0.4426787741203178,
+     "cov_hit": 0.40329218106995884,
+     "cov_ok": 0.5301645338208409,
+     "false_runs_per_min": 24.964665233604308
+    }
+   }
+  },
+  "val_new": {
+   "cov_hit": 0.8847736625514403,
+   "cov_ok": 0.9488117001828154,
+   "cov_dodge": 0.9918032786885246,
+   "cov_all": 0.9046538024971623,
+   "n_hit": 1215,
+   "n_ok": 547,
+   "n_dodge": 122,
+   "n_all": 1762,
+   "false_rows_per_min": 367.94859656549045,
+   "false_runs_per_min": 35.1415874385277,
+   "minutes": 78.51096666666666,
+   "sweep": {
+    "0.3": {
+     "cov_all": 0.9568671963677639,
+     "cov_hit": 0.9481481481481482,
+     "cov_ok": 0.9762340036563071,
+     "false_runs_per_min": 37.58710566549302
+    },
+    "0.45": {
+     "cov_all": 0.9046538024971623,
+     "cov_hit": 0.8847736625514403,
+     "cov_ok": 0.9488117001828154,
+     "false_runs_per_min": 35.1415874385277
+    },
+    "0.6": {
+     "cov_all": 0.8217934165720772,
+     "cov_hit": 0.8016460905349794,
+     "cov_ok": 0.8665447897623401,
+     "false_runs_per_min": 28.46736061076818
+    }
+   }
+  },
+  "def_sep_original": {
+   "n": {
+    "ok": 475,
+    "pf": 331,
+    "unk": 723,
+    "grab": 74,
+    "ok_fl": 32,
+    "pf_fl": 52,
+    "unk_fl": 32
+   },
+   "auc_ok_vs_pf": 0.5224487199872794,
+   "auc_ok_vs_pf_incl_flare": 0.5461811402763401,
+   "0.3": {
+    "ok": 0.1431578947368421,
+    "pf": 0.16314199395770393,
+    "unk": 0.08990318118948824,
+    "grab": 0.02702702702702703,
+    "ok_fl": 0.5,
+    "pf_fl": 0.6153846153846154,
+    "unk_fl": 0.34375
+   },
+   "0.5": {
+    "ok": 0.08,
+    "pf": 0.07854984894259819,
+    "unk": 0.030428769017980636,
+    "grab": 0.0,
+    "ok_fl": 0.28125,
+    "pf_fl": 0.36538461538461536,
+    "unk_fl": 0.1875
+   },
+   "0.6": {
+    "ok": 0.05263157894736842,
+    "pf": 0.06042296072507553,
+    "unk": 0.02074688796680498,
+    "grab": 0.0,
+    "ok_fl": 0.21875,
+    "pf_fl": 0.28846153846153844,
+    "unk_fl": 0.125
+   },
+   "0.7": {
+    "ok": 0.029473684210526315,
+    "pf": 0.03323262839879154,
+    "unk": 0.013831258644536652,
+    "grab": 0.0,
+    "ok_fl": 0.1875,
+    "pf_fl": 0.19230769230769232,
+    "unk_fl": 0.0625
+   }
+  },
+  "def_sep_new": {
+   "n": {
+    "ok": 475,
+    "pf": 331,
+    "unk": 723,
+    "grab": 74,
+    "ok_fl": 32,
+    "pf_fl": 52,
+    "unk_fl": 32
+   },
+   "auc_ok_vs_pf": 0.7154142152965496,
+   "auc_ok_vs_pf_incl_flare": 0.7131696715950582,
+   "0.3": {
+    "ok": 0.3473684210526316,
+    "pf": 0.6676737160120846,
+    "unk": 0.37206085753803597,
+    "grab": 1.0,
+    "ok_fl": 0.75,
+    "pf_fl": 0.8461538461538461,
+    "unk_fl": 0.59375
+   },
+   "0.5": {
+    "ok": 0.10947368421052632,
+    "pf": 0.42900302114803623,
+    "unk": 0.16459197786998617,
+    "grab": 0.972972972972973,
+    "ok_fl": 0.375,
+    "pf_fl": 0.4230769230769231,
+    "unk_fl": 0.28125
+   },
+   "0.6": {
+    "ok": 0.056842105263157895,
+    "pf": 0.3081570996978852,
+    "unk": 0.11065006915629322,
+    "grab": 0.8648648648648649,
+    "ok_fl": 0.21875,
+    "pf_fl": 0.2692307692307692,
+    "unk_fl": 0.1875
+   },
+   "0.7": {
+    "ok": 0.014736842105263158,
+    "pf": 0.1782477341389728,
+    "unk": 0.05394190871369295,
+    "grab": 0.5405405405405406,
+    "ok_fl": 0.15625,
+    "pf_fl": 0.17307692307692307,
+    "unk_fl": 0.03125
+   }
+  },
+  "in_sample_original": {
+   "cov_hit": 0.5596707818930041,
+   "cov_ok": 0.716636197440585,
+   "cov_dodge": 0.7131147540983607,
+   "cov_all": 0.6083995459704881,
+   "n_hit": 1215,
+   "n_ok": 547,
+   "n_dodge": 122,
+   "n_all": 1762,
+   "false_rows_per_min": 259.963682356053,
+   "false_runs_per_min": 33.167340953217156,
+   "minutes": 78.51096666666666,
+   "sweep": {
+    "0.3": {
+     "cov_all": 0.764472190692395,
+     "cov_hit": 0.731687242798354,
+     "cov_ok": 0.8372943327239488,
+     "false_runs_per_min": 37.17951929433213
+    },
+    "0.45": {
+     "cov_all": 0.6083995459704881,
+     "cov_hit": 0.5596707818930041,
+     "cov_ok": 0.716636197440585,
+     "false_runs_per_min": 33.167340953217156
+    },
+    "0.6": {
+     "cov_all": 0.4426787741203178,
+     "cov_hit": 0.40329218106995884,
+     "cov_ok": 0.5301645338208409,
+     "false_runs_per_min": 24.964665233604308
+    }
+   }
+  },
+  "in_sample_new": {
+   "cov_hit": 0.9522633744855967,
+   "cov_ok": 0.9670932358318098,
+   "cov_dodge": 0.9754098360655737,
+   "cov_all": 0.9568671963677639,
+   "n_hit": 1215,
+   "n_ok": 547,
+   "n_dodge": 122,
+   "n_all": 1762,
+   "false_rows_per_min": 265.6444174041079,
+   "false_runs_per_min": 33.75324636176093,
+   "minutes": 78.51096666666666,
+   "sweep": {
+    "0.3": {
+     "cov_all": 0.9886492622020431,
+     "cov_hit": 0.9843621399176955,
+     "cov_ok": 0.9981718464351006,
+     "false_runs_per_min": 39.95620144786567
+    },
+    "0.45": {
+     "cov_all": 0.9568671963677639,
+     "cov_hit": 0.9522633744855967,
+     "cov_ok": 0.9670932358318098,
+     "false_runs_per_min": 33.75324636176093
+    },
+    "0.6": {
+     "cov_all": 0.8853575482406356,
+     "cov_hit": 0.8773662551440329,
+     "cov_ok": 0.903107861060329,
+     "false_runs_per_min": 23.932962231603316
+    }
+   }
+  },
+  "onnx_vs_torch_maxdiff": 1.7642974853515625e-05
+ },
+ "reexport": {
+  "kind": "none",
+  "note": "exported directly from the fine-tuned PyTorch port (model.py), opset 17"
+ }
+}
