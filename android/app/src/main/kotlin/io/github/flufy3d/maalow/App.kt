@@ -17,6 +17,7 @@ import io.github.flufy3d.maalow.teach.Teaching
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.put
 import java.io.File
@@ -148,6 +149,12 @@ class App : Application() {
         scheduler = Scheduler(this)
         server = ApiServer(this)
         scope.launch(Dispatchers.IO) { recordings.recoverAll() } // cut short by a kill or crash
+        scope.launch(Dispatchers.IO) {
+            while (true) {
+                runCatching { engine.pruneLogs() }
+                delay(Engine.LOG_PRUNE_MS)
+            }
+        }
     }
 
     companion object {

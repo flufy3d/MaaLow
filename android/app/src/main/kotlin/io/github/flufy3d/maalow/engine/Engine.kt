@@ -52,6 +52,7 @@ class Engine(private val context: Context) {
         private set
 
     val workspaces = File(context.getExternalFilesDir(null), "workspaces").apply { mkdirs() }
+    private val logDir = File(context.getExternalFilesDir(null), "maa-log").apply { mkdirs() }
     private val nativeLibDir = context.applicationInfo.nativeLibraryDir
 
     private var priv: IPrivileged? = null
@@ -184,7 +185,7 @@ class Engine(private val context: Context) {
         Os.close(b)
 
         Maa.custom = custom
-        Maa.setLogDir(File(context.getExternalFilesDir(null), "maa-log").apply { mkdirs() }.absolutePath)
+        Maa.setLogDir(logDir.absolutePath)
         val config = buildJsonObject {
             put("library_path", "$nativeLibDir/lib${Bridge.LIBRARY}.so")
             put("screen_resolution", buildJsonObject { put("width", width); put("height", height) })
@@ -206,6 +207,20 @@ class Engine(private val context: Context) {
         mirrorId = -1
         Bridge.nativeDestroy()
         priv = null
+    }
+
+    /**
+     * MaaFramework rotates maafw.log into maafw.bak.<time>.log and never deletes those (once 240 GB over a week of
+     * guards and skills): keep the newest within [LOG_KEEP_BYTES], delete the rest.
+     */
+    fun pruneLogs() {
+        var kept = 0L
+        logDir.listFiles { f -> f.name.startsWith("maafw.bak.") }.orEmpty()
+            .sortedByDescending { it.lastModified() }
+            .forEach { f ->
+                kept += f.length()
+                if (kept > LOG_KEEP_BYTES && !f.delete()) Log.w(TAG, "cannot delete ${f.name}")
+            }
     }
 
     suspend fun restart() {
@@ -407,6 +422,8 @@ class Engine(private val context: Context) {
     companion object {
         const val TAG = "MaaLowEngine"
         const val SHORT_SIDE = 720
+        const val LOG_KEEP_BYTES = 1L shl 30
+        const val LOG_PRUNE_MS = 60 * 60_000L
         /** Entry of the one-node task a standalone skill run is. */
         const val SKILL_NODE = "MaaLow.Skill"
 
