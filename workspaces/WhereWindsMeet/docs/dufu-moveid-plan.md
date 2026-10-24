@@ -288,4 +288,13 @@
 - **选型**：onnxruntime 的 QNN EP（Maven Central：`onnxruntime-android-qnn` 1.29.0 + 它依赖的 `com.qualcomm.qti:qnn-runtime` 2.42.0，不用高通账号），不直接用 QNN SDK：同一套 ONNX C API，现有 infer() 的预处理、extra、ring 全部照用；模型照旧是 ONNX（CPU 版 `.onnx`，QNN 版 `.qnn.onnx`）。
 - **插件**：`android/qnnplugin`，单独的 APK（release 约 61 MB），只有库；主 App 从它的库目录按路径载入，和 MaaFramework 的 onnxruntime 并存。细节和装机、测速步骤见根 README「NPU：QNN 插件」。
 - **芯片**：`/status` 加了 `soc`（`Build.SOC_MODEL` 等），装上新 App 后就能确认 Pad 的芯片，再让 AI Hub 换同芯片重测。
-- **未验证**：都没上机。
+- **装机（2026-10-24）**：adb 经 Tailscale 恢复（100.123.41.110:39529），新 App 和插件已经装上。Pad 是 Xiaomi Pad 8 Pro，芯片 SM8750P = 骁龙 8 Elite（HTP V79）。
+- **实测**（run p50，CPU 单线程 → qnn）：
+  - 裁剪 MobileNetV3-S 192 fp32：4.6 → 0.49 ms；
+  - 全局 384×240 0.5 宽：5.0 → 0.84 ms；
+  - 全局 384×240 全宽：10.1 → 0.95 ms；
+  - 6 通道裁剪：5.4 → 0.78 ms。
+  - 输出和 PC 相对差 ≤0.03%（fp16）。
+  - 非 QDQ 的 int8 模型在 qnn 上自动回落 CPU，符合设计。
+  - 首次建会话 0.15–0.5 s（在设备上编译）。
+  - 原始数据：`data/moveid/npu/bench_20261024-204129.json`。
