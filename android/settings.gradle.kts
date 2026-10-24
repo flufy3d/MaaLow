@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "MaaLow"
 include(":app")
+include(":qnnplugin") // the optional QNN plugin APK (provider qnn of infer()); :app does not depend on it

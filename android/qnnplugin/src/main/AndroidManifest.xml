@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MaaLow's QNN plugin: native libraries only (see build.gradle.kts), loaded by MaaLow from this app's
+     nativeLibraryDir. Nothing to launch. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:label="MaaLow QNN"
+        android:hasCode="false"
+        android:extractNativeLibs="true"
+        android:allowBackup="false" />
+</manifest>

@@ -49,6 +49,7 @@
         classify: (o) => reco("NeuralNetworkClassify", pick(o, ["model", "expected", "labels", "order_by"]), o),
         infer: (model, o = {}) => call("infer", { ...o, model, image: o.image ? o.image.id : undefined }),
         modelInfo: (model) => call("model_info", { model }),
+        nnProviders: () => call("nn_providers"),
         locate: (ref, o = {}) =>
             call("locate", {
                 ref,

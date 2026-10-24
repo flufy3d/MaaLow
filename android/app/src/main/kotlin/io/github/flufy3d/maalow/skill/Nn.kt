@@ -43,6 +43,11 @@ import kotlin.math.roundToInt
  * entirely; `history` appends a call's first output + aux to a per-run ring ([RING] steps), which a `ring: true`
  * extra tensor assembles as [1, RING, step] (front-padded with the oldest), its len / sum returned under `ring`.
  *
+ * provider: cpu (default) and nnapi run on MaaFramework's onnxruntime; qnn on the optional QNN plugin's ([QnnPlugin])
+ * with the model's QNN version <name>.qnn.onnx when there is one (else <name>.onnx itself), all of it on the NPU. When
+ * the plugin is missing or cannot take the model, qnn falls back to cpu with <name>.onnx; the result says which
+ * provider ran (`provider`) and why it fell back (`fallback`).
+ *
  * Output: the raw tensors, and per `post`: softmax / sigmoid of a vector (index / score / label of its largest),
  * or yolo: YOLOv8 / YOLO11 detection ([1, 4 + classes, n] or transposed) decoded, thresholded and NMS'd, boxes in
  * screen coordinates.
@@ -50,7 +55,9 @@ import kotlin.math.roundToInt
 internal class Nn(private val app: App) {
     class Tensor(val name: String, val type: Int, val shape: List<Long>)
 
-    class Model(val stamp: Long, val handle: Long, val inputs: List<Tensor>, val outputs: List<Tensor>, val names: Map<Int, String>) {
+    /** provider: what it runs on (cpu / nnapi / qnn); fallback: why not on the one asked for (qnn -> cpu). */
+    class Model(val stamp: Long, val handle: Long, val inputs: List<Tensor>, val outputs: List<Tensor>, val names: Map<Int, String>,
+                val provider: String = "cpu", val fallback: String? = null) {
         fun info(): JsonObject = buildJsonObject {
             fun list(ts: List<Tensor>) = buildJsonArray {
                 ts.forEach { t ->
@@ -118,17 +125,44 @@ internal class Nn(private val app: App) {
         }
     }
 
+    val qnn = QnnPlugin(app)
+
+    /** opts: [threads, spin, provider (0 cpu, 1 nnapi, 2 qnn)]; qnn: see the class comment. */
     @Synchronized
     fun model(ws: String, name: String, opts: IntArray): Model {
         val path = if (name.endsWith(".onnx")) name else "$name.onnx"
         val f = app.workspaces.file(ws, "model/$path")
-        require(f.isFile) { "infer: no model model/$path" }
         // with the weights beside it (a torch export's external data, <name>.onnx.data) when there is such a file
-        val stamp = listOf(f, File(f.path + ".data")).filter { it.isFile }.fold(17L) { h, x -> (h * 31 + x.lastModified()) * 31 + x.length() }
+        fun stampOf(x: File) = listOf(x, File(x.path + ".data")).filter { it.isFile }.fold(17L) { h, y -> (h * 31 + y.lastModified()) * 31 + y.length() }
         val key = "$ws/$path ${opts.joinToString(",")}"
+        if (opts.getOrNull(2) == PROVIDER_QNN) {
+            val qf = app.workspaces.file(ws, "model/${path.removeSuffix(".onnx")}.qnn.onnx").takeIf { it.isFile } ?: f
+            require(qf.isFile) { "infer: no model model/$path" }
+            val dir = qnn.ensure()
+            val stamp = (stampOf(qf) * 31 + stampOf(f)) * 31 + qnn.generation
+            cache[key]?.let { if (it.stamp == stamp) return it }
+            cache.remove(key)?.let { Maa.nnDestroy(it.handle) }
+            var fallback = qnn.error ?: "the QNN plugin is not loaded"
+            if (dir != null) {
+                try {
+                    return open(Maa.nnCreate(qf.absolutePath, opts), stamp, "qnn", null).also { cache[key] = it }
+                } catch (e: RuntimeException) {
+                    fallback = e.message ?: e.toString()
+                }
+            }
+            require(f.isFile) { "infer: qnn fell back to cpu ($fallback), and there is no model/$path for it" }
+            val cpu = opts.copyOf().also { it[2] = 0 }
+            return open(Maa.nnCreate(f.absolutePath, cpu), stamp, "cpu", fallback).also { cache[key] = it }
+        }
+        require(f.isFile) { "infer: no model model/$path" }
+        val stamp = stampOf(f)
         cache[key]?.let { if (it.stamp == stamp) return it }
         cache.remove(key)?.let { Maa.nnDestroy(it.handle) }
-        val h = Maa.nnCreate(f.absolutePath, opts)
+        return open(Maa.nnCreate(f.absolutePath, opts), stamp, if (opts.getOrNull(2) == 1) "nnapi" else "cpu", null).also { cache[key] = it }
+    }
+
+    /** A Model over a new session handle (its tensors and labels read from it). */
+    private fun open(h: Long, stamp: Long, provider: String, fallback: String?): Model {
         val info = Json.parseToJsonElement(Maa.nnInfo(h)).jsonObject
         fun tensors(k: String) = info[k]!!.jsonArray.map { e ->
             val o = e.jsonObject
@@ -136,7 +170,22 @@ internal class Nn(private val app: App) {
         }
         // YOLO exports: "{0: 'person', 1: 'bicycle'}"
         val names = NAMES.findAll(info.optStr("names").orEmpty()).associate { it.groupValues[1].toInt() to it.groupValues[2] }
-        return Model(stamp, h, tensors("inputs"), tensors("outputs"), names).also { cache[key] = it }
+        return Model(stamp, h, tensors("inputs"), tensors("outputs"), names, provider, fallback)
+    }
+
+    /** nnProviders(): what infer() can run on here, the QNN plugin's state (loading it if it is there) and the SoC. */
+    @Synchronized
+    fun providers(): JsonObject {
+        val q = qnn.ensure() != null
+        return buildJsonObject {
+            put("available", buildJsonArray {
+                add(JsonPrimitive("cpu"))
+                add(JsonPrimitive("nnapi"))
+                if (q) add(JsonPrimitive("qnn"))
+            })
+            put("qnn", qnn.json())
+            put("soc", QnnPlugin.soc())
+        }
     }
 
     @Synchronized
@@ -164,7 +213,8 @@ internal class Nn(private val app: App) {
             when (a.optStr("provider") ?: "cpu") {
                 "cpu" -> 0
                 "nnapi" -> 1
-                else -> throw IllegalArgumentException("infer: provider must be cpu or nnapi")
+                "qnn" -> PROVIDER_QNN
+                else -> throw IllegalArgumentException("infer: provider must be cpu, nnapi or qnn")
             },
         )
         val m = model(ws, a.str("model"), opts)
@@ -298,6 +348,8 @@ internal class Nn(private val app: App) {
         fun label(i: Int) = labels?.getOrNull(i) ?: m.names[i]
         return buildJsonObject {
             put("ready", true)
+            put("provider", m.provider)
+            m.fallback?.let { put("fallback", it) }
             put("shape", shapeJson(first.shape))
             if (raw || first.data.size <= MAX_OUTPUT) put("output", floats(first.data))
             if (raw) put("outputs", buildJsonArray {
@@ -390,6 +442,7 @@ internal class Nn(private val app: App) {
 
     companion object {
         const val KEEP = 4 // sessions kept open
+        const val PROVIDER_QNN = 2
         const val HISTORY = 32 // frames per preprocessing
         const val HISTORY_BYTES = 8L shl 20
         const val SPECS = 4

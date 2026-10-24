@@ -291,6 +291,7 @@ internal class SkillRun(
                 skills.nn.infer(workspace, a, cur, kept, history, app.engine.width, app.engine.height)
             }
             "model_info" -> skills.nn.model(workspace, a.str("model"), intArrayOf(1, 0, 0)).info()
+            "nn_providers" -> skills.nn.providers()
             "click" -> done(Maa.controllerClick(device(), i("x"), i("y")), "click")
             "long_press" -> {
                 val c = device()

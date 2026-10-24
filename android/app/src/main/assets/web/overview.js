@@ -66,6 +66,9 @@ window.overview = (() => {
       ${row(st.engine === "running" ? true : null, "画面", `<span id="ov-frame"></span>`)}
       ${row(st.screen_on, "屏幕", `${st.screen_on ? "亮屏" : "息屏"}${st.keyguard?.locked ? " · 已锁屏" : ""}`)}
       ${row(null, "版本", `MaaLow ${esc(st.app)} · MaaFramework ${esc(st.maa)}`)}
+      ${st.soc ? row(null, "芯片", esc([st.soc.manufacturer, st.soc.model, st.soc.platform || st.soc.hardware].filter(Boolean).join(" · "))) : ""}
+      ${st.qnn ? row(st.qnn.loaded ? true : st.qnn.error && st.qnn.installed ? false : null, "NPU 插件",
+        st.qnn.installed ? `QNN ${esc(st.qnn.version || "")}${st.qnn.loaded ? " · 已加载" : st.qnn.error ? ` · ${esc(st.qnn.error)}` : " · 用到时加载"}` : "未安装（infer 的 qnn 走 CPU）") : ""}
     </div>`;
   }
 

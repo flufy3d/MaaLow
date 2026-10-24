@@ -67,8 +67,13 @@ object Maa {
     /** args: [crop center x, y, wedge heading or NaN, prior u, v, radius (ref px, < 0: all), params...]; [u, v, score, second, used] or null. */
     external fun locateRun(image: Long, ref: Long, args: FloatArray): FloatArray?
 
-    // ONNX models for skills' infer() (nn_jni.cpp, skill/Nn.kt), on MaaFramework's onnxruntime
-    /** A session; opts: [intra-op threads, spin 0/1, nnapi 0/1]. Throws with onnxruntime's message. */
+    // ONNX models for skills' infer() (nn_jni.cpp, skill/Nn.kt), on MaaFramework's onnxruntime, or for provider qnn
+    // on the QNN plugin's own onnxruntime (skill/QnnPlugin.kt)
+    /** Load the QNN plugin's onnxruntime and QNN libraries from its nativeLibraryDir: "" when loaded, else why not. */
+    external fun nnQnnLoad(dir: String): String
+    /** The loaded plugin onnxruntime's version, "" if none. */
+    external fun nnQnnVersion(): String
+    /** A session; opts: [intra-op threads, spin 0/1, provider 0 cpu / 1 nnapi / 2 qnn]. Throws with onnxruntime's message. */
     external fun nnCreate(path: String, opts: IntArray): Long
     external fun nnDestroy(h: Long)
     /** {"inputs": [{name, type, shape}], "outputs": [...], "names": metadata "names" or ""}; type 1 float, 2 uint8. */

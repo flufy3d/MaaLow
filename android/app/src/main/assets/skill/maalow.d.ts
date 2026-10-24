@@ -120,6 +120,11 @@ interface ClassifyOptions extends RecoOptions {
  * infer(): any ONNX model under the workspace's model/, on a region of a screenshot (or several frames of it).
  * Input = roi, resized to size, as color, (v / 255 - mean) / std per channel (uint8 models: the bytes), laid out as
  * the model's input. Frames are stacked as channels in the order given (frame 0's channels first).
+ *
+ * Model files for provider "qnn": model/<name>.qnn.onnx when there is one (the NPU version: a QDQ-quantized ONNX, or
+ * an EPContext model precompiled for this chip, e.g. AI Hub's precompiled_qnn_onnx), else model/<name>.onnx itself
+ * (float32, run in fp16 on the NPU). "cpu" / "nnapi" always use model/<name>.onnx. Both files have the same inputs
+ * and outputs, so the call is the same either way.
  */
 interface InferOptions {
     /** Image to look at (frame offset 0); default: the latest screenshot (one is taken if there is none). */
@@ -184,15 +189,25 @@ interface InferOptions {
      */
     history?: { name: string; aux: number[]; reset?: boolean }[];
     /** onnxruntime intra-op threads (default 1), busy-wait between ops (default false), provider (default "cpu").
-     * A model is opened once per set of these and kept (reopened when its file changes). */
+     * A model is opened once per set of these and kept (reopened when its file changes).
+     *
+     * cpu / nnapi: MaaFramework's onnxruntime. qnn: the Qualcomm NPU (HTP), through the optional QNN plugin app
+     * (io.github.flufy3d.maalow.qnn; its own onnxruntime with the QNN provider), the whole model on the NPU. Without
+     * the plugin, or when the NPU cannot take the model (an op it lacks; the first open compiles the model and can
+     * take seconds), qnn falls back to cpu with model/<name>.onnx: the result's `provider` says what ran and
+     * `fallback` why. So a skill can always ask for qnn; nnProviders() tells beforehand. */
     threads?: number;
     spin?: boolean;
-    provider?: "cpu" | "nnapi";
+    provider?: "cpu" | "nnapi" | "qnn";
 }
 
 interface Inference {
     /** false: an earlier frame was missing (no output then). */
     ready: boolean;
+    /** What the model ran on (ready results): the provider asked for, or "cpu" when qnn fell back. */
+    provider?: "cpu" | "nnapi" | "qnn";
+    /** Why qnn fell back to cpu (plugin not installed / not loadable, or the NPU could not take the model). */
+    fallback?: string;
     /** Shape and values of the first output (values up to 4096, all with raw). */
     shape?: number[];
     output?: number[];
@@ -215,6 +230,16 @@ interface Inference {
     ring?: { len: number; sum: number };
     /** prep: preprocessing (with history), run: onnxruntime, total. */
     ms: { prep: number; run?: number; total: number };
+}
+
+interface NnProviders {
+    /** Providers infer() can run on here: "cpu", "nnapi" (NNAPI may have no accelerator behind it), "qnn" when the
+     * QNN plugin is installed and loaded (asking loads it). */
+    available: ("cpu" | "nnapi" | "qnn")[];
+    /** The QNN plugin: installed (its version), loaded (its onnxruntime version), or why it could not be loaded. */
+    qnn: { installed: boolean; version?: string; loaded: boolean; onnxruntime?: string; error?: string };
+    /** The chip, as Android reports it: e.g. { manufacturer: "QTI", model: "SM8635", platform: "pineapple" }. */
+    soc: { manufacturer?: string; model?: string; hardware: string; board: string; platform?: string; abi: string };
 }
 
 interface ModelInfo {
@@ -334,6 +359,8 @@ declare function classify(opts: ClassifyOptions): Hit;
 declare function infer(model: string, opts?: InferOptions): Inference;
 /** Inputs and outputs (names, types, shapes) of a model under model/. */
 declare function modelInfo(model: string): ModelInfo;
+/** What infer() can run on here (cpu, nnapi, qnn with the QNN plugin) and the chip. */
+declare function nnProviders(): NnProviders;
 /**
  * Where a screen region (e.g. the minimap, for where the character is) is, matched inside a reference image drawn
  * at its scale: templates/<ref>.json (zoom levels, each an image with its position scale and origin; the crop, what

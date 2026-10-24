@@ -89,7 +89,7 @@ uv run --with qai-hub python workspaces/WhereWindsMeet/tools/dufu_moveid/npu_aih
 ```
 
 - 测速 skill（`npu_bench_skill.js`）只调 `infer()`：所有输入都用 `extra` 张量（常数 0.5），不截屏、不碰触摸按键。`run` = onnxruntime Run（含 JNI 拷输入），`total` 还含 base64 解码（实战走截图路径，这部分换成裁剪缩放）。`first` = 第一次调用（开 session）。
-- 每个模型 × {cpu 1/2/4 线程, nnapi}：首次 + 预热 20 + 计时 200。游戏在前台跑着（和实战一样抢 CPU），同一模型两次跑 p50 能差 1.5 倍；多线程基本不比单线程快。
+- 每个模型 × {cpu 1/2/4 线程, nnapi, qnn}（qnn 要装 QNN 插件，没装就退回 CPU，行里标 `qnn1->cpu`，见根 README“NPU：QNN 插件”）：首次 + 预热 20 + 计时 200。游戏在前台跑着（和实战一样抢 CPU），同一模型两次跑 p50 能差 1.5 倍；多线程基本不比单线程快。
 - `check`：设备第一次调用的前 8 个输出和 PC 上 onnxruntime 对比；fp16 / int8 在 CPU 上结果一致（fp16 真的按 fp16 算，不是错的）。
 
 ### 结果

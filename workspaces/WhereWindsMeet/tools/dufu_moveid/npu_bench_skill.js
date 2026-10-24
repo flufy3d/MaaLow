@@ -30,7 +30,7 @@ function stats(v) {
              mean: r(v.reduce((a, b) => a + b, 0) / v.length), n: v.length };
 }
 
-/** @param {{models: {path: string, inputs: number[][]}[], configs: {provider: "cpu"|"nnapi", threads?: number}[], n?: number, warm?: number}} args */
+/** @param {{models: {path: string, inputs: number[][]}[], configs: {provider: "cpu"|"nnapi"|"qnn", threads?: number}[], n?: number, warm?: number}} args */
 export default function (args) {
     const n = args.n ?? 200, warm = args.warm ?? 20;
     const out = [];
@@ -47,7 +47,9 @@ export default function (args) {
             try {
                 const t0 = Date.now();
                 const r = infer(m.path, opts);
-                res.first = { wall_ms: Date.now() - t0, ms: r.ms, shape: r.shape, out: (r.output || []).slice(0, 8) };
+                // provider: what it ran on (qnn falls back to cpu without the plugin; fallback says why)
+                res.first = { wall_ms: Date.now() - t0, ms: r.ms, shape: r.shape, out: (r.output || []).slice(0, 8),
+                              provider: r.provider, fallback: r.fallback };
                 for (let i = 0; i < warm; i++) infer(m.path, opts);
                 const run = [], total = [], wall = [];
                 for (let i = 0; i < n; i++) {

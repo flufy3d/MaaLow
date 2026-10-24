@@ -282,3 +282,10 @@
 1. **接触时间**：90 分位 9 帧，而卸势窗口只有 3–9 帧。尾部几乎都是预测偏晚或判「无」（招还没露出来），集中在 k0 无光大组和 c27；boss 远近影响不大。
 2. **接触历史的实机来源**：要靠实机检测血条 / 真气台阶得到，见上。
 3. **c41 / c40 的抓取漏标**：要回到顺序 2 修（标进 grab），下一次重训生效。
+
+### 2026-10-24 顺序 4（NPU 部分）：QNN 插件，代码就绪，待装机
+
+- **选型**：onnxruntime 的 QNN EP（Maven Central：`onnxruntime-android-qnn` 1.29.0 + 它依赖的 `com.qualcomm.qti:qnn-runtime` 2.42.0，不用高通账号），不直接用 QNN SDK：同一套 ONNX C API，现有 infer() 的预处理、extra、ring 全部照用；模型照旧是 ONNX（CPU 版 `.onnx`，QNN 版 `.qnn.onnx`）。
+- **插件**：`android/qnnplugin`，单独的 APK（release 约 61 MB），只有库；主 App 从它的库目录按路径载入，和 MaaFramework 的 onnxruntime 并存。细节和装机、测速步骤见根 README「NPU：QNN 插件」。
+- **芯片**：`/status` 加了 `soc`（`Build.SOC_MODEL` 等），装上新 App 后就能确认 Pad 的芯片，再让 AI Hub 换同芯片重测。
+- **未验证**：都没上机。

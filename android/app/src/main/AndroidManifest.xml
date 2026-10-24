@@ -19,6 +19,8 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- the optional QNN plugin (android/qnnplugin): infer()'s provider "qnn" loads its libraries -->
+        <package android:name="io.github.flufy3d.maalow.qnn" />
     </queries>
 
     <application
@@ -29,6 +31,11 @@
         android:allowNativeHeapPointerTagging="false"
         android:extractNativeLibs="true"
         android:usesCleartextTraffic="true">
+
+        <!-- FastRPC to the Hexagon NPU, for the QNN plugin's HTP stubs (vendor public library; absent off Snapdragon) -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
 
         <activity
             android:name=".MainActivity"

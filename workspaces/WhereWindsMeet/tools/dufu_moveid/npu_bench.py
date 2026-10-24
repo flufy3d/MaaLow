@@ -39,7 +39,7 @@ SKILL_SRC = Path(__file__).with_name("npu_bench_skill.js")
 REMOTE_MODELS = "model/npu_bench"
 REMOTE_SKILL = "skills/npu_bench.js"
 CONFIGS = [{"provider": "cpu", "threads": 1}, {"provider": "cpu", "threads": 2}, {"provider": "cpu", "threads": 4},
-           {"provider": "nnapi", "threads": 1}]
+           {"provider": "nnapi", "threads": 1}, {"provider": "qnn", "threads": 1}]  # qnn: the QNN plugin, else cpu
 
 
 def idle(c: Client, wait_s: float = 60) -> tuple[bool, dict]:
@@ -143,6 +143,9 @@ def fmt_row(e: dict, r: dict) -> str:
     cfg = f"{r['provider']}{r['threads'] if r['provider'] == 'cpu' else ''}"
     if r.get("error"):
         return f"{e['model']:24s} {cfg:6s} ERROR {r['error']}"
+    used = r["first"].get("provider")
+    if used and used != r["provider"]:  # qnn fell back to cpu (no plugin, or the NPU could not take the model)
+        cfg += f"->{used}"
     first = r["first"]["ms"]["total"]
     return (f"{e['model']:24s} {cfg:6s} run p50 {r['run']['p50']:8.2f} p95 {r['run']['p95']:8.2f}  "
             f"total p50 {r['total']['p50']:8.2f}  first {first:8.1f} ms")
@@ -194,7 +197,7 @@ def main():
     sub = ap.add_subparsers(dest="op", required=True)
     p = sub.add_parser("run")
     p.add_argument("--models", help="comma-separated manifest keys (default: all)")
-    p.add_argument("--configs", help="comma-separated of cpu1,cpu2,cpu4,nnapi1 (default: all)")
+    p.add_argument("--configs", help="comma-separated of cpu1,cpu2,cpu4,nnapi1,qnn1 (default: all)")
     p.add_argument("--n", type=int, default=200)
     p.add_argument("--warm", type=int, default=20)
     p.add_argument("--keep", action="store_true", help="leave the models and skill on the app")

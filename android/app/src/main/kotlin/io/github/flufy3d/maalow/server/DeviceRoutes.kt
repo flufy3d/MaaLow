@@ -11,6 +11,7 @@ import io.github.flufy3d.maalow.engine.Bridge
 import io.github.flufy3d.maalow.engine.Engine
 import io.github.flufy3d.maalow.engine.Maa
 import io.github.flufy3d.maalow.engine.ShizukuLink
+import io.github.flufy3d.maalow.skill.QnnPlugin
 import io.github.flufy3d.maalow.store.optBool
 import io.github.flufy3d.maalow.store.optInt
 import io.github.flufy3d.maalow.store.optLong
@@ -171,6 +172,8 @@ private fun status(app: App): JsonObject = buildJsonObject {
     put("record", app.recorder.state())
     put("remote", app.remote.json())
     put("workspace", app.defaultWorkspace())
+    put("soc", QnnPlugin.soc())
+    put("qnn", app.skills.nn.qnn.json()) // the optional QNN plugin (infer()'s provider "qnn"); not loaded from here
     put("frame", buildJsonObject {
         put("width", maalow.width)
         put("height", maalow.height)

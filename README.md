@@ -48,6 +48,7 @@ MaaLow
 | `…/store/`、`…/auto/` | 工作区 / 文件 / 设置 / 事件；守护规则与定时任务 |
 | `android/app/src/main/assets/web/` | 网页（无构建的 classic script）：`common.js` 基础件、`stage.js` 画面框与标注、每页一个模块，加载顺序见 `index.html` |
 | `android/app/src/main/assets/skill/` | Skill 运行时 API：`prelude.js` 与 `maalow.d.ts` |
+| `android/qnnplugin/` | 可选的 QNN 插件 APK（`io.github.flufy3d.maalow.qnn`）：只装 onnxruntime（带 QNN EP）和高通 QNN 库，给 `infer()` 的 `provider: "qnn"` 用；主 App 不依赖它，见“NPU：QNN 插件” |
 | `workspaces/<名字>/` | 每个游戏的工作区：`pipeline/`、`skills/`、`templates/`、`model/`、`tools/`、README；历史实验记录放 `docs/` |
 | `tests/` | pytest：PC 端单测 + 网页语法 / 类型声明同步检查 |
 
@@ -57,6 +58,7 @@ MaaLow
 uv run pytest -q                                              # PC 端
 cd android && ./gradlew :app:compileDebugKotlin --offline     # Kotlin（需要 JDK 17 与 Android SDK）
 for f in android/app/src/main/assets/web/*.js; do node --check "$f"; done
+cd android && ./gradlew :qnnplugin:assembleRelease             # 改了 QNN 插件才需要；第一次要联网下 Maven 上的两个 AAR
 ```
 
 ## Workspace
@@ -466,8 +468,30 @@ if (r.ready && r.index === 1) parry();   // r.probs、r.score、r.output（原�
 * 预处理：`roi` 裁剪 → `size` 缩放（`resize`：area = OpenCV INTER_AREA，放大时用 linear；linear / nearest）→ `color`（gray = OpenCV BGR2GRAY，先缩放后转灰；rgb / bgr）→ `(v / 255 − mean) / std`（一个值、每个颜色通道一个、或每个叠加后的通道一个；uint8 输入的模型直接给字节）→ `layout`（nchw / nhwc，默认按模型输入形状）。`size` 默认取模型输入尺寸
 * 多帧：`frames` 是相对当前图的帧偏移，按给的顺序叠成通道。默认以截图流帧号（`Image.seq`，画面变了才出新帧）计；`frame_ms` 改成按采集时间、每单位这么多毫秒（30 fps 录像训练的模型给 `1000 / 30`），取那一刻屏幕上的那帧（之前最后采到的一帧，要求本次运行也有它的下一帧，才能确定中间没有别的帧），确定不了就取 `tolerance`（默认 1 个单位）内最近的一帧。之前的帧取自本次运行自己的截图：每张截图的预处理结果只算一次，按预处理参数各存最近 32 帧（小图，存在 JVM 里，运行结束就释放）；保留的最近 8 张截图第一次用到时补算。缺帧返回 `{ready: false}`，截图要够勤
 * 输出：第一个输出的 `shape` / `output`（最多 4096 个值，`raw: true` 给全部输出）；向量输出带 `index` / `score` / `label`（最大的那个），`post: "softmax" | "sigmoid"` 另给 `probs`；`post: "yolo"` 解码 YOLOv8 / YOLO11 检测头（`[1, 4 + 类数, n]` 或转置），`threshold` / `iou` / `max_det` 过滤和 NMS，`detections` 的框换算回屏幕坐标，`hit` / `box` 是最好的那个（可以直接 `click(r)`）。`labels` 不给时用模型的 `names` 元数据
-* `modelInfo(model)`：输入输出的名字、类型、形状。`threads`（onnxruntime 线程数，默认 1）、`provider`（cpu / nnapi）、`input: true`（返回预处理后的字节，和离线流程对拍）
+* `modelInfo(model)`：输入输出的名字、类型、形状。`threads`（onnxruntime 线程数，默认 1）、`provider`（cpu / nnapi / qnn，见下）、`input: true`（返回预处理后的字节，和离线流程对拍）
+* `provider`：`cpu`（默认）、`nnapi`（这台 Pad 上没用，见 WhereWindsMeet 的 dufu-moveid-plan）、`qnn`（高通 NPU，要装 QNN 插件，见下）。结果里 `provider` 是实际跑的，`fallback` 是 qnn 退回 CPU 的原因。`nnProviders()` 列出能用的 provider、插件状态和芯片
 * MaaFramework 自己的 `NeuralNetworkClassify` / `NeuralNetworkDetect`（Pipeline 节点，或技能里的 `classify()` / `detect()`）照常可用：工作区有 `model/` 时整个工作区按 bundle 加载，模型放 `model/classify/`、`model/detect/`，`model` 写其下的路径。它们只吃当前一张图、预处理固定
+
+#### NPU：QNN 插件（可选）
+
+高通 NPU（Hexagon HTP）走一个单独的插件 APK，不进主 App、不碰 MaaFramework 的 onnxruntime。没装插件：`provider: "qnn"` 自动用 CPU 跑 `<名字>.onnx`，结果 `provider: "cpu"`、`fallback` 写原因，skill 不用改。
+
+* **插件**（`android/qnnplugin`，包名 `io.github.flufy3d.maalow.qnn`，单独构建、单独发版）：没有代码和界面，只带 Maven Central 上的两个 AAR 里的库——Microsoft `onnxruntime-android-qnn` 1.29.0（MIT；onnxruntime，QNN EP 编在里面）和它声明的 `com.qualcomm.qti:qnn-runtime` 2.42.0（高通 AI Hub Model License，许可和 NOTICE 放在插件的 `assets/licenses/`；不用登录高通账号）。保留 `libQnnHtp.so`、`libQnnHtpPrepare.so`（在设备上把 ONNX 编成 HTP 图）、`libQnnSystem.so`，以及 HTP V69 / V73 / V75 / V79 的 Stub + Skel（骁龙 8 Gen 1 到 8 Elite 这几代，7+ / 8s 也落在里面）。release APK 约 61 MB。
+* **加载**（`skill/QnnPlugin.kt`、`nn_jni.cpp`）：第一次用 qnn 时，主 App 用 PackageManager 找插件（manifest 的 `<queries>`），要求和主 App 同一签名，从插件的 `nativeLibraryDir`（插件声明 `extractNativeLibs`，库解压在磁盘上）按绝对路径 `dlopen`：先 QNN 各库（它们之间按名字互相 dlopen，先按路径载入后按 soname 就能找到），再插件的 `libonnxruntime.so`（`RTLD_LOCAL`）。Android 的 linker 按路径载入时不按 soname 去重，所以它和 MaaFramework 的 `libonnxruntime.so` 是两个独立的库（导出符号还带版本 `VERS_1.29.0`），只通过各自句柄的 `OrtGetApiBase` 用；MaaFramework 的那份启动时就载入了，按名字查到的永远是它。HTP 的 Skel 是 DSP 上的库，FastRPC 从 `ADSP_LIBRARY_PATH` 找，加载前设成插件库目录加系统默认目录；Stub 依赖 `libcdsprpc.so`，主 App manifest 里 `uses-native-library`（`required="false"`）。应用的 linker namespace 本来就允许按路径载入 `/data` 下的库，不需要额外权限。插件装上后 5 秒内会被发现；插件升级后要重启 MaaLow（已载入的库不会换）。
+* **会话**：qnn 用 HTP 后端、`htp_performance_mode=high_performance`、float32 模型按 fp16 跑，且关掉 CPU 回落（`session.disable_cpu_ep_fallback`）：要么整个模型都在 NPU 上，要么建会话失败、整体退回 CPU（原因在 `fallback`，模型文件不变就不再重试）。第一次建会话要在设备上编译，可能要几秒。
+* **模型文件约定**：`model/<名字>.onnx` 是 CPU 版；同目录的 `model/<名字>.qnn.onnx` 是 QNN 版（量化成 QDQ 的 ONNX，或 AI Hub `precompiled_qnn_onnx` 这类按芯片预编译的 EPContext 模型，带的 `.bin` 放旁边），输入输出和 CPU 版一样。`infer("x/y.onnx", {provider: "qnn"})` 有 `.qnn.onnx` 就用它，没有就把 `.onnx` 本身交给 QNN；退回 CPU 时总用 `.onnx`。训练流水线两份都出、都放进 `model/`。
+* **状态**：`/status` 的 `soc`（`Build.SOC_MANUFACTURER` / `SOC_MODEL`、`HARDWARE`、`ro.board.platform`）和 `qnn`（装了没有、版本、载入没有、错误；`/status` 不触发载入），网页概览“设备”卡片显示芯片和 NPU 插件两行。
+
+**装机和验证**（Pad 上需要人点安装；PC 上 `. ~/tools/env.sh`，在 `android/` 下）：
+
+1. 构建：`./gradlew :app:assembleDebug :qnnplugin:assembleRelease`（或 `:qnnplugin:assembleDebug`；两个都用本机 debug 签名，签名必须一致）。
+2. 装主 App（这次改了 manifest 和 native 代码，要重装）：`adb install -r app/build/outputs/apk/debug/app-debug.apk`，HyperOS 弹窗点“继续安装”；装完打开 MaaLow 让服务和 Shizuku 恢复。
+3. 先不装插件，确认芯片和回落：`uv run maalow do status`，看 `soc.model`（记进 dufu-moveid-plan，好让 AI Hub 换同芯片重测）、`qnn.installed: false`。
+4. 装插件：`adb install -r qnnplugin/build/outputs/apk/release/qnnplugin-release.apk`（约 61 MB，没有图标，桌面上看不到）。等 5 秒再 `uv run maalow do status`：`qnn.installed: true`。
+5. 测速（只读：只调 `infer()`，不截屏、不碰触摸按键，跑完删掉临时文件）：
+   `uv run python workspaces/WhereWindsMeet/tools/dufu_moveid/npu_bench.py run --models crop_mnv3s_fp32,glob_mnv3s050_fp32,crop_mnv3s_int8 --configs cpu1,qnn1`
+   每行打出 run p50 / p95 和第一次调用（含编译）的耗时；`qnn1->cpu` 表示退回了 CPU，结果 JSON 里 `first.fallback` 是原因。`uv run --with numpy --with onnxruntime python .../npu_bench.py check <结果>` 对比输出数值（fp16 和 CPU 有小差别属正常）。期望：裁剪 / 全局流 qnn run 在 1 ms 上下（AI Hub 8 Gen 3 上 0.2–0.45 ms，加 JNI 拷贝）。
+6. 出问题时：`fallback` 里是插件或 onnxruntime 的原话（例如 libcdsprpc 打不开、Skel 找不到、某个算子 HTP 不支持）；`adb logcat -s onnxruntime QnnHtp` 看细节。卸载插件 `adb uninstall io.github.flufy3d.maalow.qnn`，重启 MaaLow 后回到 CPU。
 
 ## 目标
 
