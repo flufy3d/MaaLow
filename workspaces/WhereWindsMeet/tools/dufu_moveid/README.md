@@ -363,3 +363,79 @@ uv run --no-project --with numpy python $D/s2c_report.py                        
 - 串 ≠ 招：被闪掉的接触不出现、紧接着的无光招会粘进同一串（≤ 73 帧），所以串长在同一招里也会变；节奏拆分按规格照拆，拆出的「少一段」类（如 c40 对 c11）在拼图里是同一招。
 - 起手估计依赖 −60 帧之前的画面「不一致」；红光、近身类多数在 −60 帧就已一致（前一招固定或起手更早），只给逐串中位，类级记「—」。
 - UMAP 设了 random_state，同参数重跑结果逐位相同（已验证）；类号按类大小排序，换参数后类号会变，review.md 要重写。
+
+## 顺序 3：老师模型与关 1（2026-10-24，`s3_*.py`）
+
+关 1 判定：致命招在决策时刻能分开、金招被当成红招 ≤3%。老师 = 冻结的 DINOv3 patch 特征 + 可训练注意力池化 + 因果时序 transformer，按轮次 5 折，所有数字是 out-of-fold。口径（`s3_gate1.py` 文档字符串、`s3_common.py` 的等价组）在训练前写定，没改过；看过 fold 0 后加的只有 `s3_diag.py` 的事后诊断，单独标注。
+
+```
+TORCH="uv run --no-project --with torch --with numpy --index https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match"
+D=workspaces/WhereWindsMeet/tools/dufu_moveid
+uv run --no-project --with numpy python $D/s3_common.py      # 等价组、折、要缓存的帧数（自查）
+HF_HUB_OFFLINE=1 $TORCH --with timm --with av --with opencv-python-headless python $D/s3_cache.py --procs 3 --mem 0.3   # patch 缓存，35 分钟，可续跑
+$TORCH python $D/s3_baseline.py                               # CLS 基线（线性 / 最近类中心），8 分钟
+$TORCH python $D/s3_train.py --epochs 16                      # 5 折训练 + OOF 预测，77 分钟，显存约 10 GB
+uv run --no-project --with numpy python $D/s3_diag.py         # 事后诊断 → teacher/diag.md
+uv run --no-project --with numpy python $D/s3_gate1.py --extra-md data/moveid/teacher/diag.md --extra-md data/moveid/teacher/check/review.md
+uv run --no-project --with av --with opencv-python-headless --with numpy python $D/s3_check.py   # 抽查图
+```
+
+### 标签、样本、折（`s3_common.py`）
+
+- 每一帧 t 的目标取「t 之后（含 t）的下一个接触 c」：类 = c 所在串的类（assign.json，43 类 + 未知；另加第 45 个输出 idle），颜色 = 该串开场颜色（gold / red / none；unknown 不算损失），接触时间 = c − t（0..45 帧，>45 记「无」）。
+- 类和颜色只在 [c − 30, c] 上算损失；idle = 下一个接触 >60 帧且上一个接触 ≥30 帧之前；中间的帧只训接触时间。起手帧头没做（类级起手估计多数是「—」，不可靠）。
+- 折：197 轮按串数贪心分 5 折（39–40 轮 / 折），同一轮只在一个折里。每折再拿训练轮的 10% 做内部验证，选验证损失最低的 epoch，测试折只用来出 OOF。
+
+### 缓存（`s3_cache.py`）
+
+- 帧：每个接触的 [c − 61, c]（30 帧样本 + 31 帧历史）+ 每段空闲中间 16 帧及其历史，共 446,961 帧（全部 737,198 帧的 61%）。
+- 三路视图按 `s2_views`（GPU 面积矩阵，同 `s2_features`）原分辨率进 DINOv3 ViT-S+/16（和顺序 2 的 CLS 同一份权重），`forward_features`（最后 norm 之后），去掉 4 个 register：每帧 651 个 token = 3 个 CLS + 整屏 15×24 + 大框 12×12 + 小框 12×12，各 384 维。
+- 存 int8（每 token 一个 fp16 尺度，absmax/127）：`teacher/cache/<rec>.tok`（[n, 651, 384] int8）、`<rec>.npz`（frames、scale）、`status.json`。共 111.7 GB。CLS 和 `emb/` 的余弦 ≥0.9999。
+- forward_features 套 CUDA graph 在这台机器上输出 NaN（s2 的 CLS 版本没事，原因没查），改成 eager，批 64 一样快（整屏约 680 张/秒、裁剪约 2600 张/秒）；3 进程合计约 214 帧/秒（每个录像要整段解码）。
+
+### 模型（`s3_train.py`，17.7M 可训练参数）
+
+- 逐帧：651 token → LayerNorm → Linear 384→256 + 每个 token 位置一个可学嵌入（含视图身份）→ 24 个可学 latent 交叉注意全部 token（8 头）+ MLP → latent 自注意 + MLP → 展平 → Linear 512；加上三路运动量和重复帧标记（Linear 4→512）。
+- 时序：4 层 pre-norm transformer（512 维 8 头），因果滑窗 T = 32 帧（t−31..t），每层每头一组可学相对位置偏置；dropout 0.1。
+- 输出头：类 45、颜色 3、接触时间 47。损失 CE 类 + CE 颜色 + 0.5 × CE 接触时间。
+- 训练：每段连续缓存帧切成 ≤128 帧的块（步长 97），只在块内位置 ≥31（历史满 32 帧）的帧上算损失；AdamW lr 3e-4 wd 0.05，1 epoch 预热 + 余弦，16 epoch，批 16 块，bf16；10% 的帧换成上一帧（模拟录像重复帧，运动量置 0）。最佳 epoch 11–13；每 epoch 约 60 秒（约 6.6k 帧/秒，GPU 受限）。
+- 推理：同样切块；每段第一块的前 31 帧历史不满也输出（只发生在录像开头）。
+
+### 基线（`s3_baseline.py`）
+
+已存 CLS，特征 = 三路各三个窗 [t−49, t−30] [t−29, t−10] [t−9, t] 的均值减去本录像 0..t 帧的均值（因果版的聚类表示），L2 归一，3456 维。线性：一层三头 softmax（固定超参，不在测试折上调）；最近类中心：余弦最近的类中心 / 颜色中心，没有接触时间头。同样的折和训练位置（每 2 帧取一帧）。
+
+### 产出（`data/moveid/teacher/`）
+
+| 路径 | 内容 |
+|---|---|
+| `oof.npz` | 老师 OOF：每个接触（7982）在其 −30..0 帧的 `p_cls` [.., 31, 45]、`p_col` [.., 31, 3]、`p_tte` [.., 31, 47]、`valid`、`fold`；每串的 −16..−4 就是开场接触那一行 |
+| `teacher/fold<k>.pt`、`log.json`、`oof_fold<k>.npz` | 各折权重（最佳 epoch）、逐 epoch 训练 / 验证记录 |
+| `baseline/oof_linear.npz`、`oof_ncc.npz`、`log.json` | 基线 OOF（同格式；ncc 没有接触时间） |
+| `gate1.json` / `gate1.md` | 所有数字的分子 / 分母；报告（含颜色 3×3、致命类混淆前 20 对、逐类、等价组、诊断、抽查结论） |
+| `diag.md` | 事后诊断（`s3_diag.py`） |
+| `check/` | 抽查图 + `index.json` + `review.md`（人工结论） |
+| `cache/` | patch token 缓存（111.7 GB，重训才需要） |
+
+### 结果
+
+应对等价组（训练前定）：原口径 {c2, c3, c16, c17, c18, c19, c27, c31, c32, c33, c36, c37}、{c5, c9, c12, c15, c26}、{c6, c13, c38}、{c8, c24}；修正口径把 c3 / c27（没光但卸住率 0，应对是闪）从第一组拆出。两种口径下老师的 (b) 数字相同。
+
+| −10 帧 | 老师 | 线性基线 | 最近类中心 |
+|---|---|---|---|
+| (a) 金→红 | **1/554 = 0.2%** | 4/554 = 0.7% | 95/554 = 17.2% |
+| 金→没光 / 红→没光 / 没光→金 | 3.6% / 1.7% / 1.2% | 20.6% / 11.3% / 2.5% | – |
+| (b) 致命类 top-1（原口径） | **1410/2150 = 65.6%** | 1403/2150 = 65.3% | 946/2150 = 44.0% |
+| 接触时间 \|误差\| 中位 / p90（帧） | 3 / 15 | 5 / 14 | – |
+| 致命串应对（闪 / 卸）判对 | 2089/2149 = 97.2% | 2057/2149 = 95.7% | – |
+| 其中该闪判成卸 | 44/698 = 6.3% | 33/698 = 4.7% | – |
+
+- **关 1：不过**。(a) 在 −16..−4 每一帧都 ≤0.4%；(b) 在 −10 / −8 / −6 是 65.6% / 66.0% / 65.5%，离 90% 很远，修正口径也一样。曲线见 gate1.md。
+- 老师比 CLS 多出来的主要在颜色：金 / 红光被判成「没光」从 20.6% / 11.3% 降到 3.6% / 1.7%，金→红从 4 例到 1 例。类别准确率和线性基线几乎一样。
+- 事后诊断（不是关 1 口径）：只在 43 类里取 argmax（不让 idle 输出）68.6%；同一批 ≥3 段的致命串在第 1 / 2 / 3 个接触前 10 帧分别是 49% / 65% / 71%，看到前面几下后才认得出，说明不少类是靠后面的节奏分开的；按「同开场颜色 + 同应对（闪 / 卸）」算 98.6%。
+- 错例（`check/review.md`）：唯一的金→红是光刚出现那一帧、偏橙；致命类的错主要是 (1) 开场相同、区别在第二下之后的类（c0 ↔ c2，c10 / c14 / c20 → c0 / c2）；(2) 远处突进或被挡住的招（c27、c4），−10 帧前看不到起手，模型判 idle，接触时间也判「无」；(3) 顺序 2 就标记过的标签问题（c40 ≈ c11 少一段，c41 ≈ 漏标的抓取）。
+
+### 注意
+
+- (b) 的类别是用 [−60, −11] 的 CLS 画面加节奏（第 2–4 个接触偏移）聚出来的，节奏是决策时刻之后才发生的事，所以「−10 认类」有一部分本来就做不到；这一点在训练前没有写进口径，按原口径报不过。
+- 缓存（111.7 GB）远大于内存（32 GB），每个 epoch 都从 NVMe 重读；读线程单独测约 9k 帧/秒（约 2.2 GB/s），比 GPU 的约 6.6k 帧/秒快，所以训练是 GPU 受限。
