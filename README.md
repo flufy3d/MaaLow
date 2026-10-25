@@ -465,7 +465,7 @@ const r = infer("my/ttc.onnx", { image: screenshot(), roi: [240, 30, 600, 600], 
 if (r.ready && r.index === 1) parry();   // r.probs、r.score、r.output（原始输出）、r.frames（实际用的帧）、r.ms
 ```
 
-* 预处理：`roi` 裁剪 → `size` 缩放（`resize`：area = OpenCV INTER_AREA，放大时用 linear；linear / nearest）→ `color`（gray = OpenCV BGR2GRAY，先缩放后转灰；rgb / bgr）→ `(v / 255 − mean) / std`（一个值、每个颜色通道一个、或每个叠加后的通道一个；uint8 输入的模型直接给字节）→ `layout`（nchw / nhwc，默认按模型输入形状）。`size` 默认取模型输入尺寸
+* 预处理：`roi` 裁剪 → `size` 缩放（`resize`：area = OpenCV INTER_AREA，缩小时和 `cv2.resize` 逐位一致（`android/app/src/main/cpp/nn_prep.h`，整数倍走 resizeAreaFast；`uv run --extra cv pytest tests/test_nn_prep.py` 对拍），放大时用 linear；linear / nearest）→ `color`（gray = BGR2GRAY 的定点公式，先缩放后转灰，和新版 `cv2.cvtColor` 约十万分之五的像素差 1；rgb / bgr）→ `(v / 255 − mean) / std`（一个值、每个颜色通道一个、或每个叠加后的通道一个；uint8 输入的模型直接给字节）→ `layout`（nchw / nhwc，默认按模型输入形状）。`size` 默认取模型输入尺寸
 * 多帧：`frames` 是相对当前图的帧偏移，按给的顺序叠成通道。默认以截图流帧号（`Image.seq`，画面变了才出新帧）计；`frame_ms` 改成按采集时间、每单位这么多毫秒（30 fps 录像训练的模型给 `1000 / 30`），取那一刻屏幕上的那帧（之前最后采到的一帧，要求本次运行也有它的下一帧，才能确定中间没有别的帧），确定不了就取 `tolerance`（默认 1 个单位）内最近的一帧。之前的帧取自本次运行自己的截图：每张截图的预处理结果只算一次，按预处理参数各存最近 32 帧（小图，存在 JVM 里，运行结束就释放）；保留的最近 8 张截图第一次用到时补算。缺帧返回 `{ready: false}`，截图要够勤
 * 输出：第一个输出的 `shape` / `output`（最多 4096 个值，`raw: true` 给全部输出）；向量输出带 `index` / `score` / `label`（最大的那个），`post: "softmax" | "sigmoid"` 另给 `probs`；`post: "yolo"` 解码 YOLOv8 / YOLO11 检测头（`[1, 4 + 类数, n]` 或转置），`threshold` / `iou` / `max_det` 过滤和 NMS，`detections` 的框换算回屏幕坐标，`hit` / `box` 是最好的那个（可以直接 `click(r)`）。`labels` 不给时用模型的 `names` 元数据
 * `modelInfo(model)`：输入输出的名字、类型、形状。`threads`（onnxruntime 线程数，默认 1）、`provider`（cpu / nnapi / qnn，见下）、`input: true`（返回预处理后的字节，和离线流程对拍）

@@ -127,16 +127,29 @@ internal class Nn(private val app: App) {
 
     val qnn = QnnPlugin(app)
 
+    /** Workspace-relative model paths, resolved and checked once (Workspaces.file canonicalizes the path: syscalls). */
+    private val files = HashMap<String, File>()
+
+    private fun file(ws: String, path: String): File {
+        val key = "$ws/$path"
+        files[key]?.let { return it }
+        if (files.size >= 64) files.clear()
+        return app.workspaces.file(ws, path).also { files[key] = it }
+    }
+
+    /** A preprocessed frame that is used once and not kept (no history, no `input`), reused per byte size. */
+    private val scratch = HashMap<Int, ByteArray>()
+
     /** opts: [threads, spin, provider (0 cpu, 1 nnapi, 2 qnn)]; qnn: see the class comment. */
     @Synchronized
     fun model(ws: String, name: String, opts: IntArray): Model {
         val path = if (name.endsWith(".onnx")) name else "$name.onnx"
-        val f = app.workspaces.file(ws, "model/$path")
+        val f = file(ws, "model/$path")
         // with the weights beside it (a torch export's external data, <name>.onnx.data) when there is such a file
         fun stampOf(x: File) = listOf(x, File(x.path + ".data")).filter { it.isFile }.fold(17L) { h, y -> (h * 31 + y.lastModified()) * 31 + y.length() }
         val key = "$ws/$path ${opts.joinToString(",")}"
         if (opts.getOrNull(2) == PROVIDER_QNN) {
-            val qf = app.workspaces.file(ws, "model/${path.removeSuffix(".onnx")}.qnn.onnx").takeIf { it.isFile } ?: f
+            val qf = file(ws, "model/${path.removeSuffix(".onnx")}.qnn.onnx").takeIf { it.isFile } ?: f
             require(qf.isFile) { "infer: no model model/$path" }
             val dir = qnn.ensure()
             val stamp = (stampOf(qf) * 31 + stampOf(f)) * 31 + qnn.generation
@@ -267,13 +280,19 @@ internal class Nn(private val app: App) {
         require(roi.size == 4) { "infer: roi must be [x, y, w, h]" }
         val prep = intArrayOf(roi[0], roi[1], roi[2], roi[3], ow, oh, color, interp)
         val spec = prep.joinToString(",")
-        fun prepped(s: Shot) = Maa.nnPrep(s.image, prep) ?: throw IllegalArgumentException("infer: roi $roi is not inside the image")
+        fun prepped(s: Shot, into: ByteArray? = null) =
+            Maa.nnPrep(s.image, prep, into) ?: throw IllegalArgumentException("infer: roi $roi is not inside the image")
 
         // frames: the one looked at, earlier ones from the history (filled from the run's last screenshots)
         val frameMs = (a["frame_ms"] as? JsonPrimitive)?.doubleOrNull
         val tolerance = (a["tolerance"] as? JsonPrimitive)?.doubleOrNull ?: 1.0
-        val curPx = prepped(cur)
         val multi = offsets.any { it != 0.0 }
+        // a frame only this call reads goes into a reused buffer; one the history keeps or `input` returns is its own
+        val curPx = if (multi || a.optBool("input") == true) prepped(cur) else {
+            val n = ow * oh * cpf
+            if (scratch.size >= SPECS && n !in scratch) scratch.clear()
+            prepped(cur, scratch[n]).also { scratch[n] = it }
+        }
         fun units(seq: Long, ns: Long) = if (frameMs != null) (ns - cur.ns) / 1e6 / frameMs else (seq - cur.seq).toDouble()
         val used = ArrayList<History.Entry?>()
         if (multi) {

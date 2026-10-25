@@ -1,6 +1,7 @@
 // JNI for skills' infer() (skill/Nn.kt): ONNX models run with the onnxruntime MaaFramework already ships
 // (libonnxruntime.so 1.19.2, loaded by libMaaFramework.so; only its C API, through OrtGetApiBase), and the
-// preprocessing of a screenshot region into a small image (crop, resize, color) that a run keeps as frame history.
+// preprocessing of a screenshot region into a small image (crop, resize, color: nn_prep.h) that a run keeps as frame
+// history.
 //
 // provider "qnn" runs on a second, separate onnxruntime: the one with the QNN execution provider that the optional
 // plugin APK (android/qnnplugin, io.github.flufy3d.maalow.qnn) carries with Qualcomm's QNN libraries. nnQnnLoad
@@ -25,6 +26,7 @@
 #include <vector>
 
 #include "MaaFramework/MaaAPI.h"
+#include "nn_prep.h"
 #include "onnxruntime_c_api.h"
 
 namespace
@@ -211,124 +213,6 @@ std::string names_metadata(const OrtApi* api, OrtSession* s)
     return out;
 }
 
-// ---- preprocessing
-
-// OpenCV's INTER_AREA weights (computeResizeAreaTab): per output index, (source index, weight) pairs.
-struct Tap
-{
-    int src;
-    float w;
-};
-
-std::vector<std::vector<Tap>> area_taps(int ssize, int dsize)
-{
-    const double scale = double(ssize) / dsize;
-    std::vector<std::vector<Tap>> taps(dsize);
-    for (int dx = 0; dx < dsize; ++dx) {
-        double fsx1 = dx * scale, fsx2 = fsx1 + scale;
-        double cell = std::min(scale, ssize - fsx1);
-        int sx1 = int(std::ceil(fsx1)), sx2 = int(std::floor(fsx2));
-        sx2 = std::min(sx2, ssize - 1);
-        sx1 = std::min(sx1, sx2);
-        auto& t = taps[dx];
-        if (sx1 - fsx1 > 1e-3) {
-            t.push_back({ sx1 - 1, float((sx1 - fsx1) / cell) });
-        }
-        for (int sx = sx1; sx < sx2; ++sx) {
-            t.push_back({ sx, float(1.0 / cell) });
-        }
-        if (fsx2 - sx2 > 1e-3) {
-            t.push_back({ sx2, float(std::min(std::min(fsx2 - sx2, 1.0), cell) / cell) });
-        }
-    }
-    return taps;
-}
-
-// Bilinear (OpenCV INTER_LINEAR: half-pixel centers, edges clamped) or nearest (floor(dx * scale)).
-std::vector<std::vector<Tap>> point_taps(int ssize, int dsize, bool linear)
-{
-    const double scale = double(ssize) / dsize;
-    std::vector<std::vector<Tap>> taps(dsize);
-    for (int dx = 0; dx < dsize; ++dx) {
-        if (!linear) {
-            taps[dx].push_back({ std::min(int(dx * scale), ssize - 1), 1.f });
-            continue;
-        }
-        double f = (dx + 0.5) * scale - 0.5;
-        int x0 = int(std::floor(f));
-        float a = float(f - x0);
-        if (x0 < 0) {
-            x0 = 0;
-            a = 0;
-        }
-        if (x0 >= ssize - 1) {
-            x0 = ssize - 1;
-            a = 0;
-        }
-        taps[dx].push_back({ x0, 1.f - a });
-        if (a > 0) {
-            taps[dx].push_back({ x0 + 1, a });
-        }
-    }
-    return taps;
-}
-
-inline uint8_t sat(float v)
-{
-    int i = int(std::lround(v));
-    return uint8_t(std::clamp(i, 0, 255));
-}
-
-// Crop roi of a BGR image, resize to ow x oh (interp 0 area, 1 linear, 2 nearest; area upscaling is linear, as in
-// OpenCV), then color 0 gray (cv::COLOR_BGR2GRAY's fixed point), 1 rgb, 2 bgr. Out: HWC, 1 or 3 channels.
-void prep(const uint8_t* img, int stride, int rx, int ry, int rw, int rh, int ow, int oh, int color, int interp, uint8_t* out)
-{
-    const bool area = interp == 0;
-    auto tx = area && rw >= ow ? area_taps(rw, ow) : point_taps(rw, ow, interp != 2);
-    auto ty = area && rh >= oh ? area_taps(rh, oh) : point_taps(rh, oh, interp != 2);
-    std::vector<float> row(size_t(ow) * 3);
-    std::vector<float> acc(size_t(ow) * 3);
-    std::vector<uint8_t> bgr(size_t(ow) * 3);
-    for (int dy = 0; dy < oh; ++dy) {
-        std::fill(acc.begin(), acc.end(), 0.f);
-        for (const Tap& vy : ty[dy]) {
-            const uint8_t* src = img + size_t(ry + vy.src) * stride + size_t(rx) * 3;
-            for (int dx = 0; dx < ow; ++dx) {
-                float b = 0, g = 0, r = 0;
-                for (const Tap& vx : tx[dx]) {
-                    const uint8_t* p = src + vx.src * 3;
-                    b += p[0] * vx.w;
-                    g += p[1] * vx.w;
-                    r += p[2] * vx.w;
-                }
-                acc[dx * 3] += b * vy.w;
-                acc[dx * 3 + 1] += g * vy.w;
-                acc[dx * 3 + 2] += r * vy.w;
-            }
-        }
-        for (int i = 0; i < ow * 3; ++i) {
-            bgr[i] = sat(acc[i]);
-        }
-        uint8_t* o = out + size_t(dy) * ow * (color == 0 ? 1 : 3);
-        for (int dx = 0; dx < ow; ++dx) {
-            const uint8_t b = bgr[dx * 3], g = bgr[dx * 3 + 1], r = bgr[dx * 3 + 2];
-            if (color == 0) {
-                o[dx] = uint8_t((b * 1868 + g * 9617 + r * 4899 + (1 << 13)) >> 14);
-            }
-            else if (color == 1) {
-                o[dx * 3] = r;
-                o[dx * 3 + 1] = g;
-                o[dx * 3 + 2] = b;
-            }
-            else {
-                o[dx * 3] = b;
-                o[dx * 3 + 1] = g;
-                o[dx * 3 + 2] = r;
-            }
-        }
-    }
-}
-
 // The image input (inputs[0]) as an OrtValue, as nnRun builds it: frames (HWC uint8, cpf channels, w x h) stacked as
 // channels in order, p as in nnRun. xf / xu hold the copied data and must outlive the value. Null (with a Java
 // exception) on failure.
@@ -363,12 +247,24 @@ OrtValue* image_input(JNIEnv* env, Model* m, jobjectArray frames, const std::vec
         auto* src = reinterpret_cast<uint8_t*>(env->GetPrimitiveArrayCritical(arr, nullptr));
         for (int c = 0; c < cpf; ++c) {
             const int gc = f * cpf + c;
+            const uint8_t* s = src + c;
+            // channel gc's elements: from `first` on, every `step`
+            const size_t first = nhwc ? size_t(gc) : size_t(gc) * plane, step = nhwc ? size_t(C) : 1;
+            if (u8) {
+                uint8_t* d = xu.data() + first;
+                for (size_t i = 0; i < plane; ++i) d[i * step] = s[i * cpf];
+                continue;
+            }
+            // v * scale + bias for each of the 256 byte values, fused as clang always compiled it here (one rounding)
             const float scale = 1.f / (255.f * p[4 + 2 * gc + 1]), bias = -p[4 + 2 * gc] / p[4 + 2 * gc + 1];
-            for (size_t i = 0; i < plane; ++i) {
-                const uint8_t v = src[i * cpf + c];
-                const size_t at = nhwc ? i * C + gc : size_t(gc) * plane + i;
-                if (u8) xu[at] = v;
-                else xf[at] = v * scale + bias;
+            float lut[256];
+            for (int v = 0; v < 256; ++v) lut[v] = std::fma(float(v), scale, bias);
+            float* d = xf.data() + first;
+            if (step == 1 && cpf == 3) {
+                for (size_t i = 0; i < plane; ++i) d[i] = lut[s[i * 3]];
+            }
+            else {
+                for (size_t i = 0; i < plane; ++i) d[i * step] = lut[s[i * cpf]];
             }
         }
         env->ReleasePrimitiveArrayCritical(arr, src, JNI_ABORT);
@@ -601,9 +497,10 @@ FN(jstring, nnInfo)(JNIEnv* env, jobject, jlong h)
     return env->NewStringUTF(o.c_str());
 }
 
-// p: [roi x, y, w, h, out w, out h, color (0 gray, 1 rgb, 2 bgr), interp (0 area, 1 linear, 2 nearest)].
-// HWC bytes, or null when the image is empty or the roi is not inside it.
-FN(jbyteArray, nnPrep)(JNIEnv* env, jobject, jlong image, jintArray params)
+// p: [roi x, y, w, h, out w, out h, color (0 gray, 1 rgb, 2 bgr), interp (0 area, 1 linear, 2 nearest)] (nn_prep.h).
+// HWC bytes, or null when the image is empty or the roi is not inside it. Written into `into` and returned when it is
+// given with exactly that size (a buffer the caller reuses), else in a new array.
+FN(jbyteArray, nnPrep)(JNIEnv* env, jobject, jlong image, jintArray params, jbyteArray into)
 {
     jint p[8];
     if (env->GetArrayLength(params) < 8) return nullptr;
@@ -617,9 +514,10 @@ FN(jbyteArray, nnPrep)(JNIEnv* env, jobject, jlong image, jintArray params)
     }
     const int ch = p[6] == 0 ? 1 : 3;
     const size_t n = size_t(p[4]) * p[5] * ch;
-    std::vector<uint8_t> out(n);
-    prep(data, w * 3, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], out.data());
-    jbyteArray res = env->NewByteArray(jsize(n));
+    thread_local std::vector<uint8_t> out;
+    out.resize(n);
+    nnprep::prep(data, size_t(w) * 3, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], out.data());
+    jbyteArray res = into && size_t(env->GetArrayLength(into)) == n ? into : env->NewByteArray(jsize(n));
     env->SetByteArrayRegion(res, 0, jsize(n), reinterpret_cast<const jbyte*>(out.data()));
     return res;
 }

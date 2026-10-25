@@ -78,8 +78,9 @@ object Maa {
     external fun nnDestroy(h: Long)
     /** {"inputs": [{name, type, shape}], "outputs": [...], "names": metadata "names" or ""}; type 1 float, 2 uint8. */
     external fun nnInfo(h: Long): String
-    /** [roi x, y, w, h, out w, out h, color 0 gray / 1 rgb / 2 bgr, interp 0 area / 1 linear / 2 nearest] -> HWC bytes, or null. */
-    external fun nnPrep(image: Long, params: IntArray): ByteArray?
+    /** [roi x, y, w, h, out w, out h, color 0 gray / 1 rgb / 2 bgr, interp 0 area / 1 linear / 2 nearest] -> HWC bytes, or null.
+     *  Written into [into] (and that returned) when it has exactly the size, else into a new array. */
+    external fun nnPrep(image: Long, params: IntArray, into: ByteArray?): ByteArray?
     /** frames stacked as channels; params [w, h, channels per frame, layout 0 nchw / 1 nhwc, mean, std per channel]
      *  -> [n outputs, per output: rank, dims..., then all data]. Throws. */
     external fun nnRun(h: Long, frames: Array<ByteArray>, params: FloatArray): FloatArray
