@@ -24,7 +24,7 @@ export const meta = { description: "独夫演练场: enter the 独夫 training f
 /** @type {Box} */ const REGION_BAR_ROI = [40, 12, 700, 45]; // 清河 开封 河西 不见山 开封皇宫 青州 on the trial pages
 /** @type {Box} */ const JH_TITLE_ROI = [60, 140, 230, 90]; // 江湖行, the page title
 /** @type {Box} */ const JH_CARDS_ROI = [780, 360, 225, 105]; // the 试炼 card (2.3: 太平武墓 above, 悬赏 below)
-/** @type {Box} */ const JH_TILE_ROI = [630, 440, 250, 100]; // the 江湖行 tile in the menu
+/** @type {Box} */ const JH_TILE_ROI = [630, 370, 250, 170]; // the 江湖行 tile in the menu (2026-10-25: its caption moved up to y ~410)
 /** @type {Point} */ const MENU_ICON = [1036, 25]; // the tracked-quest icon that opens the menu (explore step 0)
 /** @type {Point} */ const JIANGHU = [728, 485];
 /** @type {Point} */ const TRIAL_CARD = [890, 418];
@@ -148,9 +148,11 @@ export default function (args = {}) {
             sleep(2000);
             continue;
         }
-        if (see("江湖行", JH_TILE_ROI)) { // the menu
+        const tile = find("江湖行", JH_TILE_ROI);
+        if (tile) { // the menu: tap the caption's tile (the layout moves between versions)
             log("menu: 江湖行");
-            click(JIANGHU[0], JIANGHU[1]);
+            if (tile.box) click(tile.box[0] + tile.box[2] / 2, tile.box[1] - 15);
+            else click(JIANGHU[0], JIANGHU[1]);
             sleep(2000);
             continue;
         }

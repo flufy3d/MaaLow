@@ -5,6 +5,11 @@
 Per round <out>/rNNN/: result.json (the dufu run), trace.json (the dufu_trace events, chunk order), rec.txt (the
 recording id; `--pull` downloads it into the workspace's recordings/). Stops on the first failed entry, on a teacher
 stop (an error from the skill) or after --n rounds. The next round number continues from what is in <out>.
+
+--skill NAME runs another fight skill with the same round frame (default dufu; e.g. dufu2): its args are
+{"phase", "ms"} + --skill-args (JSON; --trace / --heads / --alt keep working for dufu only, --alt for any), its trace
+event is "<NAME>_trace"; every other event of the run whose name starts with "<NAME>_" goes to events.json (e.g.
+dufu2_pair).
 """
 
 from __future__ import annotations
@@ -37,6 +42,8 @@ def main() -> int:
     ap.add_argument("--pull", action="store_true")
     ap.add_argument("--alt", default="[]", help='JSON list of extra dufu args, alternated per round, e.g. [{"flare2":true},{"flare2":false}]')
     ap.add_argument("--heads", default="", help="comma list of head models, alternated per round (default: dufu.js's)")
+    ap.add_argument("--skill", default="dufu", help="the fight skill (default dufu)")
+    ap.add_argument("--skill-args", default="{}", help="JSON args for --skill other than dufu (merged over phase / ms)")
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     done = sorted(int(p.name[1:]) for p in a.out.glob("r[0-9][0-9][0-9]"))
@@ -58,18 +65,25 @@ def main() -> int:
         else:
             return 1
         rec = cli("rec", "start")
-        args = {"phase": a.phase, "ms": a.ms, "trace": a.trace if a.trace != "true" else True}
-        heads = [h for h in a.heads.split(",") if h]
+        if a.skill == "dufu":
+            args = {"phase": a.phase, "ms": a.ms, "trace": a.trace if a.trace != "true" else True}
+        else:
+            args = {"phase": a.phase, "ms": a.ms, **json.loads(a.skill_args)}
+        heads = [h for h in a.heads.split(",") if h] if a.skill == "dufu" else []
         if heads:
             args["head"] = heads[(i - first) % len(heads)]
         alts = json.loads(a.alt)
         if alts:
             args.update(alts[(i - first) % len(alts)])
-        res = cli("do", "skill", "dufu", "--args", json.dumps(args), "--timeout", str(a.ms + 60_000), timeout=a.ms / 1000 + 180)
+        res = cli("do", "skill", a.skill, "--args", json.dumps(args), "--timeout", str(a.ms + 60_000), timeout=a.ms / 1000 + 180)
         stop = cli("rec", "stop")
-        ev = [e for e in c.get(f"/events?since={last}&type=skill_event") if e.get("name") == "dufu_trace"]
+        allev = c.get(f"/events?since={last}&type=skill_event")
+        ev = [e for e in allev if e.get("name") == f"{a.skill}_trace"]
         ev.sort(key=lambda e: e["data"]["chunk"])
         d.mkdir()
+        if a.skill != "dufu":
+            other = [e for e in allev if str(e.get("name", "")).startswith(f"{a.skill}_") and e.get("name") != f"{a.skill}_trace"]
+            (d / "events.json").write_text(json.dumps(other, ensure_ascii=False), encoding="utf-8")
         (d / "result.json").write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
         (d / "trace.json").write_text(json.dumps([e["data"] for e in ev]), encoding="utf-8")
         (d / "args.json").write_text(json.dumps(args), encoding="utf-8")
@@ -80,7 +94,7 @@ def main() -> int:
         v = res.get("value") or {}
         rows = sum(len(e["data"]["rows"]) for e in ev)
         print(f"r{i:03d} {json.dumps({k: x for k, x in args.items() if k not in ('phase', 'ms', 'trace')})} {v.get('reason')} hits {v.get('hits')} oks {v.get('oks')} rows {rows} rec {stop.get('id')}"
-              f" boss {v.get('off', {}).get('act', {}).get('dropPx')}", flush=True)
+              f" boss {(v.get('off') or {}).get('act', {}).get('dropPx')}", flush=True)
         if not res.get("ok"):
             print(f"r{i:03d} skill error: {json.dumps(res, ensure_ascii=False)[:500]}", flush=True)
             return 1

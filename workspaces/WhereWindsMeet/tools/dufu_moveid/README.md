@@ -646,3 +646,48 @@ uv run --no-project --with numpy --with onnxruntime --with opencv-python-headles
 - 接触历史在训练和评估里用 trace 对齐后的真实接触（延迟 6 帧）；实机靠血条 / 真气台阶检测，只会更差。
 - 视图缓存只有老师缓存的那 61% 的帧（接触前后和空闲段中间），长时间空闲、走路、过场等没覆盖，设备上这些画面的误报率不知道。
 - int8 的接触时间比 fp32 差（见上表），应对基本不受影响；要更准的接触时间可以走 QNN（fp16，和 fp32 差 0.001 级）。
+
+## 顺序 5：影子模式与关 2（2026-10-25，`s5_*.py`，`skills/dufu2.js`）
+
+```
+D=workspaces/WhereWindsMeet/tools/dufu_moveid
+uv run --no-project --with numpy python $D/s5_movetable.py [--live]    # 招式表 -> model/dufu2/movetable.json + skills/lib/dufu2-table.js
+uv run python workspaces/WhereWindsMeet/tools/dufu_rounds.py data/moveid/live --n 8 --skill dufu2 --ms 600000 \
+    --skill-args '{"mode":"defend","provider":"qnn","dodgeLead":5}'   # 影子：{"mode":"shadow", "pair":150}
+uv run --with opencv-python-headless python $D/s5_pull.py [--delete]  # 录像 -> data/moveid/live/video、bars、对拍截图；--delete 只删这些轮次的录像
+uv run --no-project --with torch --with torchvision --with opencv-python-headless --with numpy \
+    --index https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match python $D/s5_color.py   # 每帧光色（顺序 2 的分类器，全帧）
+uv run --no-project --with numpy --with onnxruntime --with opencv-python-headless python $D/s5_pair.py data/moveid/live/rNNN  # 游戏画面对拍
+uv run --no-project --with numpy python $D/s5_analyze.py [rNNN ...]    # 接触检测、决策时刻、空闲误报、关 2 -> live/analysis.json
+```
+
+**dufu2.js**（不依赖 dufu.js，只用 `lib/dufu-reads.js` 的血条 / 真气读法）：每个 30 fps 节拍一次截图 → glob / 大框 / 小框三次 infer 各追加一次环 → head 读环；截到的还是上一帧也照样追加，循环超时就用同一张截图补齐漏掉的节拍（最多 3 个，再多跳过并计数），开局 `reset`。接触历史按 `s3b_train.history`：挨打 = 血一次掉 ≥2.5%（hpBase 读法），接触 = 看到的时刻 − 5 帧；卸势成功 = 真气台阶 8–80 px 且 24 帧内按过卸势；接触满 6 帧才进历史。`mode` shadow（只在开局前推摇杆走近，boss 不动就永远不来；之后不发任何触摸，每帧把防守会按什么写进 trace）/ defend（走近、补锁定、卸势 / 闪避、喝药，不进攻）。按键：应对头判闪或招式表标「不可卸」→ 闪，P(金) ≥0.15 → 闪，否则卸；预测接触（截图时刻 + 接触时间头中位数）离现在 ≤ 提前量就按；卸势 330 ms 锁 / 220 ms 冷却，闪避 500 ms，同一接触只按一次。trace 每帧一行（`TRACE_COLS`，150 行一个事件），`pair: N` 每 N 帧存截图 + `input: true` 的视图 + 环 + logits。boss 条改为数红色像素（lib 的 `bossPx` 在阶段二场地读到背景红 283 px，开局就停止走近、10 秒后误判死亡）。
+
+**招式表**（`s5_movetable.py`）：卸势提前量 = 每个接触前最后一次生效的卸势（330 ms 锁内的不算）的 ok 率–提前量曲线，4934 个接触，7–11 帧 .77–.79、13 帧起掉到 .66 以下，全局 10 帧；样本 ≥40 且组内更好的 10 组用组内值。闪避提前量：闪开的招不留接触，数据里只有失败的闪避，表里先放 14 帧，实机按 14 / 8 / 5 试过，5 最好（见下），用 `dodgeLead` 参数。`--live`：实机关 2 里卸势成功率 <20%（≥10 次）的「卸」组改成不可卸（k0–k4:c7，火球雨）。
+
+**影子（r002–r006，5 局）**：
+- 每帧耗时（战斗中，p50 / p95，ms）：cpu 推理 15.2–18.4 / 23.7–26.2（预处理 4.4–5.1，run 10–12），qnn 13.2 / 16.6–18.7（预处理 8.2–8.3，run 3.9–4.1）；整轮循环 22–24 / 41–42（含截图 2、血条 / 真气读数 4–7、结束判定）。新 App 的 cpu 预处理在战斗里 4.5 ms 左右（旧包同样游戏前台、登录页上 8.2），没有到 1.3；qnn 的预处理仍是 cpu 的约 2 倍（8.2 vs 4.5），膨胀没消失。
+- 对拍（`s5_pair.py`）：cpu 23 帧游戏画面（14 帧场地空闲 + 9 帧战斗）三路视图、特征、logits 全部位级一致；qnn 6 帧视图一致，特征差 ≤0.0015，logits ≤0.012，四个头 argmax 全一致。对拍帧（base64 编码 ~0.7 s）不计入耗时。
+- 接触检测（录像台阶对照，hit 69）：匹配 55，漏 14（都是 2.4–5.5% 的小台阶：紧跟在一下之后 7–14 帧的第二个台阶或几帧慢慢掉的，设备规则「一次掉 ≥2.5%」和训练定义一致所以训练里也没有这些），误检 3；看到时刻 = 接触 + 4 / 5 / 5 帧（p10 / p50 / p90），所以历史在接触 +6 帧进，和训练一致。
+- 决策时刻（接触前 10 帧，64 个）：应对判对 62（96.9%），致命 60/60，金 3/3 判金，金判卸 0；接触时间误差中位 2、90 分位 13 帧。
+- 空闲误报：走近段 1000 帧里「判有接触」4 帧（0.4%）；战斗中离接触 ≥30 / 45 帧的帧里 5.7%（抽看 r003 600–800 帧：boss 在身前出招没打中，不是空画面）。
+
+**防守（r007–r031，25 局，qnn）**：
+
+| 配置 | 局 | 致命招成功率（不含 / 含未核实闪避） | 金招按成卸势 | 挨打/分 | 中位存活 | 按键/分 |
+|---|---|---|---|---|---|---|
+| A 闪避提前 14（表默认） | 5 | 245/379 = 64.6% / 66.0% | 0/45 | 8.75 | 207 s | 34 |
+| B 闪避提前 8 | 8 | 485/683 = 71.0% / 71.6% | 1/65 | 6.82 | 249 s | 34 |
+| C 闪避提前 5 | 4 | 246/338 = 72.8% / 72.9% | 0/34 | 6.16 | 267 s | 34 |
+| **D 闪避 5 + 实机修正的招式表（c7 改闪）** | 8 | **655/861 = 76.1% / 76.8%** | **1/96 = 1.0%** | **5.49** | **338 s** | 31 |
+
+- 关 2：金招按成卸势 ≤3% 通过；致命招成功率 ≥90% **不过**（最终配置 D 76.1%，按局 63.8–84.7%）。旧 dufu.js 阶段二基线：约 10 挨打/分、存活约 150 s；同口径（只算接触，闪避看不到）致命接触卸住率 45.9%（197 轮 index）。
+- D 的失败归因（致命，206 下）：不可行动 85（前一下 20 帧内刚挨过 / 喝药中，多为连段后续）、没认出 39（接触前 25 帧没按）、时机偏 38、认对按对仍挨打 36、认错应对 8。
+- 按组：k0:c7 / k1–k3:c7（火球雨，boss 在台阶上远程齐射）改成闪避后仍只有 0–15%，占 D 失败的 78 下；k2 无光近身组 57%；k0 无光大组 85.5%、k1 90%；k0:c8、k0:c5 等红光招 100%。
+- 产出：`data/moveid/live/rNNN/`（result、trace、args、events、contacts.json、对拍 png / pair.json）、`live/video|bars|meta|color/`、`analysis.json`（全部轮次，最新表）、`gate2_<配置>.txt`、`movetable_v1.json`（修正前的表）、`deleted.json`（Pad 上已删的本轮录像）。r001 是没走近的空场地 55 秒（手动停，没有 result，只用于对拍）；r012 之后一局因 PC 侧批处理被超时杀掉，手动停下，录像 20261025-102914 已删、未计入。
+
+### 存疑
+- 关 2 的分母把「闪避后 25 帧内没有接触」算作闪开：金光核实的计入，没核实的（无光招）两种口径都给了，差 0.7 个百分点。
+- 「不可行动」是 20 帧内连续挨打的统称，包括 boss 连段后续和受击硬直，没有逐帧核实角色能不能动。
+- 关 2 的「认错应对」用的是当前（修正后）的招式表，A–C 配置里 c7 被算成「该闪」。
+- 火球雨（c7）单次闪避躲不开，需要位移规则（跑开 / 侧移），不在应对头和招式表能表达的范围里；这是到 90% 的最大缺口之一。
