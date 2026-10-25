@@ -1,0 +1,527 @@
+{
+ "name": "dufu2 student (独夫 阶段二 招式识别)",
+ "version": "20261025-0419",
+ "tag": "final",
+ "opset": 17,
+ "files": {
+  "crop.onnx": {
+   "bytes": 646231,
+   "sha256": "eb4f24f6be5779e9",
+   "ops": [
+    "Add",
+    "Concat",
+    "Constant",
+    "Conv",
+    "DequantizeLinear",
+    "Flatten",
+    "Gemm",
+    "Mul",
+    "QuantizeLinear",
+    "ReduceMean"
+   ]
+  },
+  "crop.qnn.onnx": {
+   "bytes": 1802650,
+   "sha256": "98bdf6c857bf4e9a",
+   "ops": [
+    "Add",
+    "Concat",
+    "Constant",
+    "Conv",
+    "Flatten",
+    "Gemm",
+    "Mul",
+    "ReduceMean",
+    "Relu"
+   ]
+  },
+  "crop_fp32.onnx": {
+   "bytes": 1802650,
+   "sha256": "98bdf6c857bf4e9a",
+   "ops": [
+    "Add",
+    "Concat",
+    "Constant",
+    "Conv",
+    "Flatten",
+    "Gemm",
+    "Mul",
+    "ReduceMean",
+    "Relu"
+   ]
+  },
+  "glob.onnx": {
+   "bytes": 803462,
+   "sha256": "d76353e7749d9812",
+   "ops": [
+    "Add",
+    "Concat",
+    "Constant",
+    "Conv",
+    "DequantizeLinear",
+    "Flatten",
+    "Gemm",
+    "Mul",
+    "QuantizeLinear",
+    "ReduceMean"
+   ]
+  },
+  "glob.qnn.onnx": {
+   "bytes": 2429470,
+   "sha256": "3b897ecda31f9eac",
+   "ops": [
+    "Add",
+    "Concat",
+    "Constant",
+    "Conv",
+    "Flatten",
+    "Gemm",
+    "Mul",
+    "ReduceMean",
+    "Relu"
+   ]
+  },
+  "glob_fp32.onnx": {
+   "bytes": 2429470,
+   "sha256": "3b897ecda31f9eac",
+   "ops": [
+    "Add",
+    "Concat",
+    "Constant",
+    "Conv",
+    "Flatten",
+    "Gemm",
+    "Mul",
+    "ReduceMean",
+    "Relu"
+   ]
+  },
+  "head.onnx": {
+   "bytes": 740093,
+   "sha256": "54bf07ca73eb5d93",
+   "ops": [
+    "Add",
+    "Concat",
+    "Constant",
+    "Conv",
+    "DequantizeLinear",
+    "Gather",
+    "QuantizeLinear",
+    "Slice",
+    "Transpose"
+   ]
+  },
+  "head.qnn.onnx": {
+   "bytes": 2732083,
+   "sha256": "4c7b016d9872096d",
+   "ops": [
+    "Add",
+    "Concat",
+    "Constant",
+    "Conv",
+    "Gather",
+    "Relu",
+    "Slice",
+    "Transpose"
+   ]
+  },
+  "head_fp32.onnx": {
+   "bytes": 2732083,
+   "sha256": "4c7b016d9872096d",
+   "ops": [
+    "Add",
+    "Concat",
+    "Constant",
+    "Conv",
+    "Gather",
+    "Relu",
+    "Slice",
+    "Transpose"
+   ]
+  }
+ },
+ "pipeline": "per frame: glob(screen) -> ring glob; crop(big) -> ring big; crop(small) -> ring small; then head(no image, 3 ring extras)",
+ "inputs": {
+  "glob": {
+   "model": "glob.onnx",
+   "input": "image float32 [1, 3, 240, 384] NCHW BGR, v / 255",
+   "infer": {
+    "roi": [
+     0,
+     0,
+     1080,
+     720
+    ],
+    "size": [
+     384,
+     240
+    ],
+    "color": "bgr",
+    "resize": "area",
+    "mean": 0,
+    "std": 1,
+    "history": [
+     {
+      "name": "glob",
+      "aux": "contact history (4)"
+     }
+    ]
+   },
+   "output": "feat float32 [1, 128]"
+  },
+  "big": {
+   "model": "crop.onnx",
+   "input": "image float32 [1, 3, 192, 192] NCHW BGR, v / 255",
+   "infer": {
+    "roi": [
+     290,
+     55,
+     530,
+     530
+    ],
+    "size": [
+     192,
+     192
+    ],
+    "color": "bgr",
+    "resize": "area",
+    "mean": 0,
+    "std": 1,
+    "history": [
+     {
+      "name": "big",
+      "aux": [
+       0
+      ]
+     }
+    ]
+   },
+   "output": "feat float32 [1, 96]"
+  },
+  "small": {
+   "model": "crop.onnx",
+   "input": "image float32 [1, 3, 192, 192] NCHW BGR, v / 255",
+   "infer": {
+    "roi": [
+     425,
+     190,
+     260,
+     260
+    ],
+    "size": [
+     192,
+     192
+    ],
+    "color": "bgr",
+    "resize": "area",
+    "mean": 0,
+    "std": 1,
+    "history": [
+     {
+      "name": "small",
+      "aux": [
+       0
+      ]
+     }
+    ]
+   },
+   "output": "feat float32 [1, 96]"
+  },
+  "head": {
+   "model": "head.onnx",
+   "inputs": {
+    "glob": "float32 [1, 30, 132] = ring 'glob' (feature + contact history)",
+    "big": "float32 [1, 30, 97] = ring 'big' (feature + one unused 0)",
+    "small": "float32 [1, 30, 97] = ring 'small' (feature + one unused 0)"
+   },
+   "infer": {
+    "extra": [
+     {
+      "name": "glob",
+      "dim": [
+       1,
+       30,
+       132
+      ],
+      "ring": true
+     },
+     {
+      "name": "big",
+      "dim": [
+       1,
+       30,
+       97
+      ],
+      "ring": true
+     },
+     {
+      "name": "small",
+      "dim": [
+       1,
+       30,
+       97
+      ],
+      "ring": true
+     }
+    ],
+    "post": "none"
+   },
+   "output": "logits float32 [1, 141]"
+  }
+ },
+ "screen": "1080x720 capture space; other sizes: s2_views.boxes(w, h)",
+ "preprocessing": "s2_views.views(): INTER_AREA (infer resize 'area'), BGR as captured, fed as v / 255 (infer's default mean 0 / std 1: v * (1 / 255f)); x 255 and the ImageNet mean / std (on RGB, here reversed for BGR) are inside the backbones",
+ "frame_rate": "the rings hold one entry per 30 fps frame (the training recordings); the head's receptive field is 29 frames (TCN, valid dilated convs (1, 2, 4, 7), kernel 3, 192 channels)",
+ "contact_history": "4 values per frame (s3b_train.history): frames since the last contact known 6 frames after it /73 (cap 2; 2 = none), the two gaps before it /73 (cap 2; 2 = none), contacts in a row ending at it (gaps <= 73) /4 (cap 2; 0 if the last one is > 73 frames back). No contact yet: [2, 2, 2, 0]",
+ "outputs": {
+  "grp": {
+   "slice": [
+    0,
+    88
+   ],
+   "labels": [
+    "k0:c0+c1+c2+c4+c10+c14+c16+c17+c19+c20+c21+c25+c29+c30+c31+c33+c34+c35+c37+c39",
+    "k0:c3",
+    "k0:c5",
+    "k0:c6",
+    "k0:c7",
+    "k0:c8",
+    "k0:c9",
+    "k0:c11+c40",
+    "k0:c12",
+    "k0:c13",
+    "k0:c15",
+    "k0:c18",
+    "k0:c22+c28",
+    "k0:c23+c26",
+    "k0:c24",
+    "k0:c27",
+    "k0:c32",
+    "k0:c36",
+    "k0:c38",
+    "k0:c41+c42",
+    "k0:unk",
+    "k1:c0+c1+c4+c10+c14+c20+c21+c25+c29+c30+c34+c35+c39",
+    "k1:c3",
+    "k1:c7",
+    "k1:c8+c24",
+    "k1:c11+c40",
+    "k1:c13+c41",
+    "k1:c22+c28",
+    "k1:c23",
+    "k1:rare",
+    "k1:unk",
+    "k1:grab",
+    "k2:c4+c10+c20+c25+c29+c35+c39",
+    "k2:c7",
+    "k2:c11+c40",
+    "k2:c14",
+    "k2:c28",
+    "k2:c30",
+    "k2:c34",
+    "k2:c41",
+    "k2:rare",
+    "k2:unk",
+    "k2:grab",
+    "k3:c7",
+    "k3:c10",
+    "k3:c11",
+    "k3:c14+c30",
+    "k3:c20+c35+c39",
+    "k3:c28",
+    "k3:c29",
+    "k3:c41",
+    "k3:rare",
+    "k3:unk",
+    "k3:grab",
+    "k4:c7",
+    "k4:c10+c20+c35+c39",
+    "k4:c11+c41",
+    "k4:c14",
+    "k4:c30",
+    "k4:rare",
+    "k4:unk",
+    "k5:c7",
+    "k5:c14+c30",
+    "k5:c20+c39",
+    "k5:rare",
+    "k5:unk",
+    "k6:c7",
+    "k6:c14+c20+c39",
+    "k6:rare",
+    "k6:unk",
+    "k7:c7",
+    "k7:c20",
+    "k7:rare",
+    "k7:unk",
+    "k8:c7",
+    "k8:c20",
+    "k8:rare",
+    "k8:unk",
+    "k9:rare",
+    "k9:unk",
+    "k10:rare",
+    "k10:unk",
+    "k11:rare",
+    "k11:unk",
+    "k12:rare",
+    "k12:unk",
+    "k13:unk",
+    "idle"
+   ]
+  },
+  "col": {
+   "slice": [
+    88,
+    91
+   ],
+   "labels": [
+    "gold",
+    "red",
+    "none"
+   ]
+  },
+  "resp": {
+   "slice": [
+    91,
+    94
+   ],
+   "labels": [
+    "dodge",
+    "parry",
+    "none"
+   ]
+  },
+  "tte": {
+   "slice": [
+    94,
+    141
+   ],
+   "labels": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+    "17",
+    "18",
+    "19",
+    "20",
+    "21",
+    "22",
+    "23",
+    "24",
+    "25",
+    "26",
+    "27",
+    "28",
+    "29",
+    "30",
+    "31",
+    "32",
+    "33",
+    "34",
+    "35",
+    "36",
+    "37",
+    "38",
+    "39",
+    "40",
+    "41",
+    "42",
+    "43",
+    "44",
+    "45",
+    "none (> 45 frames)"
+   ]
+  }
+ },
+ "outputs_note": "softmax each slice; grp = prefix group of the next contact (teacher_prefix/prefix.json groups) or idle; col = this contact's own light colour; resp = response for the next contact (dodge / parry / none = no contact coming); tte = frames to the next contact (point = median)",
+ "backbone": "mobilenetv4_conv_small_050.e3000_r224_in1k",
+ "mean_rgb": [
+  0.485,
+  0.456,
+  0.406
+ ],
+ "std_rgb": [
+  0.229,
+  0.224,
+  0.225
+ ],
+ "precisions": {
+  "<name>_fp32.onnx": "fp32 reference",
+  "<name>.onnx": "CPU version: int8, onnxruntime quantize_static QDQ, S8 per-channel weights, U8 activations, calibrated on real frames / real rings (see calibration)",
+  "<name>.qnn.onnx": "QNN version (provider qnn), same inputs / outputs"
+ },
+ "export_check": {
+  "fp32_vs_torch": {
+   "glob": 1e-06,
+   "crop": 1e-06,
+   "head": 0.0
+  },
+  "calibration_candidates": {
+   "0": {
+    "grp_agree": 0.9274,
+    "col_agree": 0.9976,
+    "resp_agree": 0.9702,
+    "tte_agree": 0.5927,
+    "resp_mean_abs": 0.02512,
+    "n": 1240
+   },
+   "1": {
+    "grp_agree": 0.9403,
+    "col_agree": 0.9976,
+    "resp_agree": 0.975,
+    "tte_agree": 0.5952,
+    "resp_mean_abs": 0.02199,
+    "n": 1240
+   },
+   "2": {
+    "grp_agree": 0.9323,
+    "col_agree": 0.9992,
+    "resp_agree": 0.9702,
+    "tte_agree": 0.6073,
+    "resp_mean_abs": 0.02269,
+    "n": 1240
+   },
+   "3": {
+    "grp_agree": 0.8968,
+    "col_agree": 0.996,
+    "resp_agree": 0.9613,
+    "tte_agree": 0.5226,
+    "resp_mean_abs": 0.04391,
+    "n": 1240
+   }
+  },
+  "calibration_chosen": 1,
+  "int8_vs_torch": {
+   "glob": 0.902367,
+   "crop": 0.699247,
+   "head": 0.017887
+  },
+  "ops_outside_qnn_list": {},
+  "qnn_version": "fp32"
+ },
+ "train_rounds": 197,
+ "calibration": {
+  "method": "minmax",
+  "percentile": 99.999,
+  "n": 256,
+  "candidates": 4,
+  "chosen_seed": 1,
+  "val_windows": 40,
+  "val_len": 60
+ }
+}

@@ -510,3 +510,139 @@ uv run --no-project --with av --with opencv-python-headless --with numpy python 
 - k1:c3：c3 的第 2 下 11 个，ok + pf 只有 7（全是 pf，卸住 0），按规则（样本 <10）记「卸」，模型判「闪」，算 10 个「该卸判成闪」。规则没改。
 - 接触历史是新加的输入（不是画面）：用 trace 对齐后的接触时刻、延迟 6 帧。实机要由血条 / 真气台阶自己检测，检测漏了或晚了会影响前缀；被闪掉的招不产生接触，这和训练数据一致。
 - 前缀组的判据依赖上一轮老师接触帧的输出 + 逻辑回归 + 阈值 0.2，换阈值组数会变；应对标签只受「组的卸住率」影响，金光规则不依赖分组。
+
+## 顺序 4：学生模型与对拍（2026-10-25，`s4_*.py`）
+
+把前缀老师（顺序 3b）蒸馏成 Pad 上每帧约 10 ms 能跑完的小模型，量化成 int8，再出一份 QNN 版，PC 和 Pad 逐帧对拍。关 1 的口径、折、阈值、代码都沿用 `s3b_gate1.py`，没改。
+
+```
+D=workspaces/WhereWindsMeet/tools/dufu_moveid
+TORCH="uv run --no-project --with torch --with timm --with numpy --index https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match"
+uv run --no-project --with av --with opencv-python-headless --with numpy python $D/s4_cache.py --procs 8 --check 3   # 视图缓存，约 1 小时，222 GB
+$TORCH python $D/s4_soft.py                                         # 每折老师在全部缓存帧上的软标签，13 分钟
+$TORCH python $D/s4_train.py --folds 0,1,2,3,4 --final --epochs 8   # 5 折 + 最终模型，4.8 小时
+$TORCH --with onnx --with onnxruntime python $D/s4_export.py --tag fold<k> --no-qnn   # 每折导出（int8 只用该折训练轮校准）
+$TORCH --with onnx --with onnxruntime python $D/s4_export.py --tag final               # -> model/dufu2/
+uv run --no-project --with numpy --with onnxruntime python $D/s4_eval.py --folds 0,1,2,3,4 [--prec int8]   # ONNX 的 OOF
+uv run --no-project --with numpy python $D/s3b_gate1.py --out data/moveid/student/gate1 --old "" \
+    --pred prefix_teacher=data/moveid/teacher_prefix/oof.npz --pred student_fp32=data/moveid/student/oof.npz \
+    --pred student_onnx_fp32=data/moveid/student/oof_onnx_fp32.npz --pred student_int8=data/moveid/student/oof_onnx_int8.npz
+uv run --no-project --with numpy python $D/s4_gate.py [--folds 2] --pred a=... --pred b=...   # 同口径，可按折比较
+uv run --no-project --with onnx --with onnxruntime --with numpy python $D/s4_aihub.py        # AI Hub 暂存（只有模型 ONNX）
+uv run --with qai-hub python $D/npu_aihub.py --dir <绝对路径>/data/moveid/student/aihub --device "Samsung Galaxy S25 (Family)"
+uv run python $D/s4_pad.py run                                      # Pad 对拍 + 测速（先查空闲；临时 skill / 模型，跑完删掉并同步）
+uv run --no-project --with numpy --with onnxruntime --with opencv-python-headless python $D/s4_pad.py compare data/moveid/student/pad/<时间>
+```
+
+### 结构（`s4_common.py`）
+
+按现有 `infer()` 能跑的方式拆成三个模型、每帧四次调用（没改 Kotlin / C++）：
+
+| 调用 | 模型 | 输入（infer 参数） | 输出 | 参数量 |
+|---|---|---|---|---|
+| 全局流 | `glob.onnx` | 整屏 → 384×240（`size [384,240]`、`color "bgr"`、`resize "area"`） | 128 维，`history` 追加到环 `glob`，aux = 接触历史 4 维 | 0.60 M |
+| 大框 | `crop.onnx` | [290,55,530,530] → 192 | 96 维，环 `big`（aux 一个 0） | 0.44 M（两路共用） |
+| 小框 | `crop.onnx` | [425,190,260,260] → 192 | 96 维，环 `small`（aux 一个 0） | |
+| 时序头 | `head.onnx` | 无图；三个环 `extra ring:true`：[1,30,132] / [1,30,97] / [1,30,97] | 一个 141 维向量：前缀组 88（87 + idle）、这一下颜色 3、应对 3（闪 / 卸 / 无）、接触时间 47 | 0.68 M |
+
+- 骨干：timm `mobilenetv4_conv_small_050.e3000_r224_in1k`（ImageNet 初始化），stem 卷积按 BGR 重排；stem + blocks 的最后一层特征图 → 全局平均 + 1×1 卷积到 16 通道保留位置 → Linear。输入 `v / 255`（infer 默认 mean 0 / std 1），×255 和 ImageNet 归一化在图里。
+- 时序头：TCN，1×1 到 192 通道 + 4 个残差块（核 3，空洞 1 / 2 / 4 / 7，不补边），感受野 29 帧 ≤ 环长 30，只取最后一步。训练时同一个头在 128 帧的块上滑，块内位置 ≥ 28 的输出和设备上「环里最近 30 帧」完全等价；环不满时设备用最老的一项从前面补，PC 的预测和对拍用同样的补法。
+- 接触历史 = `s3b_train.history`（老师同款；还没有接触时 [2, 2, 2, 0]）。老师另有的运动量和重复帧标记没给学生（重复帧靠训练时 10% 换成上一帧来适应）。
+- 没有 GRU / GELU；算子只有 Conv / Gemm / Add / Mul / ReduceMean / Concat / Flatten（int8 版另有 QDQ），AI Hub 上全部在 NPU。
+
+### 数据与蒸馏
+
+- 视图缓存（`s4_cache.py`）：和老师缓存同一批帧（446,961 帧：每个接触 [c−61, c] + 空闲段中间），PyAV 解码 → `s2_views.views()`（cv2 INTER_AREA，参考函数本身），uint8 HWC BGR，每帧 497,664 字节，`student/views/<rec>.u8`，共 222 GB。抽查 3 个录像 × 4 帧用 cv2.VideoCapture 重新解码，三路视图逐像素相同。
+- 软标签（`s4_soft.py`）：第 k 折老师（没见过第 k 折的轮次）跑全部缓存帧；第 k 折学生只用老师 k 的软标签（训练轮上是老师 k 的样本内输出），所以学生的 OOF 仍是真 OOF。老师 k 在测试折上的输出和 `teacher_prefix/oof.npz` 一致（最大差 0.003，fp16 / 分块不同）。最终模型用 5 个老师的平均。
+- 训练（`s4_train.py`）：每个头 CE（真标签，标签和掩码同 s3b_train）+ KL（老师软标签，同一掩码），权重 1 / 1 / 1 / 0.5；AdamW lr 1e−3（头 2e−3）、wd 0.02、半个 epoch 预热 + 余弦、8 epoch、bf16、批 4 块 × 128 帧，10% 帧换成上一帧；折和内部验证（训练轮的 10%）同老师，按验证集真标签损失选 epoch（各折最佳 6–7）。块的形状固定（不够的补齐，补的部分没有标签）：这台机器上 cuDNN 每遇到新形状要 30–60 s 建计划。约 2000 帧/秒，每折 43 分钟，最终模型 73 分钟，共 4.8 小时（RTX 5080 Laptop，显存约 10 GB）。
+
+### 关 1（−10，全部 out-of-fold；`data/moveid/student/gate1/gate1.md`）
+
+| | 前缀老师 | 学生 fp32 | 学生 int8（ONNX，CPU） | 阈值 |
+|---|---|---|---|---|
+| (a) 金招→红（串） | 0/554 | 0/554 | 0/554 | ≤3% ✓ |
+| (b) 致命招每一下应对判对 | 5277/5418 = 97.4% | 5284/5418 = 97.5% | 5265/5418 = 97.2% | ≥90% ✓ |
+| 该闪判成卸 / 该卸判成闪 / 判成没有接触 | 1.9% / 0.6% / 1.8% | 1.4% / 0.6% / 1.7% | 1.5% / 0.7% / 2.0% | – |
+| (c) 接触时间误差 中位 / 75 / 90 分位（7982 个接触） | 3 / 5 / 9 | 2 / 4 / 8 | 2 / 4 / 9 | – |
+| (c) ±3 帧内 | 62.5% | 74.0% | 71.8% | – |
+| (c) 致命招：中位 / 75 / 90 分位，±3 帧内 | 2 / 5 / 8，65.0% | 2 / 3 / 6，77.6% | 2 / 3 / 7，75.6% | – |
+
+- 学生 fp32 = PyTorch fp32 推理；导出的 ONNX fp32 跑出来逐项一致（(b) 同为 5284/5418）。曲线 −16..−4：(b) 在 96.6%–97.7% 之间（老师 96.4%–97.5%）。
+- 学生的接触时间比老师好（±3 帧内 62.5% → 74.0%）：学生直接看像素、端到端训练，老师的 DINOv3 特征是冻结的。
+- int8 = `s4_eval.py`：每折的 int8 ONNX（只用该折训练轮校准）在 onnxruntime CPU 上按设备的方式跑（批 1、每帧三个骨干、头吃 30 帧环）。校准是「挑过的」（见量化一节）；不挑时 5 折 (b) 96.8%、判成没有接触 2.3%、±3 帧内 69.6%（`int8_naive/`）。int8 和 ONNX fp32 在全部 OOF 行（247,442 行 = 接触 × 31 帧）上 argmax 一致：前缀组 96.1%、颜色 99.75%、应对 98.7%、接触时间 58.6%；概率平均绝对差 0.001 / 0.003 / 0.012 / 0.003，个别帧最大差 0.9（应对头翻转的那些帧）。曲线 −16..−4：(b) 在 96.3%–97.4% 之间。
+
+### 量化（`s4_export.py`）
+
+- onnxruntime `quantize_static` QDQ：S8 逐通道权重、U8 激活、MinMax，256 张真实帧（骨干）/ 256 个真实 30 帧环（头：fp32 骨干在连续真实帧上的特征 + 接触历史）校准。
+- 挑校准：同一模型换 4 组随机校准帧（种子 0–3）各量化一次，在另外 40 段 × 60 帧的真实连续帧（训练轮，不用标签）上跑完整 int8 流水线，和 fp32 比应对头 argmax 一致率，取最高的。候选之间差得不小（第 2 折 0.907–0.958，最终模型 0.961–0.975）。第 2 折：不挑时 (b) 95.8%、(c) 90 分位 18 帧，挑后 96.5% / 12 帧（fp32 98.2% / 7）。
+- 最终模型选中种子 1：挑选集上 int8 和 fp32 的 前缀组 / 颜色 / 应对 / 接触时间 argmax 一致 94.0% / 99.8% / 97.5% / 59.5%（接触时间分布平，argmax 不稳，点估计用中位数）。
+- **MobileNetV3-S 量化不了**：最先用的是 timm `mobilenetv3_small_050`（顺序 1 测速表里的候选），fp32 第 0 折 (b) 96.9%，int8 PTQ 后 (b) 63.8%、该闪判成卸 46.7%（`student/mnv3_run/`）。逐层看是 stem / HardSwish 之后的激活长尾，按张量的 U8 激活一量化就塌；MinMax / Percentile / Entropy 都不行，torch FX 假量化的 PTQ 也一样（特征相关 0.2–0.4）。换 ReLU 系的 MobileNetV4-conv-S 0.5 后 PTQ 正常，Pad 上还更快、训练也更快。
+- **不要用 Percentile 校准**：MobileNetV4 第 0 折试过 99.99 分位，(c) 好一点，但金招判成红 5/108 = 4.6%（不过关）：金光本身就是激活里的最大值，被截掉了。MinMax 金→红为 0。
+- QNN 版（`*.qnn.onnx`）= fp32 图（HTP 按 fp16 跑），输入输出和 CPU 版一样。int8 QDQ 版 AI Hub 也能编（下表），Pad 上没试。
+
+### AI Hub（Samsung Galaxy S25 Family = 骁龙 8 Elite SM8750，和 Pad 的 SM8750P 同为 HTP V79；qnn_dlc；只上传了 6 个模型 ONNX）
+
+| 模型 | fp32 p50 | int8 p50 | 层 |
+|---|---|---|---|
+| glob 384×240 | 0.292 ms | 0.175 ms | 全部 NPU |
+| crop 192 | 0.155 ms | 0.144 ms | 全部 NPU |
+| head | 0.067 ms | 0.060 ms | 全部 NPU |
+
+一帧（glob + 2 × crop + head）fp32 约 0.67 ms、int8 约 0.52 ms；首次加载 0.2–0.3 s。结果在 `data/moveid/student/aihub/aihub_*.json`。
+
+### Pad 对拍与测速（`s4_pad.py` / `s4_pad_skill.js`，原始数据 `data/moveid/student/pad/20261025-041928/`）
+
+临时 skill `skills/dufu2_pair.js` 只调 `screenshot()` / `saveImage()` / `infer()`，不碰触摸、按键；模型临时放 `model/dufu2_pair/`，只推这两处，跑完删除并同步（App 上 `left_on_app: []`），截图下载后在 App 上逐个 DELETE。每次 skill 运行 20 帧（环从空开始，PC 用同样的前补），12 次 = 240 帧，cpu、qnn 各一遍。当时 Pad 前台是 MaaLow 自己的首页（游戏没开；119 张不同画面），不是战斗画面。
+
+| | cpu（int8 `*.onnx`） | qnn（`*.qnn.onnx`，fp32 → HTP fp16） |
+|---|---|---|
+| 预处理（设备 vs PC `s2_views`，240 帧 × 三路） | 逐像素相同（最大差 0） | 逐像素相同 |
+| 骨干特征最大绝对差 | 0（位级一致） | 0.0002 / 0.0014 / 0.0006（glob / big / small；特征幅度约 0.2–0.3） |
+| 头 logits 最大绝对差 | 0 | 0.061（头单独喂设备特征：0.015） |
+| argmax 一致（组 / 颜色 / 应对 / 接触时间） | 各 240/240 | 各 240/240；概率最大差 0.0014 |
+| 环长度、环求和（设备 vs PC） | 240/240，求和差 0 | 同左 |
+
+每帧耗时（ms；pipeline = 四次 infer 的 `ms.total` 之和，含裁剪缩放；墙钟含 `screenshot()`，`Date.now()` 只有整毫秒；预热 30 帧后 300 帧）：
+
+| 配置 | pipeline p50 / p95 | 其中预处理 / onnxruntime run（p50） | 墙钟（含截图）p50 / p95 |
+|---|---|---|---|
+| cpu 1 线程 | **7.54 / 7.93** | 3.16 / 4.17 | 9 / 10 |
+| cpu 2 线程 | 9.19 / 9.43 | 3.28 / 5.67 | 10 / 11 |
+| qnn | 9.95 / 10.51 | 7.08 / 2.50 | 11 / 12 |
+
+- cpu 单线程分项 p50：glob 3.79（run 2.18）、big 1.81（0.93）、small 1.52（0.90）、head 0.40（0.15）。App 里的裁剪缩放占 40%。
+- 同一流水线换 MobileNetV3-S 0.5 是 9.06 ms、MobileNetV2 0.5 是 10.65 ms（随机权重，同一天、同样没开游戏）。
+- 游戏没在前台；实战时游戏抢 CPU 会更慢（顺序 1 测过同一模型两次能差 1.5 倍），p95 要在实战里再量。
+- qnn 的 run 只有 2.5 ms，但预处理计时 7.1 ms（同样的裁剪缩放，cpu 路径 3.2 ms；带 `input: true` 的对拍模式里反而只有 4.3 ms），是 App 侧 qnn 路径的问题，见下。
+
+### 要 App 侧改的（这次没改 Kotlin / C++）
+
+1. **预处理慢**：`nn_jni.cpp` 的 `prep()` 每个输出像素逐个累加 tap（整屏 → 384×240 约 1.6 ms，两个裁剪约 1.5 ms），每帧 3.2 ms。改成可分离（先横后竖、行缓存）或 NEON，同时保持和 cv2 INTER_AREA 逐像素一致（现在一致，对拍 0 差）。
+2. **qnn 路径的预处理计时翻倍**（同样的 roi / size，qnn 7.1 ms 对 cpu 3.2 ms）：查一下 qnn 会话的输入拷贝 / 转换是不是算进了 prep，或有额外同步。
+3. **一次调用多个 roi**（可选）：三路视图现在要三次 `infer()`。加 `rois`（几个区域按通道或 batch 叠）或「一张图跑几个模型」的调用，能省 JNI 往返和整图的重复访问。
+4. **环的 aux 不能为空**（可选）：`history` 要求 aux 非空，裁剪环只好塞一个 0（头里丢掉）。
+5. dufu2.js 自己要做的：每个 30 fps 帧追加一次环（训练帧距 33.3 ms；不重复追加、不跳帧）、接触历史 4 维（血条 / 真气台阶，延迟 6 帧，定义同 `s3b_train.history`）、开局 `reset: true`。
+
+### 产出
+
+| 路径 | 内容 |
+|---|---|
+| `workspaces/WhereWindsMeet/model/dufu2/` | `{glob,crop,head}.onnx`（int8，CPU 版）、`*.qnn.onnx`（QNN 版）、`*_fp32.onnx`、`dufu2.json`（输入输出、infer 参数、预处理、标签、版本、校准、导出检查） |
+| `data/moveid/student/views/` | 视图缓存 222 GB（重训才需要）+ `status.json` |
+| `data/moveid/student/soft/` | 每折老师软标签 |
+| `data/moveid/student/fold<k>.pt`、`final.pt`、`log.json`、`train_log.txt` | 权重、逐 epoch 记录 |
+| `data/moveid/student/oof.npz`、`oof_onnx_{fp32,int8}.npz`（及每折） | OOF（s3b_gate1 格式） |
+| `data/moveid/student/gate1/` | `gate1.json` / `gate1.md`（s3b_gate1 原样输出）、`summary.json` |
+| `data/moveid/student/onnx/fold<k>/` | 每折导出（OOF int8 用） |
+| `data/moveid/student/int8_naive/` | 不挑校准时的 int8 OOF（对照） |
+| `data/moveid/student/pad/<时间>/` | 对拍原始数据：`pair_{cpu,qnn}.json`（设备预处理 base64、特征、logits、耗时）、`png/`、`time_*.json`、`compare.json`、`timing.json`、`meta.json` |
+| `data/moveid/student/aihub/` | 上传的 6 个 ONNX + manifest + `aihub_*.json` |
+| `data/moveid/student/mnv3_run/`、`mnv4_try/` | MobileNetV3 版和 MobileNetV4 两轮试训（量化结论的证据） |
+
+### 存疑
+
+- 对拍画面是 MaaLow 首页，不是游戏；预处理和 int8 推理在这些画面上和 PC 位级一致，游戏画面没在设备上验证（OOF 是 PC 在录像帧上算的）。
+- 测速时游戏不在前台；实战 CPU 争用下的 p50 / p95 要在关 2 的影子模式里量。
+- 接触历史在训练和评估里用 trace 对齐后的真实接触（延迟 6 帧）；实机靠血条 / 真气台阶检测，只会更差。
+- 视图缓存只有老师缓存的那 61% 的帧（接触前后和空闲段中间），长时间空闲、走路、过场等没覆盖，设备上这些画面的误报率不知道。
+- int8 的接触时间比 fp32 差（见上表），应对基本不受影响；要更准的接触时间可以走 QNN（fp16，和 fp32 差 0.001 级）。

@@ -6,7 +6,7 @@
         [--chipset qualcomm-snapdragon-8gen3] [--device "Samsung Galaxy S24 (Family)"] [--models a_fp32,b_int8] \
         [--runtime qnn_dlc|precompiled_qnn_onnx|onnx|tflite]
 
-Uploads ONLY the ONNX files listed in data/moveid/npu/models/manifest.json (random weights; never recordings or
+Uploads ONLY the ONNX files listed in data/moveid/npu/models/manifest.json (or --dir DIR: DIR/manifest.json) (random weights; never recordings or
 screenshots), compiles each for the target runtime (default qnn_dlc: the QNN model a future QNN
 plugin would load), profiles it on the device (NPU), and prints per model: p50 / min of the device's inference times,
 first / warm load, and how many layers ran on NPU / GPU / CPU (all on NPU = the whole graph is accelerated).
@@ -78,11 +78,16 @@ def main():
     ap.add_argument("--device", help="exact AI Hub device name (instead of --chipset)")
     ap.add_argument("--runtime", default="qnn_dlc")
     ap.add_argument("--profile-options", default="", help='e.g. "--compute_unit npu" (onnx runtime)')
+    ap.add_argument("--dir", type=Path, default=MODELS,
+                    help="models directory with its manifest.json (default data/moveid/npu/models); results go there "
+                         "too when it is not the default")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--devices", action="store_true", help="list the Android devices and chipsets, then exit")
     a = ap.parse_args()
 
-    manifest = json.loads((MODELS / "manifest.json").read_text())
+    models = a.dir
+    out_dir = OUT if models == MODELS else models
+    manifest = json.loads((models / "manifest.json").read_text())
     names = selected(manifest, a.models)
     compile_opts = f"--target_runtime {a.runtime}"
     profile_opts = a.profile_options
@@ -90,7 +95,7 @@ def main():
     if a.dry_run:
         total = 0
         for n in names:
-            f = MODELS / f"{n}.onnx"
+            f = models / f"{n}.onnx"
             total += f.stat().st_size
             ins = ", ".join(f"{i['name']}{i['shape']}" for i in manifest[n]["inputs"])
             print(f"upload {f.relative_to(REPO)}  {f.stat().st_size / 1e6:6.2f} MB  sha256 {sha(f)}  {ins}")
@@ -108,14 +113,14 @@ def main():
 
     device = pick_device(hub, a.device, a.chipset)
     print(f"device: {device.name} (Android {device.os}) {[x for x in device.attributes if x.startswith('chipset:')]}")
-    path = OUT / f"aihub_{time.strftime('%Y%m%d-%H%M%S')}.json"
+    path = out_dir / f"aihub_{time.strftime('%Y%m%d-%H%M%S')}.json"
     report = {"device": device.name, "os": device.os, "attributes": list(device.attributes), "runtime": a.runtime,
               "compile_options": compile_opts, "profile_options": profile_opts, "results": []}
 
     # submit everything first (AI Hub runs jobs in parallel), then collect
     jobs, profiles = [], {}
     for n in names:
-        f = MODELS / f"{n}.onnx"
+        f = models / f"{n}.onnx"
         entry = {"model": n, **{k: manifest[n][k] for k in ("base", "prec", "stream", "inputs", "bytes")}, "sha256": sha(f)}
         try:
             cj = hub.submit_compile_job(model=str(f), device=device, name=f"maalow-npu-{n}", options=compile_opts)
