@@ -64,6 +64,18 @@ def c7volley(rounds: list[dict], eps: dict[str, dict]) -> dict:
             "volley_success": round(1 - epi_hits / (VOLLEY_K * epi_n), 4) if epi_n else None}
 
 
+def boot(by_round: dict, n: int = 10000, seed: int = 0) -> list[float] | None:
+    """95% interval of sum(ok) / sum(n) resampling rounds with replacement (by_round: round -> {ok, n})."""
+    import numpy as np
+    v = np.array([[x["ok"], x["n"]] for x in by_round.values() if x["n"]], float)
+    if len(v) < 2:
+        return None
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(v), (n, len(v)))
+    r = v[idx, 0].sum(1) / v[idx, 1].sum(1)
+    return [round(float(np.percentile(r, 2.5)), 4), round(float(np.percentile(r, 97.5)), 4)]
+
+
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
@@ -91,6 +103,9 @@ def main() -> None:
             "fatal_without_unverified": g["without_unverified"]["fatal"],
             "fatal_with_unverified": g["with_unverified"]["fatal"],
             "by_round": {k: v["rate"] for k, v in g["without_unverified"]["by_round"].items()},
+            "by_round_counts": {k: [v["ok"], v["n"]] for k, v in g["without_unverified"]["by_round"].items()},
+            "ci95_by_round_bootstrap": {"without_unverified": boot(g["without_unverified"]["by_round"]),
+                                        "with_unverified": boot(g["with_unverified"]["by_round"])},
             "gold_parried": g["gold_parried"],
             "why_fatal": g["why_fatal"],
             "c7volley": c7volley(sel, eps),
@@ -102,6 +117,7 @@ def main() -> None:
         o = out[name]
         print(f"{name} [{len(sel)}] fatal {o['fatal_without_unverified']['ok']}/{o['fatal_without_unverified']['n']} = "
               f"{o['fatal_without_unverified']['rate']} (with unverified {o['fatal_with_unverified']['rate']}); "
+              f"95% CI by round {o['ci95_by_round_bootstrap']}; "
               f"c7volley {o['c7volley']['rate']} (episodes {o['c7volley']['episodes']}, hits {o['c7volley']['episode_hits']}); "
               f"gold parried {o['gold_parried']['n']}/{o['gold_parried']['of']}; hits/min {o['hits_per_min']}; "
               f"c11 windows {o['c11']['c11_windows']} hits {o['c11']['c11_hits']}; why {o['why_fatal']}")

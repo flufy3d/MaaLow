@@ -35,7 +35,7 @@
 //   maalow do skill dufu2 --args '{"mode":"shadow","ms":300000}'
 //   maalow do skill dufu2 --args '{"mode":"defend","provider":"qnn","ms":600000}' --timeout 660000
 //   (defaults since 2026-10-25 关 2: model dufu2b, 闪避 lead 5, run diag from the 火球雨, the 金光火球 window; the A/B
-//   switches: run, runDir, goldSeq, model, dodgeLead, chain (default off), tools/dufu_moveid/README.md「顺序 5 续」)
+//   switches: run, runDir, goldSeq, model, dodgeLead, chain, tools/dufu_moveid/README.md「顺序 5 续」)
 import { stats } from "./lib/stats.js";
 import { BOSS_RED, BOSS_ROI, countAtLeast, health, readQi } from "./lib/dufu-reads.js";
 import { DEFAULTS, GROUPS } from "./lib/dufu2-table.js";
@@ -216,8 +216,8 @@ export default function (args = {}) {
     const runDirs = [args.runDir ?? "diag"].flat();
     // args.goldSeq: the 金光火球 window (default on, @see GOLD_SEQ_F)
     const goldSeqOn = args.goldSeq ?? true;
-    // args.chain: the k2:c30 chain beat (@see CHAIN_AFTER_F)
-    const chainOn = args.chain ?? false;
+    // args.chain: the k2:c30 chain beat (default on since 2026-10-26, @see CHAIN_AFTER_F)
+    const chainOn = args.chain ?? true;
     for (const d of runDirs) if (!(d in RUN_DIRS)) throw new Error(`runDir ${d}: ${Object.keys(RUN_DIRS).join(" | ")}`);
     const tag = args.tag ?? String(Date.now());
     // args.model: the model directory under model/ (default dufu2b = the student fine-tuned on the live rounds,
