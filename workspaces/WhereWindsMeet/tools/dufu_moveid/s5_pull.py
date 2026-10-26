@@ -63,7 +63,11 @@ def pngs(c: Client, rd: dict) -> int:
         out = dst / Path(rel).name
         if not out.exists():
             dst.mkdir(exist_ok=True)
-            c.download(f"/files/{WS}/{rel}", out)
+            try:
+                c.download(f"/files/{WS}/{rel}", out)
+            except urllib.error.HTTPError as ex:   # gone (e.g. two rounds with the same tag: the first pull took it)
+                print(rd["key"], rel, "png missing", ex.code, flush=True)
+                continue
         try:
             c.request("DELETE", f"/files/{WS}/{rel}")
         except Exception:  # noqa: BLE001 - already gone

@@ -17,7 +17,19 @@
   "FATAL_SHARE": 0.5,
   "live": true,
   "LIVE_MIN": 10,
-  "LIVE_MAX": 0.2
+  "LIVE_MAX": 0.2,
+  "beats": null,
+  "live_shift": null,
+  "SHIFT": [
+   30,
+   -3,
+   5,
+   0.01
+  ],
+  "BEAT_MIN": 15,
+  "BEAT_IQR": 4.0,
+  "BEAT_FALSE": 0.35,
+  "BEAT_UNARMED": 0.3
  },
  "evidence": {
   "parry_effective_contacts": 4934,
@@ -210,6 +222,7 @@
    "44": 3,
    "45": 1
   },
+  "live_parry_ok_by_actual_lead": {},
   "dodge_failed_share_le10": 0.764,
   "dodge_failed_share_11_20": 0.063
  },
@@ -237,7 +250,11 @@
     "best": 0.914,
     "global_lead": 0.894
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c3": {
    "gid": 1,
@@ -262,7 +279,11 @@
     "best": 0.606,
     "global_lead": 0.482
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 3,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c5": {
    "gid": 2,
@@ -287,7 +308,11 @@
     "best": 0.841,
     "global_lead": 0.841
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c6": {
    "gid": 3,
@@ -309,7 +334,11 @@
    "parry_lead_src": "global",
    "parry_n": 0,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c7": {
    "gid": 4,
@@ -334,7 +363,11 @@
     "best": 0.762,
     "global_lead": 0.706
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 3,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c8": {
    "gid": 5,
@@ -359,7 +392,11 @@
     "best": 0.841,
     "global_lead": 0.801
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 8,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c9": {
    "gid": 6,
@@ -384,7 +421,11 @@
     "best": 0.826,
     "global_lead": 0.826
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c11+c40": {
    "gid": 7,
@@ -406,7 +447,11 @@
    "parry_lead_src": "global",
    "parry_n": 1,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c12": {
    "gid": 8,
@@ -431,7 +476,11 @@
     "best": 0.835,
     "global_lead": 0.835
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c13": {
    "gid": 9,
@@ -453,7 +502,11 @@
    "parry_lead_src": "global",
    "parry_n": 0,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c15": {
    "gid": 10,
@@ -478,7 +531,11 @@
     "best": 0.826,
     "global_lead": 0.826
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c18": {
    "gid": 11,
@@ -503,7 +560,11 @@
     "best": 0.826,
     "global_lead": 0.826
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c22+c28": {
    "gid": 12,
@@ -528,7 +589,11 @@
     "best": 0.793,
     "global_lead": 0.793
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c23+c26": {
    "gid": 13,
@@ -553,7 +618,11 @@
     "best": 0.809,
     "global_lead": 0.807
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c24": {
    "gid": 14,
@@ -575,7 +644,11 @@
    "parry_lead_src": "global",
    "parry_n": 38,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c27": {
    "gid": 15,
@@ -597,7 +670,11 @@
    "parry_lead_src": "global",
    "parry_n": 13,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c32": {
    "gid": 16,
@@ -615,7 +692,11 @@
    "parry_lead_src": "global",
    "parry_n": 24,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c36": {
    "gid": 17,
@@ -633,7 +714,11 @@
    "parry_lead_src": "global",
    "parry_n": 16,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c38": {
    "gid": 18,
@@ -651,7 +736,11 @@
    "parry_lead_src": "global",
    "parry_n": 0,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:c41+c42": {
    "gid": 19,
@@ -673,7 +762,11 @@
    "parry_lead_src": "global",
    "parry_n": 0,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k0:unk": {
    "gid": 20,
@@ -698,7 +791,11 @@
     "best": 0.81,
     "global_lead": 0.794
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:c0+c1+c4+c10+c14+c20+c21+c25+c29+c30+c34+c35+c39": {
    "gid": 21,
@@ -723,7 +820,11 @@
     "best": 0.884,
     "global_lead": 0.884
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:c3": {
    "gid": 22,
@@ -741,7 +842,11 @@
    "parry_lead_src": "global",
    "parry_n": 2,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:c7": {
    "gid": 23,
@@ -766,7 +871,11 @@
     "best": 0.772,
     "global_lead": 0.754
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:c8+c24": {
    "gid": 24,
@@ -791,7 +900,11 @@
     "best": 0.847,
     "global_lead": 0.822
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:c11+c40": {
    "gid": 25,
@@ -816,7 +929,11 @@
     "best": 0.647,
     "global_lead": 0.622
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:c13+c41": {
    "gid": 26,
@@ -834,7 +951,11 @@
    "parry_lead_src": "global",
    "parry_n": 22,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:c22+c28": {
    "gid": 27,
@@ -859,7 +980,11 @@
     "best": 0.765,
     "global_lead": 0.757
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:c23": {
    "gid": 28,
@@ -884,7 +1009,11 @@
     "best": 0.777,
     "global_lead": 0.75
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:rare": {
    "gid": 29,
@@ -902,7 +1031,11 @@
    "parry_lead_src": "global",
    "parry_n": 3,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:unk": {
    "gid": 30,
@@ -920,7 +1053,11 @@
    "parry_lead_src": "global",
    "parry_n": 27,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k1:grab": {
    "gid": 31,
@@ -942,7 +1079,11 @@
    "parry_lead_src": "global",
    "parry_n": 0,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k2:c4+c10+c20+c25+c29+c35+c39": {
    "gid": 32,
@@ -967,7 +1108,11 @@
     "best": 0.859,
     "global_lead": 0.813
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 5,
+   "beat": null,
+   "live_shift": null
   },
   "k2:c7": {
    "gid": 33,
@@ -992,7 +1137,11 @@
     "best": 0.755,
     "global_lead": 0.75
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k2:c11+c40": {
    "gid": 34,
@@ -1017,7 +1166,11 @@
     "best": 0.74,
     "global_lead": 0.727
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k2:c14": {
    "gid": 35,
@@ -1042,7 +1195,11 @@
     "best": 0.845,
     "global_lead": 0.841
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k2:c28": {
    "gid": 36,
@@ -1064,7 +1221,11 @@
    "parry_lead_src": "global",
    "parry_n": 26,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k2:c30": {
    "gid": 37,
@@ -1086,7 +1247,11 @@
    "parry_lead_src": "global",
    "parry_n": 23,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k2:c34": {
    "gid": 38,
@@ -1104,7 +1269,11 @@
    "parry_lead_src": "global",
    "parry_n": 16,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k2:c41": {
    "gid": 39,
@@ -1122,7 +1291,11 @@
    "parry_lead_src": "global",
    "parry_n": 14,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k2:rare": {
    "gid": 40,
@@ -1140,7 +1313,11 @@
    "parry_lead_src": "global",
    "parry_n": 4,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k2:unk": {
    "gid": 41,
@@ -1158,7 +1335,11 @@
    "parry_lead_src": "global",
    "parry_n": 33,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k2:grab": {
    "gid": 42,
@@ -1180,7 +1361,11 @@
    "parry_lead_src": "global",
    "parry_n": 0,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k3:c7": {
    "gid": 43,
@@ -1205,7 +1390,11 @@
     "best": 0.75,
     "global_lead": 0.75
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k3:c10": {
    "gid": 44,
@@ -1230,7 +1419,11 @@
     "best": 0.855,
     "global_lead": 0.837
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k3:c11": {
    "gid": 45,
@@ -1255,7 +1448,11 @@
     "best": 0.67,
     "global_lead": 0.55
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 3,
+   "beat": null,
+   "live_shift": null
   },
   "k3:c14+c30": {
    "gid": 46,
@@ -1280,7 +1477,11 @@
     "best": 0.812,
     "global_lead": 0.761
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 7,
+   "beat": null,
+   "live_shift": null
   },
   "k3:c20+c35+c39": {
    "gid": 47,
@@ -1305,7 +1506,11 @@
     "best": 0.851,
     "global_lead": 0.839
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k3:c28": {
    "gid": 48,
@@ -1327,7 +1532,11 @@
    "parry_lead_src": "global",
    "parry_n": 10,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k3:c29": {
    "gid": 49,
@@ -1345,7 +1554,11 @@
    "parry_lead_src": "global",
    "parry_n": 24,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k3:c41": {
    "gid": 50,
@@ -1363,7 +1576,11 @@
    "parry_lead_src": "global",
    "parry_n": 12,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k3:rare": {
    "gid": 51,
@@ -1381,7 +1598,11 @@
    "parry_lead_src": "global",
    "parry_n": 0,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k3:unk": {
    "gid": 52,
@@ -1399,7 +1620,11 @@
    "parry_lead_src": "global",
    "parry_n": 26,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k3:grab": {
    "gid": 53,
@@ -1421,7 +1646,11 @@
    "parry_lead_src": "global",
    "parry_n": 0,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k4:c7": {
    "gid": 54,
@@ -1446,7 +1675,11 @@
     "best": 0.802,
     "global_lead": 0.77
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 9,
+   "beat": null,
+   "live_shift": null
   },
   "k4:c10+c20+c35+c39": {
    "gid": 55,
@@ -1471,7 +1704,11 @@
     "best": 0.858,
     "global_lead": 0.833
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k4:c11+c41": {
    "gid": 56,
@@ -1489,7 +1726,11 @@
    "parry_lead_src": "global",
    "parry_n": 9,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k4:c14": {
    "gid": 57,
@@ -1514,7 +1755,11 @@
     "best": 0.798,
     "global_lead": 0.79
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k4:c30": {
    "gid": 58,
@@ -1532,7 +1777,11 @@
    "parry_lead_src": "global",
    "parry_n": 14,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k4:rare": {
    "gid": 59,
@@ -1550,7 +1799,11 @@
    "parry_lead_src": "global",
    "parry_n": 3,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k4:unk": {
    "gid": 60,
@@ -1568,7 +1821,11 @@
    "parry_lead_src": "global",
    "parry_n": 15,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k5:c7": {
    "gid": 61,
@@ -1593,7 +1850,11 @@
     "best": 0.733,
     "global_lead": 0.692
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 5,
+   "beat": null,
+   "live_shift": null
   },
   "k5:c14+c30": {
    "gid": 62,
@@ -1611,7 +1872,11 @@
    "parry_lead_src": "global",
    "parry_n": 14,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k5:c20+c39": {
    "gid": 63,
@@ -1636,7 +1901,11 @@
     "best": 0.846,
     "global_lead": 0.809
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 7,
+   "beat": null,
+   "live_shift": null
   },
   "k5:rare": {
    "gid": 64,
@@ -1654,7 +1923,11 @@
    "parry_lead_src": "global",
    "parry_n": 0,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k5:unk": {
    "gid": 65,
@@ -1672,7 +1945,11 @@
    "parry_lead_src": "global",
    "parry_n": 6,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k6:c7": {
    "gid": 66,
@@ -1697,7 +1974,11 @@
     "best": 0.774,
     "global_lead": 0.71
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 8,
+   "beat": null,
+   "live_shift": null
   },
   "k6:c14+c20+c39": {
    "gid": 67,
@@ -1722,7 +2003,11 @@
     "best": 0.845,
     "global_lead": 0.839
    },
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k6:rare": {
    "gid": 68,
@@ -1740,7 +2025,11 @@
    "parry_lead_src": "global",
    "parry_n": 3,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k6:unk": {
    "gid": 69,
@@ -1758,7 +2047,11 @@
    "parry_lead_src": "global",
    "parry_n": 4,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k7:c7": {
    "gid": 70,
@@ -1780,7 +2073,11 @@
    "parry_lead_src": "global",
    "parry_n": 21,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k7:c20": {
    "gid": 71,
@@ -1802,7 +2099,11 @@
    "parry_lead_src": "global",
    "parry_n": 19,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k7:rare": {
    "gid": 72,
@@ -1820,7 +2121,11 @@
    "parry_lead_src": "global",
    "parry_n": 14,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k7:unk": {
    "gid": 73,
@@ -1838,7 +2143,11 @@
    "parry_lead_src": "global",
    "parry_n": 1,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k8:c7": {
    "gid": 74,
@@ -1856,7 +2165,11 @@
    "parry_lead_src": "global",
    "parry_n": 13,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k8:c20": {
    "gid": 75,
@@ -1874,7 +2187,11 @@
    "parry_lead_src": "global",
    "parry_n": 10,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k8:rare": {
    "gid": 76,
@@ -1892,7 +2209,11 @@
    "parry_lead_src": "global",
    "parry_n": 5,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k8:unk": {
    "gid": 77,
@@ -1910,7 +2231,11 @@
    "parry_lead_src": "global",
    "parry_n": 1,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k9:rare": {
    "gid": 78,
@@ -1928,7 +2253,11 @@
    "parry_lead_src": "global",
    "parry_n": 15,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k9:unk": {
    "gid": 79,
@@ -1946,7 +2275,11 @@
    "parry_lead_src": "global",
    "parry_n": 1,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k10:rare": {
    "gid": 80,
@@ -1964,7 +2297,11 @@
    "parry_lead_src": "global",
    "parry_n": 3,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k10:unk": {
    "gid": 81,
@@ -1982,7 +2319,11 @@
    "parry_lead_src": "global",
    "parry_n": 2,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k11:rare": {
    "gid": 82,
@@ -2000,7 +2341,11 @@
    "parry_lead_src": "global",
    "parry_n": 2,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k11:unk": {
    "gid": 83,
@@ -2018,7 +2363,11 @@
    "parry_lead_src": "global",
    "parry_n": 1,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k12:rare": {
    "gid": 84,
@@ -2036,7 +2385,11 @@
    "parry_lead_src": "global",
    "parry_n": 2,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k12:unk": {
    "gid": 85,
@@ -2054,7 +2407,11 @@
    "parry_lead_src": "global",
    "parry_n": 0,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   },
   "k13:unk": {
    "gid": 86,
@@ -2072,7 +2429,11 @@
    "parry_lead_src": "global",
    "parry_n": 1,
    "parry_rate_at": null,
-   "dodge_lead": 14
+   "dodge_lead": 14,
+   "beat_f": null,
+   "parry_lead_live": 10,
+   "beat": null,
+   "live_shift": null
   }
  }
 }

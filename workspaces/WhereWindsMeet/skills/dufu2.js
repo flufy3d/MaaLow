@@ -25,7 +25,7 @@
 //             false: none at all); no defense, no re-lock, no potion. The decision the defend mode would
 //             take is computed every tick and written to the trace (`would`) for the offline check.
 //   "defend"  defense + potion only, no offense: walk in until the boss bar shows, re-lock, 卸势 / 闪避 by the
-//             model (@see decide), potion at a quiet moment (@see potionTick).
+//             model (@see decide), potion at a quiet moment (@see potionTick), run from the 火球雨 (@see runTick).
 // provider (args.provider): "qnn" (default; falls back to cpu without the plugin: the result's `provider` says what
 //   ran) or "cpu". phase: 2 only (阶段二 arena: no poison, no curtain, the quest line is not an end).
 // Trace: one row per tick (TRACE_COLS), event TRACE_EVENT in chunks of TRACE_CHUNK rows (~25 KB each); run
@@ -34,6 +34,8 @@
 //   the 30 ring entries (float32 base64) for the PC recomputation (tools/dufu_moveid/s5_pair.py).
 //   maalow do skill dufu2 --args '{"mode":"shadow","ms":300000}'
 //   maalow do skill dufu2 --args '{"mode":"defend","provider":"qnn","ms":600000}' --timeout 660000
+//   (defaults since 2026-10-25 关 2: model dufu2b, 闪避 lead 5, run diag from the 火球雨, the 金光火球 window; the A/B
+//   switches: run, runDir, goldSeq, model, dodgeLead, chain (default off), tools/dufu_moveid/README.md「顺序 5 续」)
 import { stats } from "./lib/stats.js";
 import { BOSS_RED, BOSS_ROI, countAtLeast, health, readQi } from "./lib/dufu-reads.js";
 import { DEFAULTS, GROUPS } from "./lib/dufu2-table.js";
@@ -42,7 +44,6 @@ import { DEFAULTS, GROUPS } from "./lib/dufu2-table.js";
 export const meta = { description: "独夫 阶段二 with the dufu2 move-ID student: shadow (look only) / defend (卸势 / 闪避 / potion)", timeout: 660_000 };
 
 const FRAME_MS = 1000 / 30;
-const M_GLOB = "dufu2/glob.onnx", M_CROP = "dufu2/crop.onnx", M_HEAD = "dufu2/head.onnx";
 /** @type {Box} */ const BIG = [290, 55, 530, 530];
 /** @type {Box} */ const SMALL = [425, 190, 260, 260];
 const RING = 30, G_DIM = 128, C_DIM = 96;
@@ -59,6 +60,37 @@ const LATE_F = 1; // a contact predicted this far in the past still gets its pre
 const GRACE_F = 6, REARM_F = 8; // a pressed contact is consumed GRACE_F after it; a prediction REARM_F later is a new one
 const PARRY_LOCK_MS = 330, PARRY_CD_MS = 220, DODGE_CD_MS = 500; // the game's 卸势 lock / our cooldowns
 const TAP_MS = 50;
+const DODGE_LEAD = 5; // 闪避 lead (frames) for every dodge unless args.dodgeLead (null = the move table's dodge_lead)
+// run (teacher 2026-10-25: the 火球雨, a pile of fireballs from afar, is dodged by running first, then 闪避). The
+// 火球雨 is the c7 chain (boss jumps back onto the steps, ~2 s wind-up, then a volley of 5-8 fireballs in ~1 s):
+// the student names its opening k0:c7 ~35 f before the first fireball (live r024-r031). A run starts when the c7
+// groups' summed P(grp) >= RUN_P on RUN_TICKS ticks in a row while the predicted first contact is <= RUN_START_F
+// away; the stick is held at full deflection in the run direction (args.runDir) until RUN_MIN_MS have passed and the
+// head has not named a c7 group for RUN_TAIL_MS (at most RUN_MAX_MS). 闪避 during a run goes the run's way and the
+// stick stays held. Timing (r020-r031, hits after the onset of the c7 groups): the volley lands +33..+76 f, a second
+// wave +90..+125 f; the first live runs (r032-r033) stopped after 2.1-3.3 s and were hit right after: RUN_MIN_MS
+// covers both waves.
+const RUN_P = 0.5, RUN_TICKS = 2, RUN_START_F = 45, RUN_MIN_MS = 4300, RUN_TAIL_MS = 600, RUN_MAX_MS = 5500;
+// 金光火球 (teacher 2026-10-25: the gold move whose fireballs come one by one over a long time can only be dodged):
+// the c11 chain (gold fire whirl, then fireballs at +26 / +54 / +106 f, data/moveid/moves). After its gold opening
+// is dodged no contact enters the history, so the student starts its prefix over and names the fireballs k0 / k1 /
+// k2 of the no-light group (parry): r007-r031 every dodged c11 opening was followed by 2-3 fireball hits. args.goldSeq:
+// a dodge pressed while the head names k0:c11+c40 (anchor = the press), or a hit while it did (<= GOLD_SEQ_HIT_MS
+// before; anchor = the contact), opens a window of GOLD_SEQ_F frames: every press in it is a 闪避, and a 闪避 is
+// pressed for each fireball of the cadence, anchor + k x GOLD_SEQ_BEAT_F (k = 1..GOLD_SEQ_N), unless one was already
+// pressed for it. The cadence (r007-r035, the hits after a dodged / hit c11 opening): fireballs land every ~27 f,
+// +27 / +54 / +81 / +108 / +135 (+-3) after the dodge press; which of them hit depends on the round (+27 +55 +107 or
+// +54 +82 +133), never anything else. The first live version (r038-r043: one beat at +22, then the head's own
+// predictions forced to 闪避) did not help: the head predicts these fireballs late or not at all.
+const GOLD_SEQ_F = 150, GOLD_SEQ_BEAT_F = 27, GOLD_SEQ_N = 5, GOLD_SEQ_MIN_F = 8, GOLD_SEQ_COVER_F = 8, GOLD_SEQ_HIT_MS = 1000;
+// chain beat (args.chain): the third blow of c30 (head group k2:c30) lands 34 +- 1 f after the second, which comes
+// ~49 f after the first (final rounds r072-r081: 41 of 59 triggers, +32..+40); the tte head does not see it coming
+// (33 of the 43 fatal k2:c30 failures there had no press at all). Two device contacts 40-58 f apart and the head
+// naming k2:c30 within CHAIN_AFTER_F of the second: a 卸势 is pressed for second + CHAIN_AFTER_F (unless one was).
+const CHAIN_GAP_F = [40, 58], CHAIN_AFTER_F = 34, CHAIN_COVER_F = 8;
+/** run directions (stick unit vector, y down = away from the locked boss); the sign of x alternates per run */
+/** @type {Record<string, [number, number]>} */
+const RUN_DIRS = { side: [1, 0], diag: [0.7071, 0.7071], back: [0, 1] };
 // buttons (dufu.js / combat.js)
 /** @type {Point} */ const PARRY = [952, 495];
 /** @type {Point} */ const DODGE = [924, 674];
@@ -96,9 +128,15 @@ const END_MARGIN_MS = 15_000;
 // trace
 const TRACE_EVENT = "dufu2_trace", PAIR_EVENT = "dufu2_pair", TRACE_CHUNK = 150;
 const TRACE_COLS = ["wall", "seq", "cap", "n", "fill", "dup", "hp", "qi", "boss", "h0", "h1", "h2", "h3",
-    "grp", "grpP", "gold", "red", "none", "dodge", "parry", "rnone", "med", "p10", "act", "would", "contact", "pipe", "loop"];
-const ACT = { parry: 1, dodge: 2, potion: 3, lock: 4, walk: 5 };
+    "grp", "grpP", "gold", "red", "none", "dodge", "parry", "rnone", "med", "p10", "act", "would", "contact", "pipe", "loop",
+    "c7P", "run"];
+const ACT = { parry: 1, dodge: 2, potion: 3, lock: 4, walk: 5, run: 6 };
 const GRP_NAMES = Object.keys(GROUPS); // gid order (the head's grp labels 0..86; 87 = idle)
+/** the 火球雨 volley groups: c7 alone at its prefix position and unparryable in the table (k0..k4:c7; the later c7
+ *  positions are the boss's next moves, parryable) */
+const C11_GID = GRP_NAMES.indexOf("k0:c11+c40");
+const C30_K2_GID = GRP_NAMES.indexOf("k2:c30");
+const C7_GIDS = GRP_NAMES.map((n, i) => (/^k\d+:c7$/.test(n) && GROUPS[n].unparryable ? i : -1)).filter((i) => i >= 0);
 
 /**
  * The boss bar's fill in px-equivalent (red px / the bar's 6 rows). Not lib bossPx (the width of the box around any
@@ -152,7 +190,8 @@ function f32b64(arrs) {
 
 /**
  * @param {{mode?: "shadow" | "defend", provider?: "qnn" | "cpu", phase?: number, ms?: number, potions?: number,
- *          trace?: boolean, pair?: number, tag?: string, approach?: boolean, dodgeLead?: number}} [args]
+ *          trace?: boolean, pair?: number, tag?: string, approach?: boolean, dodgeLead?: number | null,
+ *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean, model?: string, chain?: boolean}} [args]
  */
 export default function (args = {}) {
     const mode = args.mode ?? "shadow";
@@ -169,8 +208,22 @@ export default function (args = {}) {
     const pairEvery = args.pair ?? 0;
     // args.dodgeLead: every dodge's lead (frames) instead of the move table's (closed-loop trials: only failed dodges
     // are in the recorded data, @see tools/dufu_moveid/s5_movetable.py)
-    const dodgeLead = typeof args.dodgeLead === "number" ? args.dodgeLead : null;
+    // (default 5: the best of 14 / 8 / 5 in r007-r023; null = the table's)
+    const dodgeLead = args.dodgeLead === null ? null : typeof args.dodgeLead === "number" ? args.dodgeLead : DODGE_LEAD;
+    // args.run: run from the 火球雨 (default on, @see runTick); args.runDir: one direction or a list cycled per run
+    // (default diag: r036-r071 side 1.58 hits per 火球雨 episode (24), diag 0.64 (14))
+    const runOn = defend && (args.run ?? true);
+    const runDirs = [args.runDir ?? "diag"].flat();
+    // args.goldSeq: the 金光火球 window (default on, @see GOLD_SEQ_F)
+    const goldSeqOn = args.goldSeq ?? true;
+    // args.chain: the k2:c30 chain beat (@see CHAIN_AFTER_F)
+    const chainOn = args.chain ?? false;
+    for (const d of runDirs) if (!(d in RUN_DIRS)) throw new Error(`runDir ${d}: ${Object.keys(RUN_DIRS).join(" | ")}`);
     const tag = args.tag ?? String(Date.now());
+    // args.model: the model directory under model/ (default dufu2b = the student fine-tuned on the live rounds,
+    // tools/dufu_moveid/s5_retrain.py; dufu2 = the order-4 student), same inputs / outputs / group labels
+    const mdir = args.model ?? "dufu2b";
+    const M_GLOB = `${mdir}/glob.onnx`, M_CROP = `${mdir}/crop.onnx`, M_HEAD = `${mdir}/head.onnx`;
     const start = Date.now();
     const untilMs = Math.min(args.ms ?? 600_000, remaining() - END_MARGIN_MS);
     const until = start + untilMs;
@@ -221,11 +274,20 @@ export default function (args = {}) {
         stickF = v;
     };
     let dodgeSeq = 0;
+    /** the run in progress (@see runTick): the stick (contact 0) is held at `at` */
+    /** @type {{t0: number, at: Point, dir: string, sign: number, lastC7: number, dodges: number, hits0: number} | null} */
+    let running = null;
     const dodgeTouch = () => {
         if (!defend || halt) return false;
+        freeContact(2);
+        if (running) { // the stick is held the run's way: the dodge goes there too
+            touch.down(DODGE, 2);
+            ups.push({ c: 2, at: Date.now() + TAP_MS });
+            running.dodges++;
+            return true;
+        }
         walk(0);
         freeContact(0);
-        freeContact(2);
         touch.down(STICK, 0);
         touch.move(dodgeSeq++ % 2 ? RIGHT : LEFT, 0);
         touch.down(DODGE, 2);
@@ -311,8 +373,23 @@ export default function (args = {}) {
     let realParryAt = 0; // our last real 卸势 touch (ok detection; the shadow's would-presses only set lastParryAt)
     /** @type {{parry: number | null, dodge: number | null}} */
     const armed = { parry: null, dodge: null }; // the predicted contact time (capture clock) a press was made for
+    /** the 金光火球 window: its anchor (capture clock) and the next fireball of the cadence (1..GOLD_SEQ_N) */
+    /** @type {{anchor: number, k: number} | null} */
+    let goldSeq = null;
+    let lastC11At = 0; // the last tick whose head named k0:c11+c40
+    /** @type {any[]} */
+    const goldSeqLog = []; // [anchor ms, how opened, beats pressed]
+    /** Open the 金光火球 window at the contact time t. @param {number} t @param {string} how */
+    const goldSeqOpen = (t, how) => {
+        if (!goldSeqOn || (goldSeq && t <= goldSeq.anchor + GOLD_SEQ_F * FRAME_MS)) return;
+        goldSeq = { anchor: t, k: 1 };
+        goldSeqLog.push([Math.round(t - start), how, 0]);
+        mark("goldSeq", how);
+    };
+    /** In the 金光火球 window? @param {number} Tc */
+    const inGoldSeq = (Tc) => goldSeq != null && Tc >= goldSeq.anchor + GOLD_SEQ_MIN_F * FRAME_MS && Tc <= goldSeq.anchor + GOLD_SEQ_F * FRAME_MS;
     let hits = 0, oks = 0, fills = 0, skipped = 0, dups = 0, ticks = 0, looks = 0;
-    const presses = { parry: 0, dodge: 0, potion: 0, lock: 0, walk: 0 };
+    const presses = { parry: 0, dodge: 0, potion: 0, lock: 0, walk: 0, run: 0 };
     const would = { parry: 0, dodge: 0 };
     /** @type {any[]} */
     const pressLog = []; // [t ms, kind, grp, pGold, pDodge, pParry, med, remF, lead, src]
@@ -327,8 +404,11 @@ export default function (args = {}) {
     let deadSeen = 0, greySeen = 0, wonSeen = 0;
     let reason = "time";
     /** the head's decoded output, the latest */
-    /** @type {{grp: number, grpP: number, col: number[], resp: number[], tte: number[], med: number, capT: number} | null} */
+    /** @typedef {{grp: number, grpP: number, col: number[], resp: number[], tte: number[], med: number, capT: number, c7P: number}} Pred */
+    /** @type {Pred | null} */
     let pred = null;
+    /** pred, typed (the main loop's flow analysis does not see decode() assign it) */
+    const curPred = () => /** @type {Pred | null} */ (pred);
 
     /** Contact history for ring entry n (frame index on the tick clock). @param {number} n */
     function history(n) {
@@ -372,6 +452,7 @@ export default function (args = {}) {
                     hits++;
                     lastHitAt = now;
                     got = addContact(seen - HIT_LAG_F * FRAME_MS, "hit", seen);
+                    if (now - lastC11At <= GOLD_SEQ_HIT_MS) goldSeqOpen(seen - HIT_LAG_F * FRAME_MS, "hit");
                     mark("hit", `${Math.round(hpBase * 100)}%->${Math.round(h * 100)}%`);
                 }
                 hpBase = h;
@@ -410,7 +491,9 @@ export default function (args = {}) {
                 break;
             }
         }
-        pred = { grp, grpP: g[grp], col: softmax(out, O_COL, 3), resp: softmax(out, O_RESP, 3), tte, med, capT };
+        let c7P = 0;
+        for (const i of C7_GIDS) c7P += g[i];
+        pred = { grp, grpP: g[grp], col: softmax(out, O_COL, 3), resp: softmax(out, O_RESP, 3), tte, med, capT, c7P };
     }
     /** P(next contact within x frames of the frame's capture). @param {number} x */
     const pWithin = (x) => {
@@ -440,10 +523,11 @@ export default function (args = {}) {
         const gold = pred.col[0] >= GOLD_DODGE_P;
         // the move table's unparryable groups (training: 卸住率 < 20 %; live: the closed loop's correction, e.g. the
         // 火球雨 c7 chain, 0 / 163 answered by 卸势 in r007-r023) are dodged whatever the resp head says
-        const kind = gold || pd >= pp || row?.unparryable ? "dodge" : "parry";
+        const seq = inGoldSeq(Tc);
+        const kind = gold || pd >= pp || row?.unparryable || seq ? "dodge" : "parry";
         const lead = kind === "parry" ? row?.parry_lead ?? DEFAULTS.parry_lead : dodgeLead ?? row?.dodge_lead ?? DEFAULTS.dodge_lead;
         if (remF > lead || remF < -LATE_F) return null;
-        return { kind, Tc, remF, lead, src: gold ? "gold" : row?.unparryable && pp > pd ? "table" : "resp" };
+        return { kind, Tc, remF, lead, src: gold ? "gold" : row?.unparryable && pp > pd ? "table" : seq && pp > pd ? "goldSeq" : "resp" };
     }
     /** May this press go now (lock / cooldown / already pressed for this contact)? @param {{kind: string, Tc: number}} d @param {number} now */
     function canPress(d, now) {
@@ -467,8 +551,107 @@ export default function (args = {}) {
         armed[d.kind] = d.Tc;
         presses[d.kind]++;
         const p = /** @type {NonNullable<typeof pred>} */ (pred);
+        if (d.kind === "dodge" && p.grp === C11_GID && d.src !== "goldBeat") goldSeqOpen(now, "dodge");
         pressLog.push([now - start, d.kind, p.grp, r3(p.col[0]), r3(p.resp[0]), r3(p.resp[1]), p.med, Math.round(d.remF * 10) / 10, d.lead, d.src]);
         return ACT[d.kind];
+    }
+
+    // ---- run (the 火球雨)
+    let runSeq = 0, c7Streak = 0;
+    /** @type {any[]} */
+    const runLog = []; // [t ms, dir, sign, ms, dodges, hits during]
+    const runStop = (/** @type {number} */ now) => {
+        if (!running) return;
+        if (!ups.some((u) => u.c === 0)) touch.up(0);
+        runLog.push([running.t0 - start, running.dir, running.sign, now - running.t0, running.dodges, hits - running.hits0]);
+        mark("run", `stop after ${now - running.t0} ms, ${running.dodges} dodges, ${hits - running.hits0} hits`);
+        running = null;
+    };
+    /** Start / hold / stop the run from the 火球雨 (defend, args.run). @param {number} now */
+    function runTick(now) {
+        if (!runOn || !pred) return 0;
+        const c7 = pred.c7P >= RUN_P || C7_GIDS.includes(pred.grp);
+        if (running) {
+            if (halt) {
+                runStop(now);
+                return 0;
+            }
+            if (c7) running.lastC7 = now;
+            const age = now - running.t0;
+            if (age >= RUN_MAX_MS || (age >= RUN_MIN_MS && now - running.lastC7 >= RUN_TAIL_MS)) runStop(now);
+            return 0;
+        }
+        c7Streak = pred.c7P >= RUN_P ? c7Streak + 1 : 0;
+        if (halt || c7Streak < RUN_TICKS || pred.med > RUN_START_F) return 0;
+        const dir = runDirs[Math.floor(runSeq / 2) % runDirs.length];
+        const sign = runSeq % 2 ? -1 : 1;
+        runSeq++;
+        const [x, y] = RUN_DIRS[dir];
+        /** @type {Point} */
+        const at = [Math.round(STICK[0] + sign * x * STICK_R), Math.round(STICK[1] + y * STICK_R)];
+        walk(0);
+        freeContact(0);
+        touch.down(STICK, 0);
+        touch.move(at, 0);
+        running = { t0: now, at, dir, sign, lastC7: now, dodges: 0, hits0: hits };
+        presses.run++;
+        mark("run", `${dir} ${sign > 0 ? "right" : "left"}: c7 P ${r3(pred.c7P)}, contact in ${pred.med} f`);
+        return ACT.run;
+    }
+
+    /** The 金光火球 window: a 闪避 for each fireball of the cadence unless one was already pressed for it; closes the
+     *  window when it is over. @param {number} now */
+    function goldBeatTick(now) {
+        if (!goldSeq) return 0;
+        let act = 0;
+        const lead = dodgeLead ?? DEFAULTS.dodge_lead;
+        const beatT = goldSeq.anchor + goldSeq.k * GOLD_SEQ_BEAT_F * FRAME_MS;
+        if (goldSeq.k <= GOLD_SEQ_N && now >= beatT - lead * FRAME_MS) {
+            goldSeq.k++;
+            const covered = lastDodgeAt >= beatT - (lead + GOLD_SEQ_COVER_F) * FRAME_MS;
+            if (!covered && now <= beatT + LATE_F * FRAME_MS && now - lastDodgeAt >= DODGE_CD_MS && now >= holdUntil && pred) {
+                act = press({ kind: "dodge", Tc: beatT, remF: (beatT - now) / FRAME_MS, lead, src: "goldBeat" }, now);
+                if (act) goldSeqLog[goldSeqLog.length - 1][2]++;
+            }
+        }
+        if (now > goldSeq.anchor + GOLD_SEQ_F * FRAME_MS) goldSeq = null;
+        return act;
+    }
+
+    // ---- chain beat
+    let chainFor = -1; // the contact (frame) a chain press was armed for
+    /** @type {{T: number} | null} */
+    let chainDue = null;
+    /** @type {any[]} */
+    const chainLog = []; // [second contact ms, pressed 1 / covered 0 / missed -1]
+    /** The k2:c30 chain beat (@see CHAIN_AFTER_F). @param {number} now */
+    function chainTick(now) {
+        if (!chainOn || !pred) return 0;
+        const n = contacts.length;
+        if (!chainDue && n >= 2 && pred.grp === C30_K2_GID) {
+            const c1 = contacts[n - 1], c0 = contacts[n - 2];
+            const gap = c1.f - c0.f;
+            if (c1.f !== chainFor && gap >= CHAIN_GAP_F[0] && gap <= CHAIN_GAP_F[1] && now <= c1.t + CHAIN_AFTER_F * FRAME_MS) {
+                chainFor = c1.f;
+                chainDue = { T: c1.t + CHAIN_AFTER_F * FRAME_MS };
+                chainLog.push([Math.round(c1.t - start), 0]);
+            }
+        }
+        if (!chainDue) return 0;
+        const lead = GROUPS["k2:c30"]?.parry_lead ?? DEFAULTS.parry_lead;
+        const T = chainDue.T;
+        if (now < T - lead * FRAME_MS) return 0;
+        chainDue = null;
+        const log = chainLog[chainLog.length - 1];
+        if (lastParryAt >= T - (lead + CHAIN_COVER_F) * FRAME_MS) return 0; // a 卸势 for it already
+        const d = { kind: /** @type {"parry"} */ ("parry"), Tc: T, remF: (T - now) / FRAME_MS, lead, src: "chain" };
+        if (now > T + LATE_F * FRAME_MS || canPress(d, now)) {
+            log[1] = -1;
+            return 0;
+        }
+        const a = press(d, now);
+        log[1] = a ? 1 : -1;
+        return a;
     }
 
     /** Potion at a quiet moment (defend). @param {number} now */
@@ -490,6 +673,7 @@ export default function (args = {}) {
             }
             return 0;
         }
+        if (running) return 0; // a drink would stop the run (and a 火球雨 is coming)
         if (potionsUsed >= maxPotions || potionTaps >= POTION_MAX_TAPS || hpNow == null || hpNow > POTION_HP) {
             potionDueAt = 0;
             return 0;
@@ -640,18 +824,23 @@ export default function (args = {}) {
             if (armed.parry != null && now > armed.parry + GRACE_F * FRAME_MS) armed.parry = null;
             if (armed.dodge != null && now > armed.dodge + GRACE_F * FRAME_MS) armed.dodge = null;
             if (got) armed.parry = armed.dodge = null; // the contact came: the next prediction is a new one
+            if (curPred()?.grp === C11_GID) lastC11At = now;
+            if (defend) act = runTick(now);
             const d = decide(now);
             if (d && !canPress(d, now)) {
                 wouldAct = ACT[d.kind];
-                if (defend) act = press(d, now);
+                if (defend) act = press(d, now) || act;
                 else {
                     would[d.kind]++;
                     armed[d.kind] = d.Tc; // the shadow keeps the same one-press-per-contact bookkeeping
                     if (d.kind === "parry") lastParryAt = now;
                     else lastDodgeAt = now;
-                    pressLog.push([now - start, `would-${d.kind}`, pred?.grp, r3(pred?.col[0] ?? 0), r3(pred?.resp[0] ?? 0), r3(pred?.resp[1] ?? 0), pred?.med, Math.round(d.remF * 10) / 10, d.lead, d.src]);
+                    const p = curPred();
+                    pressLog.push([now - start, `would-${d.kind}`, p?.grp, r3(p?.col[0] ?? 0), r3(p?.resp[0] ?? 0), r3(p?.resp[1] ?? 0), p?.med, Math.round(d.remF * 10) / 10, d.lead, d.src]);
                 }
             }
+            if (defend && !act) act = goldBeatTick(now);
+            if (defend && !act) act = chainTick(now);
             if (defend && !act) act = potionTick(now);
             // walk in / re-lock (defend)
             if (walkIn && !bossSeen) {
@@ -688,10 +877,11 @@ export default function (args = {}) {
             if (!pairNow) tm.loop.push(loopMs);
             looks++;
             if (traceOn) {
-                const p = pred;
+                const p = curPred();
                 rows.push([tA - start, img.seq, cap - start, tick - 1, nFill, dup, hpNow == null ? -1 : r3(hpNow), qiNow, bossNow,
                     ...lastH, p ? p.grp : -1, p ? r3(p.grpP) : 0, ...(p ? p.col.map(r3) : [0, 0, 0]), ...(p ? p.resp.map(r3) : [0, 0, 0]),
-                    p ? p.med : -1, r3(pWithin(10)), act, wouldAct, got, Math.round(pipe * 10) / 10, loopMs]);
+                    p ? p.med : -1, r3(pWithin(10)), act, wouldAct, got, Math.round(pipe * 10) / 10, loopMs,
+                    p ? r3(p.c7P) : 0, running ? running.sign * (1 + Object.keys(RUN_DIRS).indexOf(running.dir)) : 0]);
                 traceN++;
                 if (rows.length >= TRACE_CHUNK) traceFlush();
             }
@@ -700,6 +890,7 @@ export default function (args = {}) {
     } finally {
         try {
             upsDue(true);
+            running = null;
             if (walkIn) {
                 touch.up(0);
                 touch.up(1);
@@ -713,10 +904,13 @@ export default function (args = {}) {
     const fightMs = Date.now() - t0;
     const ms = Object.fromEntries(Object.entries(tm).map(([k, v]) => [k, stats(v)]));
     const res = {
-        reason, mode, provider, ran, fallback: fellBack, nn: { available: nn.available, qnn: nn.qnn, soc: nn.soc?.model }, warmMs,
+        reason, mode, provider, model: mdir, ran, fallback: fellBack, nn: { available: nn.available, qnn: nn.qnn, soc: nn.soc?.model }, warmMs,
         fightMs, ticks, looks, fills, skipped, dups, bossSeen,
         hits, oks, contacts: contacts.map((c) => [Math.round(c.t - start), c.f, c.kind, c.seenF]),
         presses, would, potion: { used: potionsUsed, taps: potionTaps, ...potS },
+        run: runOn ? { dirs: runDirs, runs: runLog } : null,
+        goldSeq: goldSeqOn ? goldSeqLog : null,
+        chain: chainOn ? chainLog : null,
         hitsPerMin: fightMs > 0 ? Math.round((hits / (fightMs / 60_000)) * 100) / 100 : 0,
         ms, start, t0, marks, pressLog,
         trace: { event: TRACE_EVENT, rows: traceN, chunks: traceChunks, cols: TRACE_COLS },

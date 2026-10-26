@@ -48,7 +48,8 @@ def one_round(d: Path) -> list[dict]:
     ran = ((res.get("value") or {}).get("ran") or {})
     prov = ran.get("glob") or args.get("provider", "qnn")
     suf = ".qnn.onnx" if prov == "qnn" else ".onnx"
-    S = {n: ort.InferenceSession(str(MODEL / f"{n}{suf}"), providers=["CPUExecutionProvider"]) for n in ("glob", "crop", "head")}
+    mdir = MODEL.parent / args.get("model", "dufu2")   # dufu2.js args.model (default dufu2)
+    S = {n: ort.InferenceSession(str(mdir / f"{n}{suf}"), providers=["CPUExecutionProvider"]) for n in ("glob", "crop", "head")}
     out = []
     for e in read_json(d / "events.json", []) or []:
         if e.get("name") != "dufu2_pair":
