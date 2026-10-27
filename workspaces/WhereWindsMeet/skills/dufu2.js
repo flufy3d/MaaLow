@@ -38,7 +38,7 @@
 // provider (args.provider): "qnn" (default; falls back to cpu without the plugin: the result's `provider` says what
 //   ran) or "cpu". phase: 1 | 2 (default 2). Phase 2: model dufu2b, no poison / no curtain, the quest line is not an
 //   end, 跑 / 金光火球窗 / chain on. Phase 1: model dufu1, poison in prep, 幕布, the quest line's 阶段二 = cleared,
-//   no 跑 / 金光火球窗 / chain, args.chain11 / args.curtain / args.curtainGap as A/B switches.
+//   no 跑 / 金光火球窗 / chain, args.chain11 / args.curtain2 / args.curtain / args.curtainGap as A/B switches.
 // Trace: one row per tick (TRACE_COLS), event TRACE_EVENT in chunks of TRACE_CHUNK rows (~25 KB each); run
 //   skills/event_pad.js after fetching them (tools/dufu_rounds.py does). args.pair N (shadow checks): every N-th
 //   tick the screenshot is saved (captures/dufu2_live/<tag>_<n>.png) and event PAIR_EVENT carries the head logits and
@@ -48,7 +48,7 @@
 //   maalow do skill dufu2 --args '{"mode":"defend","phase":1,"ms":600000}' --timeout 660000
 //   (phase 2 defaults since 2026-10-25 关 2: model dufu2b, 闪避 lead 5, run diag from the 火球雨, the 金光火球 window;
 //   the A/B switches: run, runDir, goldSeq, model, dodgeLead, chain, tools/dufu_moveid/README.md「顺序 5 续」;
-//   phase 1 defaults: model dufu1, 闪避 lead 5, 幕布 on with the gap walk, chain11 off)
+//   phase 1 defaults: model dufu1, 闪避 lead 5, 幕布 on with the gap walk, chain11 / curtain2 off)
 import { stats } from "./lib/stats.js";
 import { BOSS_RED, BOSS_ROI, ME_X, countAtLeast, gapNow, health, readMean, readQi } from "./lib/dufu-reads.js";
 import { DEFAULTS as DEFAULTS2, GROUPS as GROUPS2 } from "./lib/dufu2-table.js";
@@ -71,10 +71,10 @@ const HIST_DELAY_F = 6, HIST_GAP_F = 73;
 const HIT_DROP = 0.025, HIT_MAX = 0.35, HIT_LAG_F = 5, QI_STEP = 8, QI_JUMP = 80, OK_PARRY_MAX_F = 24, MERGE_F = 6;
 // decisions (@see decide)
 const GOLD_DODGE_P = 0.15; // P(gold) at or above this: dodge (gold must be dodged; "colour unsure" = gold not ruled out)
-// phase 1: the teacher's gold recall is 88.5 % (11.5 % gold -> none), so the phase-2 threshold leaves 4.95 % of gold
-// contacts answered by 卸势 (gate 2 allows 3 %). At 0.02 the OOF decision is 19/707 = 2.7 % gold parried and 93.0 %
-// fatal-response (>= 90 %), so phase 1 uses its own threshold.
-const GOLD_DODGE_P1 = 0.02;
+// phase 1: the phase-2 threshold leaves 4.95 % of gold contacts answered by 卸势 (gate 2 allows 3 %). On the student
+// OOF 0.02 is 21/707 = 2.97 % (no margin) and 0.015 is 15/707 = 2.1 % with fatal-response 92.5 % (>= 90 %), so phase 1
+// uses 0.015.
+const GOLD_DODGE_P1 = 0.015;
 const CONTACT_P = 0.4; // 1 - P(resp none) below this: no press
 const LATE_F = 1; // a contact predicted this far in the past still gets its press
 const GRACE_F = 6, REARM_F = 8; // a pressed contact is consumed GRACE_F after it; a prediction REARM_F later is a new one
