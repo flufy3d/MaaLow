@@ -166,6 +166,7 @@ const GAP_IN = 20, GAP_PUSH = 120; // me at ME_X: within GAP_IN (or a quarter of
 // opening hit us and the head never names it (0 / 75); the second blow's group k1:c11+c15+c23 is dodged instead (one
 // dodge can take both). A/B switch.
 const CHAIN11_NAME = "k1:c11+c15+c23";
+const CURTAIN2_NAME = "k1:c18"; // the 幕布 second sweep (37/37 hit, 0 / 37 parried in the p1 data)
 // end of the round (dufu.js deadCheck / haltCheck)
 /** @type {Box} */ const GREY_ROI = [100, 100, 880, 500];
 const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
@@ -235,7 +236,7 @@ function f32b64(arrs) {
  * @param {{mode?: "shadow" | "defend", provider?: "qnn" | "cpu", phase?: 1 | 2, ms?: number, potions?: number,
  *          trace?: boolean, pair?: number, tag?: string, approach?: boolean, dodgeLead?: number | null,
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
- *          model?: string, chain?: boolean, chain11?: boolean, curtain?: boolean, curtainGap?: boolean}} [args]
+ *          model?: string, chain?: boolean, chain11?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean}} [args]
  */
 export default function (args = {}) {
     const mode = args.mode ?? "shadow";
@@ -279,6 +280,9 @@ export default function (args = {}) {
     const chainOn = phase === 2 && (args.chain ?? true);
     // args.chain11: phase 1 only, force the 闪避 on k1:c11+c15+c23 (default off, @see CHAIN11_NAME)
     const chain11On = phase === 1 && (args.chain11 ?? false);
+    // args.curtain2: phase 1 only, force the 闪避 on k1:c18 (the 幕布 second sweep: 37/37 hit, 0 parried;
+    // the prefix group has no ok/pf so its label defaults to parry, @see the gate-1 live notes). Default off, A/B.
+    const curtain2On = phase === 1 && (args.curtain2 ?? false);
     // args.curtain / args.curtainGap: the phase-1 幕布 state machine (default on) / its gap walk (false: only dodge)
     const curtainOn = phase === 1 && (args.curtain ?? true);
     const curtainGap = args.curtainGap ?? true;
@@ -504,6 +508,7 @@ export default function (args = {}) {
     const pressLog = []; // [t ms, kind, grp, pGold, pDodge, pParry, med, remF, lead, src]
     /** @type {any[]} */
     const chain11Log = []; // phase 1 args.chain11: [t ms, grp, remF, lead]
+    const curtain2Log = []; // phase 1 args.curtain2: [t ms, grp, remF, lead]
     /** @type {{shot: number[], pipe: number[], prep: number[], run: number[], inferWall: number[], reads: number[], loop: number[], head: number[]}} */
     const tm = { shot: [], pipe: [], prep: [], run: [], inferWall: [], reads: [], loop: [], head: [] };
     // potion
@@ -628,7 +633,6 @@ export default function (args = {}) {
     function decide(now) {
         if (!pred || pred.med >= TTE_NONE) return null;
         const [pd, pp, pn] = pred.resp;
-        if (1 - pn < CONTACT_P) return null;
         const Tc = pred.capT + pred.med * FRAME_MS;
         const remF = (Tc - now) / FRAME_MS;
         const name = pred.grp < IDLE ? GRP_NAMES[pred.grp] : null;
@@ -640,10 +644,16 @@ export default function (args = {}) {
         // 火球雨 c7 chain, 0 / 163 answered by 卸势 in r007-r023) are dodged whatever the resp head says
         const seq = inGoldSeq(Tc);
         const chain11 = chain11On && name === CHAIN11_NAME;
-        const kind = chain11 || gold || pd >= pp || row?.unparryable || seq ? "dodge" : "parry";
+        const curtain2 = curtain2On && name === CURTAIN2_NAME;
+        // phase 1, colour / table / chain rules are dodge rules: do not let the resp head's "no contact" suppress
+        // them (12 gold contacts, P(gold) >= 0.02, would otherwise get no press; the OOF decision gains 12 correct,
+        // 0 wrong). Phase 2 keeps the old gate.
+        const urgent = phase === 1 && (gold || chain11 || curtain2 || !!row?.unparryable);
+        if (1 - pn < CONTACT_P && !urgent) return null;
+        const kind = chain11 || curtain2 || gold || pd >= pp || row?.unparryable || seq ? "dodge" : "parry";
         const lead = kind === "parry" ? row?.parry_lead ?? DEFAULTS.parry_lead : dodgeLead ?? row?.dodge_lead ?? DEFAULTS.dodge_lead;
         if (remF > lead || remF < -LATE_F) return null;
-        return { kind, Tc, remF, lead, src: chain11 ? "chain11" : gold ? "gold" : row?.unparryable && pp > pd ? "table" : seq && pp > pd ? "goldSeq" : "resp" };
+        return { kind, Tc, remF, lead, src: chain11 ? "chain11" : curtain2 ? "curtain2" : gold ? "gold" : row?.unparryable && pp > pd ? "table" : seq && pp > pd ? "goldSeq" : "resp" };
     }
     /** May this press go now (lock / cooldown / already pressed for this contact)? @param {{kind: string, Tc: number}} d @param {number} now */
     function canPress(d, now) {
@@ -669,6 +679,7 @@ export default function (args = {}) {
         const p = /** @type {NonNullable<typeof pred>} */ (pred);
         if (d.kind === "dodge" && p.grp === C11_GID && d.src !== "goldBeat") goldSeqOpen(now, "dodge");
         if (d.src === "chain11") chain11Log.push([now - start, p.grp, Math.round(d.remF * 10) / 10, d.lead]);
+        if (d.src === "curtain2") curtain2Log.push([now - start, p.grp, Math.round(d.remF * 10) / 10, d.lead]);
         pressLog.push([now - start, d.kind, p.grp, r3(p.col[0]), r3(p.resp[0]), r3(p.resp[1]), p.med, Math.round(d.remF * 10) / 10, d.lead, d.src]);
         return ACT[d.kind];
     }
@@ -1121,6 +1132,7 @@ export default function (args = {}) {
         goldSeq: goldSeqOn ? goldSeqLog : null,
         chain: chainOn ? chainLog : null,
         chain11: chain11On ? { presses: chain11Log.length, log: chain11Log } : null,
+        curtain2: curtain2On ? { presses: curtain2Log.length, log: curtain2Log } : null,
         curtain: curtainOn ? { gap: curtainGap, enters: curtainEnters, dodges: curtainDodges } : null,
         hitsPerMin: fightMs > 0 ? Math.round((hits / (fightMs / 60_000)) * 100) / 100 : 0,
         ms, start, t0, marks, pressLog,
