@@ -823,3 +823,15 @@ $TORCH python $D/s5_retrain.py eval --val r026 ... --models final,live_a ; s4_ex
 - **重训的前缀组标签是自训练**（设备在决策时刻认出的组），留出局的应对提升里有一部分来自新加的应对标签规则（火球雨 / 金光火球窗一律闪），这部分和 dufu2.js 的规则重复。
 - **局变长以后**：活满 10 分钟的局下一局会在没打完的战斗里接着开（`dufu_enter` 认出还在演练场就返回），r067 就是这样开局 1 秒误判死亡；最终配置把 `ms` 放到 17.5 分钟（录像上限 20 分钟），16 局都是死亡结束。
 - 喝药逻辑没改（喝药中挨打 24% → 13%，是别的改动带来的）。
+
+## 阶段一（顺序 7，2026-10-27）
+
+所有命令加 `MOVEID_PHASE=1`，数据在 `data/moveid/p1/`，模型在 `model/dufu1/`，技能仍是 `skills/dufu2.js`（`args.phase:1`）。阶段二路径不受影响。
+
+- 学生 OOF / 导出：`s4_train.py --folds 0,1,2,3,4 --final --epochs 8 --init data/moveid/student/live_a.pt`；`s4_export.py --tag fold<k> --no-qnn [--select 2]` → `data/moveid/p1/student/onnx/fold<k>/`；`s4_export.py --tag final` → `model/dufu1/dufu1.json` + int8 / qnn ONNX。
+- 关 1：`s4_eval.py --folds 0,1,2,3,4 --prec int8`，再 `s3b_gate1.py --out data/moveid/p1/student/gate1 --old "" --pred prefix_teacher=... --pred student_fp32=... --pred student_int8=...`。
+- Pad 对拍：`s4_pad.py run` 现在按 PHASE 用 `model/dufu1_pair` / `skills/dufu1_pair.js` / `captures/dufu1_pair`，数据在 `data/moveid/p1/student/pad/`；`compare` 用 `prefix.json` 的 97 组算输出切片（151 维）。
+- 招式表：`s5_movetable.py` 写 `model/dufu1/movetable.json` + `skills/lib/dufu1-table.js`（97 组，全局卸势提前 6，unparryable `k0:c5+c18` / `k2:c11`）。
+- 推 App：`s5_push.py --model` 推 `skills/dufu2.js`、两张表（`dufu1-table.js` + `dufu2-table.js`）和 `model/dufu1`；阶段一临时对拍用 `dufu1_pair`，跑完删。
+- live：`dufu_rounds.py data/moveid/p1/live --phase 1 --skill dufu2 --skill-args '{"mode":"shadow"}'`；`s5_pull.py --delete`、`s5_color.py`（`PHASE==1` 的 red→gold/none 重映射）、`s5_analyze.py`、`s5_ab.py`。
+- 阶段一没有红光，金=闪、其余卸；老师/学生颜色头仍输出 3 类，但 red 没有标签，决策不用 red。幕布 c5/c18 用 `gapNow` 的显式状态机；`k1:c18` 第二下用 `args.curtain2`（默认关）强制闪。

@@ -159,7 +159,7 @@ const QUEST_WHITE = { lower: [0, 0, 190], upper: [180, 70, 255], method: 40 };
 // enters the curtain, CURTAIN_GONE_MS without a gap ends it. While in it: walk the gap's centre (contact 0 sideways,
 // args.curtainGap false = no walking). "covered" / the black cover: the head's k0:c5+c18 (unparryable) dodges through
 // decide(); when nothing was pressed for CURTAIN_COVER_DODGE_MS the fallback dodges once (a drink pending holds it).
-const CURTAIN_TICKS = 3, CURTAIN_GONE_MS = 1200, CURTAIN_COVER_DODGE_MS = 800, BLACK_MEAN = 22;
+const CURTAIN_TICKS = 12, CURTAIN_GONE_MS = 1200, CURTAIN_COVER_DODGE_MS = 800, BLACK_MEAN = 22;
 const GAP_IN = 20, GAP_PUSH = 120; // me at ME_X: within GAP_IN (or a quarter of the gap) no walking; GAP_PUSH px off
 // the centre = full stick (dufu.js's gap rule)
 // chain11 (phase 1, args.chain11, default off): the third blow of the gold chain (k2:c11) only comes in the chain whose
@@ -236,7 +236,7 @@ function f32b64(arrs) {
  * @param {{mode?: "shadow" | "defend", provider?: "qnn" | "cpu", phase?: 1 | 2, ms?: number, potions?: number,
  *          trace?: boolean, pair?: number, tag?: string, approach?: boolean, dodgeLead?: number | null,
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
- *          model?: string, chain?: boolean, chain11?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean}} [args]
+ *          model?: string, chain?: boolean, chain11?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number}} [args]
  */
 export default function (args = {}) {
     const mode = args.mode ?? "shadow";
@@ -270,6 +270,10 @@ export default function (args = {}) {
     const dodgeLead = args.dodgeLead === null ? null
         : typeof args.dodgeLead === "number" ? args.dodgeLead
             : DODGE_LEAD;
+    // args.parryLead: override every group's 卸势 lead (frames before the predicted contact) for a live A/B. null =
+    // the move table's per-group leads (the p1 table's global is 6; live hits in the first A/B had actual leads 1-5,
+    // i.e. too late, so the phase-1 sweep tests 6 vs 9 / 10).
+    const parryLead = typeof args.parryLead === "number" ? args.parryLead : null;
     // args.run: run from the 火球雨 (phase 2 only, default on, @see runTick); args.runDir: one direction or a list
     // cycled per run (default diag: r036-r071 side 1.58 hits per 火球雨 episode (24), diag 0.64 (14))
     const runOn = phase === 2 && defend && (args.run ?? true);
@@ -651,7 +655,7 @@ export default function (args = {}) {
         const urgent = phase === 1 && (gold || chain11 || curtain2 || !!row?.unparryable);
         if (1 - pn < CONTACT_P && !urgent) return null;
         const kind = chain11 || curtain2 || gold || pd >= pp || row?.unparryable || seq ? "dodge" : "parry";
-        const lead = kind === "parry" ? row?.parry_lead ?? DEFAULTS.parry_lead : dodgeLead ?? row?.dodge_lead ?? DEFAULTS.dodge_lead;
+        const lead = kind === "parry" ? parryLead ?? row?.parry_lead ?? DEFAULTS.parry_lead : dodgeLead ?? row?.dodge_lead ?? DEFAULTS.dodge_lead;
         if (remF > lead || remF < -LATE_F) return null;
         return { kind, Tc, remF, lead, src: chain11 ? "chain11" : curtain2 ? "curtain2" : gold ? "gold" : row?.unparryable && pp > pd ? "table" : seq && pp > pd ? "goldSeq" : "resp" };
     }
