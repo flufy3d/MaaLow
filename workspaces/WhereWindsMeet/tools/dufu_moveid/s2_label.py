@@ -19,11 +19,11 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import OUT, read_json, write_json  # noqa: E402
+from common import OUT, PHASE, read_json, write_json  # noqa: E402
 from s2_crops import CROPS  # noqa: E402
 from s2_feat import CAND_COLS, FEAT  # noqa: E402
 
-LABELS = Path(__file__).resolve().parent / "s2_labels.json"
+LABELS = Path(__file__).resolve().parent / ("s2_labels.json" if PHASE == 2 else f"s2_labels_p{PHASE}.json")
 SHEETS = OUT / "color" / "label_sheets"
 CI = {c: i for i, c in enumerate(CAND_COLS)}
 COLS = 4

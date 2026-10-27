@@ -22,7 +22,8 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
-OUT = ROOT / "data/moveid/gate0"
+from common import OUT as DATA  # phase-aware data root
+OUT = DATA / "gate0"
 SET = OUT / "label_set.json"
 CANDS = OUT / "label_cands.json"
 COLORS = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255), (255, 255, 0), (0, 128, 255), (255, 255, 255)]
@@ -47,7 +48,7 @@ def pick_more(frames: Path, name: str, n: int, seed: int, hard: float = 0.0):
         man = json.loads((frames / "manifest.json").read_text(encoding="utf-8"))
         keys = []
         for j in man:
-            bb = json.loads((ROOT / "data/moveid/boss_boxes" / f"{j['round']}.json").read_text(encoding="utf-8"))
+            bb = json.loads((DATA / "boss_boxes" / f"{j['round']}.json").read_text(encoding="utf-8"))
             keys += [f"{j['round']}/{it['d']}" for it in j["items"] if bb.get(str(it["d"]), {}).get("conf", 0) < hard]
     else:
         keys = all_frames(frames)

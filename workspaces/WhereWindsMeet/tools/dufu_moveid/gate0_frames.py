@@ -25,6 +25,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "dufu_train"))
 from data import FRAME_MS, scan  # noqa: E402
 from labels import contacts  # noqa: E402
+from common import OUT  # noqa: E402
 
 ROOT = HERE.parents[3]
 REC_ROOT = HERE.parents[1] / "recordings"
@@ -34,7 +35,7 @@ NEIGHBOURS = (-6, 3, 6)  # more frames around d for temporal smoothing of the de
 
 
 def video_of(rec: str) -> Path | None:
-    for p in (ROOT / "data/moveid/video" / f"{rec}.mp4", REC_ROOT / rec / "video.mp4"):
+    for p in (OUT / "video" / f"{rec}.mp4", ROOT / "data/moveid/video" / f"{rec}.mp4", REC_ROOT / rec / "video.mp4"):
         if p.exists():
             return p
     return None
@@ -139,11 +140,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
     ap.add_argument("out")
-    ap.add_argument("--index", default=str(ROOT / "data/moveid/index.json"))
+    ap.add_argument("--index", default=str(OUT / "index.json"))
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--meta-clock", action="store_true", help="ignore decisions.json, use the recording-meta clock")
     a = ap.parse_args()
-    dec = ROOT / "data/moveid/decisions.json"
+    dec = OUT / "decisions.json"
     jobs = plan_decisions(dec) if dec.exists() and not a.meta_clock else plan(a.root, load_index(Path(a.index)))
     print(f"{len(jobs)} rounds, {sum(len(j['items']) for j in jobs)} decision moments", flush=True)
     res = []

@@ -22,7 +22,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
-OUT = REPO / "data" / "moveid"
+from common import OUT  # phase-aware (MOVEID_PHASE=1 -> data/moveid/p1)
 TEACHER = OUT / "teacher"
 CACHE = TEACHER / "cache"
 
@@ -33,9 +33,19 @@ N_TTE = TTE_MAX + 2         # bins 0..45 + none
 IDLE_GAP = 60               # idle frame: next contact > 60 frames away ...
 IDLE_AFTER = 30             # ... and previous contact >= 30 frames back
 IDLE_LEN = 16               # idle frames per long gap (centred in the eligible run)
-N_MOVE = 43                 # taxonomy classes 0..42 (42 = grab)
-UNKNOWN, IDLE = 43, 44
-N_CLASS = 45
+def _taxonomy_count() -> int:
+    """Number of real taxonomy classes (grab included); 43 is the phase-2 value and the fallback before clustering."""
+    try:
+        t = json.loads((OUT / "moves" / "taxonomy.json").read_text(encoding="utf-8"))
+        n = sum(1 for c in t.get("classes", []) if c.get("id", -1) >= 0)
+        return n or 43
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return 43
+
+
+N_MOVE = _taxonomy_count()  # taxonomy classes 0..N_MOVE-1 (the last one is grab in the phase-2 taxonomy)
+UNKNOWN, IDLE = N_MOVE, N_MOVE + 1
+N_CLASS = N_MOVE + 2
 COLORS = ("gold", "red", "none")
 COLOR_IX = {c: i for i, c in enumerate(COLORS)}
 EVAL_OFFS = tuple(range(-16, -3))      # decision curve, relative to the chain's first contact
@@ -65,9 +75,14 @@ def load() -> dict:
     ev = read_json(OUT / "events_ext.json")["events"]
     tax = read_json(OUT / "moves" / "taxonomy.json")
     asg = read_json(OUT / "moves" / "assign.json")
+    sp = OUT / "moves" / "special.json"
+    special = read_json(sp) if sp.exists() else {}
+    grab_cls = set(special.get("grab", []))
+    curtain_cls = set(special.get("curtain", []))
     for e in ev:
         a = asg[str(e["chain_id"])]
         e["cls"] = a["class"] if a["class"] >= 0 else UNKNOWN
+        e["special"] = "grab" if e["cls"] in grab_cls else "curtain" if e["cls"] in curtain_cls else None
     ev.sort(key=lambda e: (e["rec"], e["frame"]))
     recs = [{"rec": r["rec"], "round": r["round"], "frames": r["frames"]} for r in idx["rounds"]]
     classes = {c["id"]: c for c in tax["classes"] if c["id"] >= 0}

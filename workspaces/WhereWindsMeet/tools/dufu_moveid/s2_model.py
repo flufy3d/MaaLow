@@ -20,10 +20,10 @@ import torch.nn as nn
 import torchvision
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import OUT, read_json, write_json  # noqa: E402
+from common import OUT, PHASE, read_json, write_json  # noqa: E402
 from s2_crops import CROPS  # noqa: E402
 
-LABELS = Path(__file__).resolve().parent / "s2_labels.json"
+LABELS = Path(__file__).resolve().parent / ("s2_labels.json" if PHASE == 2 else f"s2_labels_p{PHASE}.json")
 CLS = "RGCN"
 MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
 STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)

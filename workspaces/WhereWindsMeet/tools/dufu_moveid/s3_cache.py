@@ -30,7 +30,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from s3_common import CACHE, REPO, frame_plan, load, read_json, write_json  # noqa: E402
+from s3_common import CACHE, OUT, REPO, frame_plan, load, read_json, write_json  # noqa: E402
 
 MODEL = "vit_small_plus_patch16_dinov3.lvd1689m"
 MODEL_NAME = "facebook/dinov3-vits16plus-pretrain-lvd1689m (timm vit_small_plus_patch16_dinov3.lvd1689m), forward_features"
@@ -125,7 +125,7 @@ def main() -> None:
     a = ap.parse_args()
     CACHE.mkdir(parents=True, exist_ok=True)
     d = load()
-    idx = read_json(REPO / "data" / "moveid" / "index.json")
+    idx = read_json(OUT / "index.json")
     video = {r["rec"]: r["video"] for r in idx["rounds"]}
     byrec = collections.defaultdict(list)
     for e in d["events"]:

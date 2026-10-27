@@ -1,6 +1,7 @@
 """Shared paths and helpers for the 独夫 move-ID data base (see README.md).
 
 Rounds: data/p2/rNNN is primary; data/p2b/rNNN only adds rounds whose recording id is not already in data/p2.
+Phase 1 (MOVEID_PHASE=1, 2026-10-26) lives under data/moveid/p1 and reads data/p1/rNNN, so phase 2 is untouched.
 Trace reading and contact labels come from ../dufu_train (data.py / labels.py), unchanged.
 """
 from __future__ import annotations
@@ -17,13 +18,14 @@ sys.path.insert(0, str(HERE.parent / "dufu_train"))
 
 WS = "WhereWindsMeet"
 DATA = REPO / "data"
-OUT = DATA / "moveid"
+PHASE = int(os.environ.get("MOVEID_PHASE", "2"))
+OUT = DATA / "moveid" / ("" if PHASE == 2 else f"p{PHASE}")
 VIDEO = OUT / "video"
 META = OUT / "meta"
 BARS = OUT / "bars"
 STATUS = OUT / "pull_status.json"
 LOCAL_RECS = REPO / "workspaces" / WS / "recordings"
-ROUND_ROOTS = [DATA / "p2", DATA / "p2b"]
+ROUND_ROOTS = [DATA / f"p{PHASE}"] if PHASE != 2 else [DATA / "p2", DATA / "p2b"]
 FRAME_MS = 1000 / 30
 
 

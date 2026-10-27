@@ -24,12 +24,23 @@ from pathlib import Path
 from maalow.client import Client
 
 
+def _text(b: bytes) -> str:
+    """The CLI's stdout is UTF-8 normally, but the Windows console can make Python encode JSON logs as GBK."""
+    for enc in ("utf-8", "gbk"):
+        try:
+            return b.decode(enc)
+        except UnicodeDecodeError:
+            pass
+    return b.decode("utf-8", "replace")
+
+
 def cli(*args: str, timeout: float = 1200) -> dict:
-    p = subprocess.run(["uv", "run", "maalow", *args], capture_output=True, timeout=timeout, encoding="utf-8")
+    p = subprocess.run(["uv", "run", "maalow", *args], capture_output=True, timeout=timeout)
+    out, err = _text(p.stdout), _text(p.stderr)
     try:
-        return json.loads(p.stdout)
+        return json.loads(out)
     except json.JSONDecodeError:
-        return {"error": (p.stdout + p.stderr)[-2000:]}
+        return {"error": (out + err)[-2000:]}
 
 
 def main() -> int:

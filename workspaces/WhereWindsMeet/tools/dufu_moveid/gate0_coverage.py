@@ -35,12 +35,15 @@ from pathlib import Path
 
 import numpy as np
 
+from common import OUT, PHASE
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
-G0 = ROOT / "data/moveid/gate0"
+G0 = OUT / "gate0"
 FRAMES = G0 / "frames"
-BOXES = ROOT / "data/moveid/boss_boxes"
-LABELS = HERE / "gate0_labels.json"
+BOXES = OUT / "boss_boxes"
+LABELS = HERE / ("gate0_labels.json" if PHASE == 2 else f"gate0_labels_p{PHASE}.json")
+CHECK_LABELS = HERE / ("gate0_check_labels.json" if PHASE == 2 else f"gate0_check_labels_p{PHASE}.json")
 W, H = 1080, 720
 LARGE, SMALL, OUT = 530, 260, 192
 MIN_PX = 40
@@ -106,7 +109,7 @@ def load_det():
 def load_gt():
     """Hand-labelled frames of the random sets; d-3 boxes from the detector (the tracking variants need them)."""
     lab = json.loads(LABELS.read_text(encoding="utf-8"))
-    lab.update(json.loads((HERE / "gate0_check_labels.json").read_text(encoding="utf-8"))["labels"])
+    lab.update(json.loads(CHECK_LABELS.read_text(encoding="utf-8"))["labels"])
     sets = json.loads((G0 / "label_set.json").read_text(encoding="utf-8"))
     keys = [k for s in ("train", "train2", "check_final") for k in sets.get(s, []) if k in lab]
     det = {(r["round"], r["d"]): r for r in load_det()}

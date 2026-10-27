@@ -274,6 +274,20 @@ def train_one(recs, train, val, G, a, tag, log, logp):
     import torch
     torch.manual_seed(a.seed)
     model = build(G, backbone=a.backbone).cuda().to(memory_format=torch.channels_last)
+    if a.init:
+        ip = Path(a.init)
+        if not ip.exists():
+            ip = STUDENT / f"{a.init}.pt"
+        sd = torch.load(ip, map_location="cpu")
+        msd, used, skipped = model.state_dict(), [], []
+        for k, v in sd.items():
+            if k in msd and msd[k].shape == v.shape:
+                msd[k] = v
+                used.append(k)
+            else:
+                skipped.append(k)
+        model.load_state_dict(msd)
+        print(f"init {ip}: {len(used)} tensors loaded, {len(skipped)} skipped (new / shape-mismatched heads)", flush=True)
     items = lambda rs: [(r, s, e, f) for r in rs for (s, e, f) in recs[r].chunks]  # noqa: E731
     tl = Loader(recs, items(train), a.batch, True, seed=a.seed)
     vl = Loader(recs, items(sorted(val)), a.batch, False, seed=0) if val else None
@@ -319,6 +333,7 @@ def main() -> None:
     ap.add_argument("--kd", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--backbone", default=None, help="timm name (default s4_common.BACKBONE)")
+    ap.add_argument("--init", default="", help="checkpoint under data/moveid/student (e.g. live_a) or a .pt path; compatible tensors are loaded, the rest start fresh")
     ap.add_argument("--limit", type=int, default=0)
     a = ap.parse_args()
     no_throttle()

@@ -519,10 +519,15 @@ def run_all(X, cs, seed, log, quiet_tag=""):
     n1 = l1.max() + 1
     for k in range(n1):
         kinds[k] = "move"
-    l2, p2, _, _ = pipeline(X[i_gr], [cs[i] for i in i_gr], seed, MCS_GRAB, log, quiet_tag + "grab", start=n1)
-    lab[i_gr], prob[i_gr] = l2, p2
-    for k in set(l2.tolist()) - {-1}:
-        kinds[k] = "grab"
+    if len(i_gr) < 3:
+        # phase 1 has only a couple of grab ticks; UMAP/PCA need at least 2 points and a candidate plane
+        log(f"[{quiet_tag}grab] {len(i_gr)} grab chains: too few to cluster, left unknown")
+        lab[i_gr], prob[i_gr] = -1, 0.0
+    else:
+        l2, p2, _, _ = pipeline(X[i_gr], [cs[i] for i in i_gr], seed, MCS_GRAB, log, quiet_tag + "grab", start=n1)
+        lab[i_gr], prob[i_gr] = l2, p2
+        for k in set(l2.tolist()) - {-1}:
+            kinds[k] = "grab"
     return lab, prob, kinds, P1, i_mv
 
 

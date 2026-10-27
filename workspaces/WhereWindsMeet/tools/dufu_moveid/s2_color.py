@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import OUT, read_json, write_json  # noqa: E402
+from common import OUT, PHASE, read_json, write_json  # noqa: E402
 
 P_ON, P_STRONG, MIX_MAX = 0.5, 0.8, 0.25
 GAP_MAX = 2
@@ -109,8 +109,14 @@ def main() -> None:
             continue
         res[ev["id"]] = label(ev, prev.get(rec), fps[rec], a.lead_max)
         prev[rec] = ev["frame"]
-    write_json(COLOR, res)
     from collections import Counter
+    if PHASE == 1:
+        # 阶段一没有红光技能（2026-10-27 老师确认）：模型把碰撞火花/金光误判成 red 的，按 aux flare 回金，其余回没光
+        for i, v in res.items():
+            if v.get("color") == "red":
+                v["color"] = "gold" if idx["events"][int(i)].get("flare") else "none"
+                v["color_guess"] = v["color"]
+    write_json(COLOR, res)
     print(len(res), Counter(v["color"] for v in res.values()))
     for t in ["flare", "ok", "hit_pf", "hit_unk", "grab"]:
         print(t, Counter(v["color"] for i, v in res.items() if idx["events"][int(i)]["type"] == t))

@@ -23,13 +23,14 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+from common import PHASE  # noqa: E402
 from s3_common import (COLOR_IX, MOVE_PRE, N_TTE, OUT, frame_labels, read_json, write_json)  # noqa: E402,F401
 
 STUDENT = OUT / "student"
 VIEWS = STUDENT / "views"
 SOFT = STUDENT / "soft"
 REPO = HERE.parents[3]
-MODEL_OUT = REPO / "workspaces" / "WhereWindsMeet" / "model" / "dufu2"
+MODEL_OUT = REPO / "workspaces" / "WhereWindsMeet" / "model" / ("dufu2" if PHASE == 2 else f"dufu{PHASE}")
 
 GH, GW = 240, 384
 CS = 192

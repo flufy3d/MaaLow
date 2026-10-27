@@ -4,6 +4,17 @@
 
 轮次：`data/p2/rNNN` 为主；`data/p2b/rNNN` 只补录像 id 不在 p2 里的（目前 p2b 的 57 轮全在 p2 里，等于没有补）。
 
+阶段一（2026-10-26 起）：轮次在 `data/p1/`，数据在 `data/moveid/p1/`。所有命令加环境变量 `MOVEID_PHASE=1`；不设时仍是阶段二，路径和产出完全不变。
+
+```
+MOVEID_PHASE=1 uv run python workspaces/WhereWindsMeet/tools/dufu_moveid/pull.py
+MOVEID_PHASE=1 uv run python workspaces/WhereWindsMeet/tools/dufu_moveid/build.py
+MOVEID_PHASE=1 uv run python workspaces/WhereWindsMeet/tools/dufu_moveid/check.py --n 3 --seed 1
+MOVEID_PHASE=1 uv run --no-project --with numpy python workspaces/WhereWindsMeet/tools/dufu_moveid/audit.py
+```
+
+阶段一试采（2026-10-26，`data/p1/r001`–`r002`）：r001 276 秒 cleared、r002 218 秒 dead，录像 345 / 271 MB；186 个接触（93/局），ok 136、flare 17、hit_pf 17、hit_unk 16。`build.py` offset −6.82 / −2.65 帧，hit 45/49、ok 136/137 匹配，|残差| ≤1 帧 95.6% / 97.1%。trace 的 `prep` 是 `poison + potion back`，`curtain` 有 `panels + edge` / `sweep sync` / `timed sweep dodge`，阶段一的上毒和幕布都正常。`check.py` 抽的两下血量台阶在接触 +5/+6 帧。`audit.py` 独立复算：hit 血量台阶 46/49、ok 真气台阶 134/137（不依赖 build 的 offset）。
+
 ## 命令
 
 ```

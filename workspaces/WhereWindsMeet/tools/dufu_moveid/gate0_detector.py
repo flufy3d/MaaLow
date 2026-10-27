@@ -24,13 +24,16 @@ import shutil
 import sys
 from pathlib import Path
 
+from common import OUT, PHASE
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
-G0 = ROOT / "data/moveid/gate0"
+G0 = OUT / "gate0"
 FRAMES = G0 / "frames"
 YOLO = G0 / "yolo"
-BOXES = ROOT / "data/moveid/boss_boxes"
-LABELS = HERE / "gate0_labels.json"
+BOXES = OUT / "boss_boxes"
+LABELS = HERE / ("gate0_labels.json" if PHASE == 2 else f"gate0_labels_p{PHASE}.json")
+CHECK_LABELS = HERE / ("gate0_check_labels.json" if PHASE == 2 else f"gate0_check_labels_p{PHASE}.json")
 W, H = 1080, 720
 CONF = 0.25
 DRAGON = False  # third class "dragon" (dragon_boxes); tried as v5, no better on the dev set, off
@@ -232,7 +235,7 @@ def fuse_all(rounds=None, **kw):
 def dev_eval(raw_dir=RAW, **kw):
     """Dev-set score of the fused boxes (gate0_check_labels.json): right = IoU >= 0.4 with the hand box, or no box
     where the hand label says the boss is not visible."""
-    gt = json.loads((HERE / "gate0_check_labels.json").read_text(encoding="utf-8"))["labels"]
+    gt = json.loads(CHECK_LABELS.read_text(encoding="utf-8"))["labels"]
     c = {"right": 0, "none_right": 0, "miss": 0, "false": 0, "off": 0}
     for k, g in gt.items():
         rnd, d = k.split("/")

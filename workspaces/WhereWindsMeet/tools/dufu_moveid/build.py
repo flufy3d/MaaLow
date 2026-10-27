@@ -25,7 +25,7 @@ from collections import Counter
 
 import numpy as np
 
-from common import BARS, META, OUT, REPO, STATUS, VIDEO, read_json, rounds, write_json
+from common import BARS, META, OUT, PHASE, REPO, STATUS, VIDEO, read_json, rounds, write_json
 
 from data import FRAME_MS, load_round
 from labels import _seen, contacts
@@ -218,7 +218,7 @@ def main() -> None:
 
     fields = {
         "rounds": {
-            "round": "data/p2/rNNN (or p2b/rNNN for recordings only p2b has)", "rec": "recording id",
+            "round": f"data/p{PHASE}/rNNN" + (" (or p2b/rNNN for recordings only p2b has)" if PHASE == 2 else ""), "rec": "recording id",
             "video": "mp4 path from the repo root", "trace": "trace.json path", "frames": "decoded frame count",
             "meta_frames": "frames in the Pad's meta", "start": "skill start, epoch ms (trace clock origin)",
             "rec_started": "recording meta `started`, epoch ms",

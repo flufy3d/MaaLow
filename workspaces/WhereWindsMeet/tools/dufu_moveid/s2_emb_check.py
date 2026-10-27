@@ -24,7 +24,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 REPO = HERE.parents[3]
-OUT = REPO / "data" / "moveid"
+from common import OUT  # phase-aware
 EMB = OUT / "emb"
 CHECK = EMB / "check"
 KEYS = ("glob", "big", "small")

@@ -102,7 +102,8 @@ def main() -> None:
     d = load()
     ev = d["events"]
     idx = read_json(OUT / "index.json")["events"]
-    outcome = {e["id"]: e["outcome"] for e in idx}
+    special = {e["id"]: e.get("special") for e in ev}
+    outcome = {e["id"]: "grab" if special.get(e["id"]) == "grab" else e["outcome"] for e in idx}
     fold_of = folds(d["recs"], ev)
     z = np.load(TEACHER / "oof.npz")
     P = {k: z[k] for k in z.files}

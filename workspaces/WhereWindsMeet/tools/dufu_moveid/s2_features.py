@@ -34,7 +34,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 REPO = HERE.parents[3]
-OUT = REPO / "data" / "moveid"
+from common import OUT  # phase-aware (MOVEID_PHASE=1 -> data/moveid/p1)
 EMB = OUT / "emb"
 STATUS = EMB / "status.json"
 MODEL = "timm/vit_small_plus_patch16_dinov3.lvd1689m"
