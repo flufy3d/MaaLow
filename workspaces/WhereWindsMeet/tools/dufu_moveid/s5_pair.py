@@ -1,4 +1,5 @@
-"""Order 5: game-screen parity of the dufu2 pipeline on the Pad (pair frames of a dufu2 run with args.pair).
+"""Order 5: game-screen parity of the dufu2 (or, MOVEID_PHASE=1, dufu1) pipeline on the Pad (pair frames of a dufu2
+run with args.pair).
 
     uv run --no-project --with numpy --with onnxruntime --with opencv-python-headless \
         python workspaces/WhereWindsMeet/tools/dufu_moveid/s5_pair.py data/moveid/live/r001 [...]
@@ -11,6 +12,8 @@ Per dufu2_pair event (events.json; screenshot in rNNN/png/, s5_pull.py downloads
   head      the head on the device's 30 ring entries (+ its contact history) vs the device logits (head numerics);
             and with the newest entry replaced by the PC features (whole pipeline); per head argmax agreement
 -> <round>/pair.json (per frame) and a printed summary; several rounds -> data/moveid/live/pair_summary.json.
+Model dir: model/<args.model> under workspaces/WhereWindsMeet/model; the default is model/dufu2 (阶段二) or
+model/dufu1 (MOVEID_PHASE=1), and the head slices come from the phase's prefix group count (s4_common.heads).
 """
 from __future__ import annotations
 
@@ -25,11 +28,13 @@ import onnxruntime as ort
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from common import OUT, REPO, read_json, write_json  # noqa: E402
+from common import OUT, PHASE, REPO, read_json, write_json  # noqa: E402
 from s2_views import boxes, views  # noqa: E402
+from s3b_gate1 import PREFIX  # noqa: E402
+from s4_common import heads  # noqa: E402
 
-MODEL = REPO / "workspaces" / "WhereWindsMeet" / "model" / "dufu2"
-HEADS = [("grp", 0, 88), ("col", 88, 91), ("resp", 91, 94), ("tte", 94, 141)]
+MODEL = REPO / "workspaces" / "WhereWindsMeet" / "model" / f"dufu{PHASE}"
+HEADS = heads(len(read_json(PREFIX / "prefix.json")["groups"]))   # grp / col / resp / tte slices (阶段一: 98 / 3 / 3 / 47)
 G, C, RING = 128, 96, 30
 
 
@@ -48,7 +53,7 @@ def one_round(d: Path) -> list[dict]:
     ran = ((res.get("value") or {}).get("ran") or {})
     prov = ran.get("glob") or args.get("provider", "qnn")
     suf = ".qnn.onnx" if prov == "qnn" else ".onnx"
-    mdir = MODEL.parent / args.get("model", "dufu2")   # dufu2.js args.model (default dufu2)
+    mdir = MODEL.parent / args.get("model", MODEL.name)   # dufu2.js args.model (default dufu2 / dufu1 by phase)
     S = {n: ort.InferenceSession(str(mdir / f"{n}{suf}"), providers=["CPUExecutionProvider"]) for n in ("glob", "crop", "head")}
     out = []
     for e in read_json(d / "events.json", []) or []:

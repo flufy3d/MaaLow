@@ -4,7 +4,9 @@ run made miss leaves none).
 
     uv run --no-project --with numpy --with opencv-python-headless python $D/s5_episodes.py r024 r025 ... [--json out]
 
-Needs s5_analyze.py run on the rounds (contacts.json) and live/video.
+Needs s5_analyze.py run on the rounds (contacts.json) and live/video. MOVEID_PHASE=1 (阶段一) reads
+data/moveid/p1/live and model/dufu1/movetable.json; the c11 window there is the group starting with k0:c11
+(k0:c11+c15+c23, 阶段二: k0:c11+c40).
 
 c7 episode: the first trace row of >= 2 consecutive rows whose grp is a 火球雨 volley group (k0..k4:c7, unparryable
   in the move table), >= EP_GAP_F after the previous episode's start; the window is [start, start + EP_WIN_F] video
@@ -28,14 +30,14 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from common import OUT, read_json  # noqa: E402
+from common import OUT, PHASE, read_json  # noqa: E402
 
 LIVE = OUT / "live"
 FRAME_MS = 1000 / 30
-TABLE = read_json(HERE.parents[1] / "model" / "dufu2" / "movetable.json")
+TABLE = read_json(HERE.parents[1] / "model" / f"dufu{PHASE}" / "movetable.json")
 GN = list(TABLE["groups"])
 C7 = {i for i, n in enumerate(GN) if n.split(":")[1] == "c7" and TABLE["groups"][n]["unparryable"]}
-C11 = GN.index("k0:c11+c40")
+C11 = next((i for i, n in enumerate(GN) if n.startswith("k0:c11")), None)   # 阶段二 k0:c11+c40, 阶段一 k0:c11+c15+c23
 EP_GAP_F, EP_WIN_F = 150, 130
 SEQ_MIN_F, SEQ_F = 8, 150
 DIRS = ["side", "diag", "back"]

@@ -74,11 +74,12 @@ def main() -> None:
     ap.add_argument("--out", default=str(PREFIX / "check"))
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max", type=int, default=30)
+    ap.add_argument("--gate", default="", help="gate1.json (default: teacher_prefix/gate1.json, else teacher_prefix/gate1/gate1.json)")
     a = ap.parse_args()
     d = load()
     prefix = read_json(PREFIX / "prefix.json")
     gname = [g["name"] for g in prefix["groups"]]
-    gate = read_json(PREFIX / "gate1.json")
+    gate = read_json(Path(a.gate) if a.gate else (PREFIX / "gate1.json" if (PREFIX / "gate1.json").exists() else PREFIX / "gate1" / "gate1.json"))
     z = np.load(a.pred)
     P = {k: z[k] for k in z.files}
     row_of = {int(i): k for k, i in enumerate(P["ids"])}

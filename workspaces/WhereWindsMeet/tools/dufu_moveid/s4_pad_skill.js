@@ -1,14 +1,15 @@
-// TEMPORARY (tools/dufu_moveid/s4_pad.py copies it to skills/dufu2_pair.js, runs it and deletes it): the dufu2 student
+// TEMPORARY (tools/dufu_moveid/s4_pad.py copies it to skills/<model>_pair.js, runs it and deletes it): the student
 // pipeline on the current screen, read-only. Calls ONLY screenshot(), saveImage() and infer(): no touch, no keys, no
 // clicks, no node runs. Per frame: screenshot -> glob(screen) / crop(big) / crop(small) (each appends its feature to
-// a ring) -> head on the three rings (s4_common docstring, model/dufu2/dufu2.json).
-//   mode "pair": n frames; each frame's screenshot saved as captures/dufu2_pair/<run>_<i>.png, the device's
-//                preprocessed views (infer input: true) returned base64, features and head logits returned
+// a ring) -> head on the three rings (s4_common docstring, model/dufu2/dufu2.json, model/dufu1/dufu1.json).
+//   mode "pair": n frames; each frame's screenshot saved as <args.captures>/<run>_<i>.png (s4_pad.py passes
+//                captures/dufu2_pair or captures/dufu1_pair), the device's preprocessed views (infer input: true)
+//                returned base64, features and head logits returned
 //   mode "time": n frames after `warm`; per frame the screenshot wall time and every call's ms (prep / run / total)
-// args: {mode, n, warm?, run?, models: {glob, crop, head}, provider?, threads?, hist?: number[4]}
+// args: {mode, n, warm?, run?, captures?, models: {glob, crop, head}, provider?, threads?, hist?: number[4]}
 
 /** @type {SkillMeta} */
-export const meta = { description: "TEMPORARY: dufu2 student on-device parity / timing (read-only, no input actions)", timeout: 1_800_000 };
+export const meta = { description: "TEMPORARY: student on-device parity / timing (read-only, no input actions)", timeout: 1_800_000 };
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 /** @param {number[]} b bytes */
@@ -51,7 +52,7 @@ export default function (args) {
                     provider: [g, b, s, h].map((x) => /** @type {any} */ (x).provider ?? null),
                     fallback: [g, b, s, h].map((x) => /** @type {any} */ (x).fallback ?? null), ring: h.ring };
         if (want) {
-            const name = `captures/dufu2_pair/${args.run ?? "r"}_${String(i - warm).padStart(3, "0")}.png`;
+            const name = `${args.captures ?? "captures/dufu2_pair"}/${args.run ?? "r"}_${String(i - warm).padStart(3, "0")}.png`;
             f.png = saveImage(img, name);
             f.input = { glob: b64(g.input[0]), big: b64(b.input[0]), small: b64(s.input[0]) };
             f.feat = { glob: g.output, big: b.output, small: s.output };

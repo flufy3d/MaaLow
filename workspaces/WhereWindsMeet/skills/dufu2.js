@@ -1,5 +1,14 @@
-// 独夫 阶段二 with the move-ID student (docs/dufu-moveid-plan.md, model/dufu2/dufu2.json). Independent of dufu.js
-// (only lib/dufu-reads.js's bar reads and lib/stats.js are shared).
+// 独夫 with the move-ID student (docs/dufu-moveid-plan.md, model/dufu2/dufu2.json). Independent of dufu.js (only
+// lib/dufu-reads.js's screen reads and lib/stats.js are shared).
+//
+// Two arenas, one skill (args.phase; everything else defaults per phase):
+//   phase 2 (default since 2026-10-25 关 2: model dufu2b, 88 groups = 87 prefixes + idle): no poison, no 幕布, the quest
+//     line is not an end; 跑 from the 火球雨 (@see runTick) and the 金光火球 window (@see goldBeatTick).
+//   phase 1 (2026-10-27 顺序 7: model dufu1, 98 groups = the p1 table's 97 + idle; no red light at all — teacher: 金光
+//     dodge, everything else 卸势): prep coats the blade with poison and puts the potion back (no 增益 / 伤害: defend does
+//     not attack); the quest line's 「阶段二」 ends the round (@see clearedTick); the 幕布 gap state machine
+//     (@see curtainTick: walk into the gap, dodge the sweep); args.chain11 forces a 闪避 on k1:c11+c15+c23. No 跑 /
+//     金光火球窗 / k2:c30 chain beat (phase-2 moves only).
 //
 // Per 30 fps tick (tick n is due at t0 + n * 33.3 ms; one ring entry per tick, never two, never none):
 //   screenshot -> infer glob (whole screen -> 384x240, ring "glob", aux = the 4 contact-history values)
@@ -27,27 +36,34 @@
 //   "defend"  defense + potion only, no offense: walk in until the boss bar shows, re-lock, 卸势 / 闪避 by the
 //             model (@see decide), potion at a quiet moment (@see potionTick), run from the 火球雨 (@see runTick).
 // provider (args.provider): "qnn" (default; falls back to cpu without the plugin: the result's `provider` says what
-//   ran) or "cpu". phase: 2 only (阶段二 arena: no poison, no curtain, the quest line is not an end).
+//   ran) or "cpu". phase: 1 | 2 (default 2). Phase 2: model dufu2b, no poison / no curtain, the quest line is not an
+//   end, 跑 / 金光火球窗 / chain on. Phase 1: model dufu1, poison in prep, 幕布, the quest line's 阶段二 = cleared,
+//   no 跑 / 金光火球窗 / chain, args.chain11 / args.curtain / args.curtainGap as A/B switches.
 // Trace: one row per tick (TRACE_COLS), event TRACE_EVENT in chunks of TRACE_CHUNK rows (~25 KB each); run
 //   skills/event_pad.js after fetching them (tools/dufu_rounds.py does). args.pair N (shadow checks): every N-th
 //   tick the screenshot is saved (captures/dufu2_live/<tag>_<n>.png) and event PAIR_EVENT carries the head logits and
 //   the 30 ring entries (float32 base64) for the PC recomputation (tools/dufu_moveid/s5_pair.py).
 //   maalow do skill dufu2 --args '{"mode":"shadow","ms":300000}'
 //   maalow do skill dufu2 --args '{"mode":"defend","provider":"qnn","ms":600000}' --timeout 660000
-//   (defaults since 2026-10-25 关 2: model dufu2b, 闪避 lead 5, run diag from the 火球雨, the 金光火球 window; the A/B
-//   switches: run, runDir, goldSeq, model, dodgeLead, chain, tools/dufu_moveid/README.md「顺序 5 续」)
+//   maalow do skill dufu2 --args '{"mode":"defend","phase":1,"ms":600000}' --timeout 660000
+//   (phase 2 defaults since 2026-10-25 关 2: model dufu2b, 闪避 lead 5, run diag from the 火球雨, the 金光火球 window;
+//   the A/B switches: run, runDir, goldSeq, model, dodgeLead, chain, tools/dufu_moveid/README.md「顺序 5 续」;
+//   phase 1 defaults: model dufu1, 闪避 lead 5, 幕布 on with the gap walk, chain11 off)
 import { stats } from "./lib/stats.js";
-import { BOSS_RED, BOSS_ROI, countAtLeast, health, readQi } from "./lib/dufu-reads.js";
-import { DEFAULTS, GROUPS } from "./lib/dufu2-table.js";
+import { BOSS_RED, BOSS_ROI, ME_X, countAtLeast, gapNow, health, readMean, readQi } from "./lib/dufu-reads.js";
+import { DEFAULTS as DEFAULTS2, GROUPS as GROUPS2 } from "./lib/dufu2-table.js";
+import { DEFAULTS as DEFAULTS1, GROUPS as GROUPS1 } from "./lib/dufu1-table.js";
 
 /** @type {SkillMeta} */
-export const meta = { description: "独夫 阶段二 with the dufu2 move-ID student: shadow (look only) / defend (卸势 / 闪避 / potion)", timeout: 660_000 };
+export const meta = { description: "独夫 with the dufu2 move-ID student — phase 2 (default, model dufu2b) or phase 1 (model dufu1: poison prep, 幕布, quest-line 阶段二): shadow (look only) / defend (卸势 / 闪避 / potion)", timeout: 660_000 };
 
 const FRAME_MS = 1000 / 30;
 /** @type {Box} */ const BIG = [290, 55, 530, 530];
 /** @type {Box} */ const SMALL = [425, 190, 260, 260];
 const RING = 30, G_DIM = 128, C_DIM = 96;
-const NG = 88, IDLE = 87, O_COL = 88, O_RESP = 91, O_TTE = 94, N_TTE = 47, TTE_NONE = 46;
+// head slices: the p2 head 88 groups / idle 87 (col 88..90, resp 91..93, tte 94..140); the p1 head 98 / idle 97
+// (col 98..100, resp 101..103, tte 104..150). N_TTE / TTE_NONE are the same in both. @see decode
+const N_TTE = 47, TTE_NONE = 46;
 const FILL_MAX = 3;
 // contact history (s3b_train.history)
 const HIST_DELAY_F = 6, HIST_GAP_F = 73;
@@ -55,12 +71,18 @@ const HIST_DELAY_F = 6, HIST_GAP_F = 73;
 const HIT_DROP = 0.025, HIT_MAX = 0.35, HIT_LAG_F = 5, QI_STEP = 8, QI_JUMP = 80, OK_PARRY_MAX_F = 24, MERGE_F = 6;
 // decisions (@see decide)
 const GOLD_DODGE_P = 0.15; // P(gold) at or above this: dodge (gold must be dodged; "colour unsure" = gold not ruled out)
+// phase 1: the teacher's gold recall is 88.5 % (11.5 % gold -> none), so the phase-2 threshold leaves 4.95 % of gold
+// contacts answered by 卸势 (gate 2 allows 3 %). At 0.02 the OOF decision is 19/707 = 2.7 % gold parried and 93.0 %
+// fatal-response (>= 90 %), so phase 1 uses its own threshold.
+const GOLD_DODGE_P1 = 0.02;
 const CONTACT_P = 0.4; // 1 - P(resp none) below this: no press
 const LATE_F = 1; // a contact predicted this far in the past still gets its press
 const GRACE_F = 6, REARM_F = 8; // a pressed contact is consumed GRACE_F after it; a prediction REARM_F later is a new one
 const PARRY_LOCK_MS = 330, PARRY_CD_MS = 220, DODGE_CD_MS = 500; // the game's 卸势 lock / our cooldowns
 const TAP_MS = 50;
-const DODGE_LEAD = 5; // 闪避 lead (frames) for every dodge unless args.dodgeLead (null = the move table's dodge_lead)
+// 闪避 lead (frames) for every dodge unless args.dodgeLead. Both phases: 5 (phase 2 the best of 14 / 8 / 5 in
+// r007-r023; phase-1 failed dodges are 62 % at <=10 frames, so the table's 14 is not used by default).
+const DODGE_LEAD = 5;
 // run (teacher 2026-10-25: the 火球雨, a pile of fireballs from afar, is dodged by running first, then 闪避). The
 // 火球雨 is the c7 chain (boss jumps back onto the steps, ~2 s wind-up, then a volley of 5-8 fireballs in ~1 s):
 // the student names its opening k0:c7 ~35 f before the first fireball (live r024-r031). A run starts when the c7
@@ -117,6 +139,33 @@ const SLOT_POTION_T = ["combat/potion_drill.png", "combat/potion_real.png"];
 /** @type {Point} */ const ITEM_OPEN = [700, 633];
 /** @type {Box} */ const COLUMN_ROI = [665, 400, 75, 210];
 /** @type {Point} */ const ITEM_PICK = [702, 575];
+// phase 1 prep (dufu.js prep, 2026-10-23): swap the poison into the slot, tap the slot icon to coat the blade, swap the
+// potion back. The pick swaps with the slot's item, so both swaps are checked. No 增益 / 伤害 in this skill (defend
+// does not attack).
+const PREP_MENU_MS = 600, PREP_USE_MS = 1500, PREP_SWAP_TRIES = 3, SLOT_POTION_TH = 0.75, COLUMN_TH = 0.8;
+const POISON_T = ["combat/poison_real.png"];
+/** the poison is used by a tap on the slot icon (real fight 2026-10-23: 天工开物 398 -> 397, the blade glows green);
+ *  dufu2's POTION tap (700, 690) there left 特殊道具 in the slot instead */
+/** @type {Point} */ const SLOT_ICON = [700, 666];
+// phase 1 end by the quest line (dufu.js clearedCheck): 「…阶段二」 on two checks ~400 ms apart. The 阶段二 arena reads
+// 阶段二 all along, so phase 2 never runs it.
+const CLR_EVERY_MS = 400;
+const QUEST_WHITE = { lower: [0, 0, 190], upper: [180, 70, 255], method: 40 };
+/** @type {Box} */ const PHASE2_TOP = [222, 140, 12, 4]; // 二: >= 8 px
+/** @type {Box} */ const PHASE2_BOTTOM = [220, 147, 16, 4]; // >= 10 px
+/** @type {Box} */ const PHASE1_MID = [220, 144, 16, 3]; // 一: <= 2 px
+// 幕布 (phase 1; teacher 2026-10-26: far away: walk into the gap; if the sweep is about to reach us, 闪避 and it is
+// dodged). lib/dufu-reads.gapNow gives the free gap [left, right] or "covered"; a probe every CURTAIN_TICKS ticks
+// enters the curtain, CURTAIN_GONE_MS without a gap ends it. While in it: walk the gap's centre (contact 0 sideways,
+// args.curtainGap false = no walking). "covered" / the black cover: the head's k0:c5+c18 (unparryable) dodges through
+// decide(); when nothing was pressed for CURTAIN_COVER_DODGE_MS the fallback dodges once (a drink pending holds it).
+const CURTAIN_TICKS = 3, CURTAIN_GONE_MS = 1200, CURTAIN_COVER_DODGE_MS = 800, BLACK_MEAN = 22;
+const GAP_IN = 20, GAP_PUSH = 120; // me at ME_X: within GAP_IN (or a quarter of the gap) no walking; GAP_PUSH px off
+// the centre = full stick (dufu.js's gap rule)
+// chain11 (phase 1, args.chain11, default off): the third blow of the gold chain (k2:c11) only comes in the chain whose
+// opening hit us and the head never names it (0 / 75); the second blow's group k1:c11+c15+c23 is dodged instead (one
+// dodge can take both). A/B switch.
+const CHAIN11_NAME = "k1:c11+c15+c23";
 // end of the round (dufu.js deadCheck / haltCheck)
 /** @type {Box} */ const GREY_ROI = [100, 100, 880, 500];
 const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
@@ -131,12 +180,6 @@ const TRACE_COLS = ["wall", "seq", "cap", "n", "fill", "dup", "hp", "qi", "boss"
     "grp", "grpP", "gold", "red", "none", "dodge", "parry", "rnone", "med", "p10", "act", "would", "contact", "pipe", "loop",
     "c7P", "run"];
 const ACT = { parry: 1, dodge: 2, potion: 3, lock: 4, walk: 5, run: 6 };
-const GRP_NAMES = Object.keys(GROUPS); // gid order (the head's grp labels 0..86; 87 = idle)
-/** the 火球雨 volley groups: c7 alone at its prefix position and unparryable in the table (k0..k4:c7; the later c7
- *  positions are the boss's next moves, parryable) */
-const C11_GID = GRP_NAMES.indexOf("k0:c11+c40");
-const C30_K2_GID = GRP_NAMES.indexOf("k2:c30");
-const C7_GIDS = GRP_NAMES.map((n, i) => (/^k\d+:c7$/.test(n) && GROUPS[n].unparryable ? i : -1)).filter((i) => i >= 0);
 
 /**
  * The boss bar's fill in px-equivalent (red px / the bar's 6 rows). Not lib bossPx (the width of the box around any
@@ -189,14 +232,27 @@ function f32b64(arrs) {
 }
 
 /**
- * @param {{mode?: "shadow" | "defend", provider?: "qnn" | "cpu", phase?: number, ms?: number, potions?: number,
+ * @param {{mode?: "shadow" | "defend", provider?: "qnn" | "cpu", phase?: 1 | 2, ms?: number, potions?: number,
  *          trace?: boolean, pair?: number, tag?: string, approach?: boolean, dodgeLead?: number | null,
- *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean, model?: string, chain?: boolean}} [args]
+ *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
+ *          model?: string, chain?: boolean, chain11?: boolean, curtain?: boolean, curtainGap?: boolean}} [args]
  */
 export default function (args = {}) {
     const mode = args.mode ?? "shadow";
     if (mode !== "shadow" && mode !== "defend") throw new Error(`mode ${mode}: shadow | defend`);
-    if ((args.phase ?? 2) !== 2) throw new Error("dufu2 is the 阶段二 model: phase 2 only");
+    const phase = args.phase ?? 2;
+    if (phase !== 1 && phase !== 2) throw new Error(`phase ${phase}: 1 | 2`);
+    // the phase's head slices and move table: p2 88 groups (idle 87), p1 98 (idle 97); same tte head
+    const NG = phase === 1 ? 98 : 88, IDLE = phase === 1 ? 97 : 87;
+    const O_COL = NG, O_RESP = O_COL + 3, O_TTE = O_RESP + 3;
+    const DEFAULTS = phase === 1 ? DEFAULTS1 : DEFAULTS2, GROUPS = phase === 1 ? GROUPS1 : GROUPS2;
+    const GRP_NAMES = Object.keys(GROUPS); // gid order = the head's grp labels 0..NG-2 (NG-1 = idle)
+    // the phase-2-only groups resolve to -1 on the p1 table (their code is gated by phase anyway)
+    /** the 火球雨 volley groups: c7 alone at its prefix position and unparryable in the table (k0..k4:c7; the later c7
+     *  positions are the boss's next moves, parryable) */
+    const C11_GID = GRP_NAMES.indexOf("k0:c11+c40");
+    const C30_K2_GID = GRP_NAMES.indexOf("k2:c30");
+    const C7_GIDS = GRP_NAMES.map((n, i) => (/^k\d+:c7$/.test(n) && GROUPS[n].unparryable ? i : -1)).filter((i) => i >= 0);
     const defend = mode === "defend";
     // the walk-in at the start (stick forward until the boss bar shows): the boss waits at the far end of the arena
     // and never engages a character that stays put (live 2026-10-25, r001: 55 s, no boss bar). The shadow walks in
@@ -208,21 +264,30 @@ export default function (args = {}) {
     const pairEvery = args.pair ?? 0;
     // args.dodgeLead: every dodge's lead (frames) instead of the move table's (closed-loop trials: only failed dodges
     // are in the recorded data, @see tools/dufu_moveid/s5_movetable.py)
-    // (default 5: the best of 14 / 8 / 5 in r007-r023; null = the table's)
-    const dodgeLead = args.dodgeLead === null ? null : typeof args.dodgeLead === "number" ? args.dodgeLead : DODGE_LEAD;
-    // args.run: run from the 火球雨 (default on, @see runTick); args.runDir: one direction or a list cycled per run
-    // (default diag: r036-r071 side 1.58 hits per 火球雨 episode (24), diag 0.64 (14))
-    const runOn = defend && (args.run ?? true);
+    // (both phases default 5: the best of 14 / 8 / 5 in phase 2 r007-r023; the phase-1 failed dodges are 62 % at <=10
+    // frames, so the table's placeholder 14 is not used unless args.dodgeLead is null)
+    const dodgeLead = args.dodgeLead === null ? null
+        : typeof args.dodgeLead === "number" ? args.dodgeLead
+            : DODGE_LEAD;
+    // args.run: run from the 火球雨 (phase 2 only, default on, @see runTick); args.runDir: one direction or a list
+    // cycled per run (default diag: r036-r071 side 1.58 hits per 火球雨 episode (24), diag 0.64 (14))
+    const runOn = phase === 2 && defend && (args.run ?? true);
     const runDirs = [args.runDir ?? "diag"].flat();
-    // args.goldSeq: the 金光火球 window (default on, @see GOLD_SEQ_F)
-    const goldSeqOn = args.goldSeq ?? true;
-    // args.chain: the k2:c30 chain beat (default on since 2026-10-26, @see CHAIN_AFTER_F)
-    const chainOn = args.chain ?? true;
+    // args.goldSeq: the 金光火球 window (phase 2 only, default on, @see GOLD_SEQ_F)
+    const goldSeqOn = phase === 2 && (args.goldSeq ?? true);
+    // args.chain: the k2:c30 chain beat (phase 2 only, default on since 2026-10-26, @see CHAIN_AFTER_F)
+    const chainOn = phase === 2 && (args.chain ?? true);
+    // args.chain11: phase 1 only, force the 闪避 on k1:c11+c15+c23 (default off, @see CHAIN11_NAME)
+    const chain11On = phase === 1 && (args.chain11 ?? false);
+    // args.curtain / args.curtainGap: the phase-1 幕布 state machine (default on) / its gap walk (false: only dodge)
+    const curtainOn = phase === 1 && (args.curtain ?? true);
+    const curtainGap = args.curtainGap ?? true;
     for (const d of runDirs) if (!(d in RUN_DIRS)) throw new Error(`runDir ${d}: ${Object.keys(RUN_DIRS).join(" | ")}`);
     const tag = args.tag ?? String(Date.now());
-    // args.model: the model directory under model/ (default dufu2b = the student fine-tuned on the live rounds,
-    // tools/dufu_moveid/s5_retrain.py; dufu2 = the order-4 student), same inputs / outputs / group labels
-    const mdir = args.model ?? "dufu2b";
+    // args.model: the model directory under model/ (phase 2 default dufu2b = the student fine-tuned on the live rounds,
+    // tools/dufu_moveid/s5_retrain.py; dufu2 = the order-4 student. Phase 1 default dufu1), same inputs / outputs per
+    // phase's group labels
+    const mdir = args.model ?? (phase === 1 ? "dufu1" : "dufu2b");
     const M_GLOB = `${mdir}/glob.onnx`, M_CROP = `${mdir}/crop.onnx`, M_HEAD = `${mdir}/head.onnx`;
     const start = Date.now();
     const untilMs = Math.min(args.ms ?? 600_000, remaining() - END_MARGIN_MS);
@@ -255,7 +320,8 @@ export default function (args = {}) {
         ups = ups.filter((u) => u.c !== c);
         touch.up(c);
     };
-    let stickF = 0;
+    let stickF = 0; // the forward push (walking in) on contact 0
+    let stickSide = 0; // the sideways push (the 幕布 gap, phase 1) on the same contact 0: never both at once
     /** @param {Point} p */
     const tap = (p) => {
         if (!defend || halt) return false;
@@ -267,11 +333,27 @@ export default function (args = {}) {
     const walk = (/** @type {number} */ v) => {
         if (!walkIn || v === stickF || (halt && v)) return;
         if (v) {
+            if (stickSide) stickSide = 0; // contact 0 is re-aimed below: the sideways push ends
             freeContact(0);
             touch.down(STICK, 0);
             touch.move([STICK[0], Math.round(STICK[1] - STICK_R * v)], 0);
-        } else touch.up(0);
+        } else if (!stickSide) touch.up(0); // the side push still owns contact 0
         stickF = v;
+    };
+    /** Push the stick sideways, -1 (left) .. 1 (right), on contact 0: the 幕布 gap rule. The forward push is released
+     *  first, so the contact is never held in two directions. @param {number} v */
+    const walkSide = (v) => {
+        if (v === stickSide || (halt && v !== 0)) return;
+        if (v === 0) {
+            if (!stickF) touch.up(0);
+            stickSide = 0;
+            return;
+        }
+        if (stickF) walk(0);
+        freeContact(0);
+        touch.down(STICK, 0);
+        touch.move([Math.round(STICK[0] + STICK_R * v), STICK[1]], 0);
+        stickSide = v;
     };
     let dodgeSeq = 0;
     /** the run in progress (@see runTick): the stick (contact 0) is held at `at` */
@@ -286,6 +368,7 @@ export default function (args = {}) {
             running.dodges++;
             return true;
         }
+        walkSide(0); // the gap walk releases contact 0 before the dodge's own left / right
         walk(0);
         freeContact(0);
         touch.down(STICK, 0);
@@ -346,18 +429,44 @@ export default function (args = {}) {
         rows = [];
     };
 
-    // ---- defend prep: the potion in the item slot (dufu.js prep, phase 2: no poison, no buffs)
-    if (defend && !match(SLOT_POTION_T, { image: screenshot(), roi: SLOT_ROI, threshold: 0.75 }).hit) {
-        for (let i = 0; i < 3; i++) {
+    // ---- defend prep (dufu.js prep): the potion in the item slot. Phase 2 stops there (no poison, no buffs); phase 1
+    // swaps the poison in, taps the slot icon to coat the blade, then swaps the potion back (teacher 2026-10-23). Both
+    // swaps are checked because the pick swaps with the slot's item (a failed swap once left poison for the drinks). No
+    // 增益 / 伤害: this skill does not attack.
+    /** @param {Image} im */
+    const slotPotion = (im) => match(SLOT_POTION_T, { image: im, roi: SLOT_ROI, threshold: SLOT_POTION_TH }).hit;
+    /** Where to tap in the open column above the slot for these templates; ITEM_PICK when none shows (the training
+     *  poison has no template, dufu.js). @param {Image} im @param {string[]} templates @returns {Point} */
+    function columnPick(im, templates) {
+        const b = match(templates, { image: im, roi: COLUMN_ROI, threshold: COLUMN_TH }).box;
+        return b ? [Math.round(b[0] + b[2] / 2), Math.round(b[1] + b[3] / 2)] : ITEM_PICK;
+    }
+    /** Swap the slot's item until the slot holds the potion (want) / something else. @param {boolean} want
+     *  @param {string} what @returns {boolean} */
+    function swapTo(want, what) {
+        for (let i = 0; i < PREP_SWAP_TRIES; i++) {
             tap(ITEM_OPEN);
-            sleep(600);
+            sleep(PREP_MENU_MS);
             upsDue(true);
-            const b = match(SLOT_POTION_T, { image: screenshot(), roi: COLUMN_ROI, threshold: 0.8 }).box;
-            tap(b ? [Math.round(b[0] + b[2] / 2), Math.round(b[1] + b[3] / 2)] : ITEM_PICK);
-            sleep(600);
+            tap(columnPick(screenshot(), want ? SLOT_POTION_T : POISON_T));
+            sleep(PREP_MENU_MS);
             upsDue(true);
-            if (match(SLOT_POTION_T, { image: screenshot(), roi: SLOT_ROI, threshold: 0.75 }).hit) break;
-            mark("prep", `potion not in the slot (try ${i + 1})`);
+            if (slotPotion(screenshot()) === want) return true;
+            mark("prep", `${what} not in the slot (try ${i + 1})`);
+        }
+        return false;
+    }
+    if (defend) {
+        if (!slotPotion(screenshot())) swapTo(true, "potion");
+        if (phase === 1) {
+            const poisoned = swapTo(false, "poison");
+            if (poisoned) {
+                tap(SLOT_ICON);
+                sleep(PREP_USE_MS);
+                upsDue(true);
+            }
+            const back = !poisoned || swapTo(true, "potion");
+            mark("prep", `${poisoned ? "poison" : "NO POISON"} + ${back ? "potion back" : "POTION NOT BACK"} in ${Date.now() - start} ms`);
         }
     }
 
@@ -393,6 +502,8 @@ export default function (args = {}) {
     const would = { parry: 0, dodge: 0 };
     /** @type {any[]} */
     const pressLog = []; // [t ms, kind, grp, pGold, pDodge, pParry, med, remF, lead, src]
+    /** @type {any[]} */
+    const chain11Log = []; // phase 1 args.chain11: [t ms, grp, remF, lead]
     /** @type {{shot: number[], pipe: number[], prep: number[], run: number[], inferWall: number[], reads: number[], loop: number[], head: number[]}} */
     const tm = { shot: [], pipe: [], prep: [], run: [], inferWall: [], reads: [], loop: [], head: [] };
     // potion
@@ -510,6 +621,8 @@ export default function (args = {}) {
      * contact is predicted at capture + median(tte); the press goes when it is <= lead frames away (lead from the
      * move table by the predicted prefix group, else the global default; @see lib/dufu2-table.js), unless it is more
      * than LATE_F past, or P(contact) = 1 - P(resp none) < CONTACT_P.
+     * Phase 1, args.chain11: the group k1:c11+c15+c23 (the second blow of the gold chain) is dodged whatever the resp
+     * head says (@see CHAIN11_NAME).
      * @param {number} now @returns {{kind: "parry" | "dodge", Tc: number, remF: number, lead: number, src: string} | null}
      */
     function decide(now) {
@@ -519,15 +632,18 @@ export default function (args = {}) {
         const Tc = pred.capT + pred.med * FRAME_MS;
         const remF = (Tc - now) / FRAME_MS;
         const name = pred.grp < IDLE ? GRP_NAMES[pred.grp] : null;
+        // phase-1 grab follow-ups (k*:grab, the gold grab's close-up) cannot be answered: no press at all
+        if (phase === 1 && name && name.endsWith(":grab")) return null;
         const row = name ? GROUPS[name] : null;
-        const gold = pred.col[0] >= GOLD_DODGE_P;
+        const gold = pred.col[0] >= (phase === 1 ? GOLD_DODGE_P1 : GOLD_DODGE_P);
         // the move table's unparryable groups (training: 卸住率 < 20 %; live: the closed loop's correction, e.g. the
         // 火球雨 c7 chain, 0 / 163 answered by 卸势 in r007-r023) are dodged whatever the resp head says
         const seq = inGoldSeq(Tc);
-        const kind = gold || pd >= pp || row?.unparryable || seq ? "dodge" : "parry";
+        const chain11 = chain11On && name === CHAIN11_NAME;
+        const kind = chain11 || gold || pd >= pp || row?.unparryable || seq ? "dodge" : "parry";
         const lead = kind === "parry" ? row?.parry_lead ?? DEFAULTS.parry_lead : dodgeLead ?? row?.dodge_lead ?? DEFAULTS.dodge_lead;
         if (remF > lead || remF < -LATE_F) return null;
-        return { kind, Tc, remF, lead, src: gold ? "gold" : row?.unparryable && pp > pd ? "table" : seq && pp > pd ? "goldSeq" : "resp" };
+        return { kind, Tc, remF, lead, src: chain11 ? "chain11" : gold ? "gold" : row?.unparryable && pp > pd ? "table" : seq && pp > pd ? "goldSeq" : "resp" };
     }
     /** May this press go now (lock / cooldown / already pressed for this contact)? @param {{kind: string, Tc: number}} d @param {number} now */
     function canPress(d, now) {
@@ -552,6 +668,7 @@ export default function (args = {}) {
         presses[d.kind]++;
         const p = /** @type {NonNullable<typeof pred>} */ (pred);
         if (d.kind === "dodge" && p.grp === C11_GID && d.src !== "goldBeat") goldSeqOpen(now, "dodge");
+        if (d.src === "chain11") chain11Log.push([now - start, p.grp, Math.round(d.remF * 10) / 10, d.lead]);
         pressLog.push([now - start, d.kind, p.grp, r3(p.col[0]), r3(p.resp[0]), r3(p.resp[1]), p.med, Math.round(d.remF * 10) / 10, d.lead, d.src]);
         return ACT[d.kind];
     }
@@ -654,6 +771,69 @@ export default function (args = {}) {
         return a;
     }
 
+    // ---- 幕布 (phase 1; teacher 2026-10-26: far away walk into the gap, if the sweep is about to reach us 闪避)
+    /** @type {[number, number] | "covered" | null} */
+    let gapLast = null; // the last gapNow probe
+    let inCurtain = false, curtainLastAt = 0, curtainEnterAt = 0, curtainEnters = 0, curtainDodges = 0;
+    // shadow: the state is read and marked, nothing is touched (defend only below)
+    /** @param {Image} im @param {number} now @param {boolean} busy another press went this tick @returns {number} an act */
+    function curtainTick(im, now, busy) {
+        if (!curtainOn) return 0;
+        let g = gapLast;
+        // in the curtain every tick (the gap moves as the panels sweep), outside every CURTAIN_TICKS-th
+        if (inCurtain || looks % CURTAIN_TICKS === 0) {
+            g = gapNow(im);
+            gapLast = g;
+        }
+        if (g !== null) {
+            curtainLastAt = now;
+            if (!inCurtain) {
+                inCurtain = true;
+                curtainEnterAt = now;
+                curtainEnters++;
+                mark("curtain", g === "covered" ? "panels: covered" : `panels: gap ${g[0]}..${g[1]}`);
+            }
+        } else if (inCurtain) {
+            if (readMean(im) < BLACK_MEAN) { // the black cover: nothing to read, stay in the curtain
+                curtainLastAt = now;
+                g = "covered";
+            } else if (now - curtainLastAt >= CURTAIN_GONE_MS) {
+                inCurtain = false;
+                gapLast = null;
+                if (defend) walkSide(0);
+                mark("curtain", "over");
+                return 0;
+            }
+        }
+        if (!defend) return 0;
+        if (g === "covered") {
+            if (stickSide) walkSide(0);
+            // The head's k0:c5+c18 (unparryable) dodges through decide(). Fallback for a silent head: one 闪避
+            // CURTAIN_COVER_DODGE_MS after entering / after the last dodge, unless a drink is pending.
+            const since = Math.max(curtainEnterAt, lastDodgeAt);
+            if (!busy && now - since >= CURTAIN_COVER_DODGE_MS && !potionPend && now >= holdUntil && pred) {
+                const lead = dodgeLead ?? DEFAULTS.dodge_lead;
+                const act = press({ kind: "dodge", Tc: now, remF: 0, lead, src: "curtain" }, now);
+                if (act) {
+                    curtainDodges++;
+                    mark("curtain", "covered: dodge");
+                }
+                return act;
+            }
+            return 0;
+        }
+        if (!inCurtain || g == null) return 0;
+        // the gap: walk its centre (args.curtainGap false: dodge only, no walking). A key pressed this tick already
+        // aimed contact 0 (e.g. the dodge's own left / right): do not re-aim it now.
+        if (busy) return 0;
+        const [a, b] = g;
+        const dx = (a + b) / 2 - ME_X;
+        const margin = Math.max(GAP_IN, (b - a) / 4);
+        const v = Math.abs(dx) <= margin ? 0 : Math.max(-1, Math.min(1, Math.round((dx / GAP_PUSH) * 4) / 4)) || 0;
+        walkSide(curtainGap ? v : 0);
+        return 0;
+    }
+
     /** Potion at a quiet moment (defend). @param {number} now */
     function potionTick(now) {
         if (potionPend) {
@@ -733,6 +913,26 @@ export default function (args = {}) {
             else if (now - bossGoneAt >= BOSS_GONE_MS) return "dead";
         }
         return null;
+    }
+
+    // phase 1 is over when the quest line reads 「…阶段二」 on two checks CLR_EVERY_MS apart (dufu.js clearedCheck; the
+    // 阶段二 arena reads it all along, so phase 2 never asks)
+    let clrAt = 0, clrPhase2 = 0;
+    /** @param {Image} im */
+    function phase2Quest(im) {
+        /** @param {Box} roi */
+        const n = (roi) => {
+            const h = color({ ...QUEST_WHITE, image: im, roi, count: 1 });
+            return h.hit ? h.results[0]?.count ?? 0 : 0;
+        };
+        return n(PHASE2_TOP) >= 8 && n(PHASE2_BOTTOM) >= 10 && n(PHASE1_MID) <= 2;
+    }
+    /** @param {Image} im @param {number} now */
+    function clearedTick(im, now) {
+        if (phase !== 1 || now - clrAt < CLR_EVERY_MS) return false;
+        clrAt = now;
+        clrPhase2 = phase2Quest(im) ? clrPhase2 + 1 : 0;
+        return clrPhase2 >= 2;
     }
 
     let pairs = 0, pairErr = "";
@@ -842,6 +1042,11 @@ export default function (args = {}) {
             if (defend && !act) act = goldBeatTick(now);
             if (defend && !act) act = chainTick(now);
             if (defend && !act) act = potionTick(now);
+            // 幕布 (phase 1): the gap walk runs even when a key went this tick; the covered fallback only when none did
+            if (curtainOn) {
+                const c = curtainTick(img, now, act !== 0);
+                if (!act) act = c;
+            }
             // walk in / re-lock (defend)
             if (walkIn && !bossSeen) {
                 const on = now - t0 < APPROACH_MS && (now - t0) % APPROACH_CYCLE < APPROACH_ON;
@@ -872,6 +1077,10 @@ export default function (args = {}) {
                     reason = over;
                     mark(over, "");
                 }
+            }
+            if (reason === "time" && phase === 1 && clearedTick(img, now)) {
+                reason = "cleared";
+                mark("cleared", "阶段二 in the quest line");
             }
             const loopMs = Date.now() - tA;
             if (!pairNow) tm.loop.push(loopMs);
@@ -904,13 +1113,15 @@ export default function (args = {}) {
     const fightMs = Date.now() - t0;
     const ms = Object.fromEntries(Object.entries(tm).map(([k, v]) => [k, stats(v)]));
     const res = {
-        reason, mode, provider, model: mdir, ran, fallback: fellBack, nn: { available: nn.available, qnn: nn.qnn, soc: nn.soc?.model }, warmMs,
+        reason, mode, phase, provider, model: mdir, ran, fallback: fellBack, nn: { available: nn.available, qnn: nn.qnn, soc: nn.soc?.model }, warmMs,
         fightMs, ticks, looks, fills, skipped, dups, bossSeen,
         hits, oks, contacts: contacts.map((c) => [Math.round(c.t - start), c.f, c.kind, c.seenF]),
         presses, would, potion: { used: potionsUsed, taps: potionTaps, ...potS },
         run: runOn ? { dirs: runDirs, runs: runLog } : null,
         goldSeq: goldSeqOn ? goldSeqLog : null,
         chain: chainOn ? chainLog : null,
+        chain11: chain11On ? { presses: chain11Log.length, log: chain11Log } : null,
+        curtain: curtainOn ? { gap: curtainGap, enters: curtainEnters, dodges: curtainDodges } : null,
         hitsPerMin: fightMs > 0 ? Math.round((hits / (fightMs / 60_000)) * 100) / 100 : 0,
         ms, start, t0, marks, pressLog,
         trace: { event: TRACE_EVENT, rows: traceN, chunks: traceChunks, cols: TRACE_COLS },

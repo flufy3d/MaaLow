@@ -7,11 +7,14 @@ device: the temporary skill (s4_pad_skill.js) calls only screenshot / saveImage 
         python workspaces/WhereWindsMeet/tools/dufu_moveid/s4_pad.py compare data/moveid/student/pad/<stamp>
     uv run python workspaces/WhereWindsMeet/tools/dufu_moveid/s4_pad.py cleanup     # after an interrupted run
 
+--src defaults to model/dufu2 (阶段二) or model/dufu1 (MOVEID_PHASE=1, 阶段一); the temporary paths follow it
+(model/dufu2_pair, skills/dufu2_pair.js, captures/dufu2_pair for 阶段二; dufu1_pair with MOVEID_PHASE=1).
+
 run: checks the Pad is idle (npu_bench.idle: busy null, no skill, not recording, no remote viewer / control) before
-every skill call; copies the model files of --src (*.onnx, *.qnn.onnx, *_fp32.onnx) to model/dufu2_pair/ and the skill
-to skills/dufu2_pair.js, pushes only those two paths; then
+every skill call; copies the model files of --src (*.onnx, *.qnn.onnx, *_fp32.onnx) to model/<phase>_pair/ and the skill
+to skills/<phase>_pair.js, pushes only those two paths; then
   pair  per provider: `runs` skill runs of `k` frames (each run starts with fresh rings: the PC replays the same
-        front padding); every frame's screenshot is saved on the app (captures/dufu2_pair/), downloaded to
+        front padding); every frame's screenshot is saved on the app (captures/<phase>_pair/), downloaded to
         <out>/png/ and deleted on the app; the device's preprocessed views (base64), features and head logits ->
         <out>/pair_<provider>.json
   time  per (provider, threads) in TIME_CONFIGS: `warm` + n frames, no saving -> <out>/time_<provider><threads>.json
@@ -37,16 +40,19 @@ REPO = HERE.parents[3]
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(HERE))
 
+from common import PHASE  # noqa: E402
+
 WS = "WhereWindsMeet"
 ROOT = REPO / "workspaces"
 WS_DIR = ROOT / WS
-REMOTE_MODELS = "model/dufu2_pair"
-REMOTE_SKILL = "skills/dufu2_pair.js"
-SKILL = "dufu2_pair"
-CAPTURES = "captures/dufu2_pair"
-OUT = REPO / "data/moveid/student/pad"
+PAIR = f"dufu{PHASE}_pair"              # 阶段二 dufu2_pair; MOVEID_PHASE=1 -> dufu1_pair
+REMOTE_MODELS = f"model/{PAIR}"
+REMOTE_SKILL = f"skills/{PAIR}.js"
+SKILL = PAIR
+CAPTURES = f"captures/{PAIR}"
+OUT = REPO / "data" / ("moveid" if PHASE == 2 else f"moveid/p{PHASE}") / "student" / "pad"
 TIME_CONFIGS = [("cpu", 1), ("cpu", 2), ("qnn", 1)]
-MODELS = {"glob": "dufu2_pair/glob.onnx", "crop": "dufu2_pair/crop.onnx", "head": "dufu2_pair/head.onnx"}
+MODELS = {n: f"{PAIR}/{n}.onnx" for n in ("glob", "crop", "head")}
 
 
 def client():
@@ -124,7 +130,7 @@ def run(a) -> None:
             frames = []
             for r in range(a.runs):
                 v = skill(c, {"mode": "pair", "n": a.k, "run": f"{prov}{r:02d}", "models": MODELS, "provider": prov,
-                              "threads": 1})
+                              "threads": 1, "captures": CAPTURES})
                 for f in v["frames"]:
                     f["run"] = r
                     rel = f["png"]
@@ -274,7 +280,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="op", required=True)
     p = sub.add_parser("run")
-    p.add_argument("--src", default=str(WS_DIR / "model" / "dufu2"))
+    p.add_argument("--src", default=str(WS_DIR / "model" / f"dufu{PHASE}"))
     p.add_argument("--runs", type=int, default=12)
     p.add_argument("--k", type=int, default=20)
     p.add_argument("--providers", default="cpu,qnn")

@@ -3,6 +3,8 @@ and the QNN version, with the same inputs / outputs everywhere.
 
     uv run --no-project --with torch --with timm --with numpy --with onnx --with onnxruntime         --index https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match         python workspaces/WhereWindsMeet/tools/dufu_moveid/s4_export.py --tag final      # -> model/dufu2/
     ... s4_export.py --tag fold0                                                         # -> student/onnx/fold0/
+MOVEID_PHASE=1 (独夫 阶段一) writes model/dufu1/ and dufu1.json (s4_common.MODEL_OUT, the rest of this file is the
+same); MOVEID_PHASE=2 (default, 阶段二) keeps model/dufu2/ and dufu2.json.
 
 Image inputs are float32 [1, 3, H, W] NCHW BGR holding v / 255 (what infer() feeds with its default mean 0 / std 1:
 v * (1 / 255f), s4_common.device_input); the graph multiplies by 255 and normalises (ImageNet) inside. No uint8 / Cast
@@ -16,6 +18,7 @@ same graph. Files (<out>/):
   {glob,crop,head}.qnn.onnx    the QNN version (provider "qnn"): --qnn fp32 (default; HTP runs it as fp16) or int8
                                (a copy of the QDQ file). Operators are checked against QNN_OK (no Erf / GELU etc.).
   dufu2.json                   inputs / outputs / preprocessing / labels / version / export checks
+                               (dufu1.json with MOVEID_PHASE=1)
 --tag foldK calibrates on fold K's training rounds only (the out-of-fold int8 evaluation, s4_eval.py).
 """
 from __future__ import annotations
@@ -33,11 +36,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from s3_common import CACHE, folds, load, read_json, segments  # noqa: E402
 from s3b_gate1 import PREFIX  # noqa: E402
-from s4_common import (BACKBONE, C_DIM, CS, DILATIONS, G_DIM, GH, GW, MEAN, MODEL_OUT, N_HIST, RF, RING, STD,  # noqa: E402
-                       STUDENT, TCN_CH, build, device_input, heads, n_out, open_views, split_views)
+from s4_common import (BACKBONE, C_DIM, CS, DILATIONS, G_DIM, GH, GW, MEAN, MODEL_OUT, N_HIST, PHASE, RF, RING,  # noqa: E402
+                       STD, STUDENT, TCN_CH, build, device_input, heads, n_out, open_views, split_views)
 
 OPSET = 17
 CALIB = 256
+STAGE = "阶段一" if PHASE == 1 else "阶段二"
+JSON_NAME = "dufu1.json" if PHASE == 1 else "dufu2.json"
 RING_NAMES = ("glob", "big", "small")
 # ops seen in AI Hub-compiled graphs of this family (order-1 test: MobileNetV3 + TCN, all on the NPU)
 QNN_OK = {"Conv", "Add", "Mul", "Sub", "Div", "Relu", "HardSwish", "HardSigmoid", "GlobalAveragePool", "ReduceMean",
@@ -250,7 +255,7 @@ def describe(out: Path, G: int, tag: str, prefix: dict, extra: dict) -> dict:
     for p in sorted(out.glob("*.onnx")):
         files[str(p.relative_to(out)).replace("\\", "/")] = {"bytes": p.stat().st_size, "sha256": sha(p), "ops": ops(p)}
     return {
-        "name": "dufu2 student (独夫 阶段二 招式识别)",
+        "name": f"dufu{PHASE} student (独夫 {STAGE} 招式识别)",
         "version": time.strftime("%Y%m%d-%H%M"),
         "tag": tag,
         "opset": OPSET,
@@ -368,7 +373,7 @@ def main() -> None:
                                                                  "candidates": a.select, "chosen_seed": seed,
                                                                  "val_windows": VAL_N, "val_len": VAL_L},
                                                  "backbone": a.backbone or BACKBONE})
-    (out / "dufu2.json").write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out / JSON_NAME).write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"-> {out} ({time.time() - t0:.0f}s)")
 
 

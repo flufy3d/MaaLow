@@ -5,6 +5,8 @@ alarms, timing (shadow) and gate 2 (defend).
 
 Needs s5_pull.py (live/video, live/bars, live/meta) and s5_color.py (live/color). Rounds: data/moveid/live/rNNN.
 Out: data/moveid/live/analysis.json (per round + totals) and analysis.md; per round <round>/contacts.json.
+MOVEID_PHASE=1 (独夫 阶段一): the same files under data/moveid/p1/ and model/dufu1/movetable.json (the rules are
+unchanged; with no 红光 a truth dodge is a 金招 or a group the table marks unparryable, as written below).
 
 Clock. The trace / result times are ms since the skill start (Date.now(); `cap` = the screenshot's capture time).
 Video frame vf(t) = (start + t - meta.started) / FRAME_MS + offset, offset one constant per round: the median of
@@ -51,14 +53,14 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from build import ffill, steps_fast  # noqa: E402
-from common import OUT, REPO, read_json, write_json  # noqa: E402
+from common import OUT, PHASE, REPO, read_json, write_json  # noqa: E402
 from s2_color import label as colour_label  # noqa: E402
 
 FRAME_MS = 1000 / 30
 LIVE = OUT / "live"
-TABLE = read_json(REPO / "workspaces" / "WhereWindsMeet" / "model" / "dufu2" / "movetable.json")
+TABLE = read_json(REPO / "workspaces" / "WhereWindsMeet" / "model" / f"dufu{PHASE}" / "movetable.json")
 GNAMES = list(TABLE["groups"].keys())
-IDLE = 87
+IDLE = len(GNAMES)               # the grp head's idle label (87 in 阶段二, 97 in 阶段一)
 HIT_TH, QI_TH, HIT_LAG = 0.02, 6, 5
 MATCH_F = 3
 DEC_F = 10
@@ -190,6 +192,8 @@ def analyze(d: Path) -> dict | None:
                     "resp": COLS_RESP[resp], "pgold": r[C["gold"]], "col": COLS_COL[col], "truth_resp": truth_resp,
                     "med": med, "tte_err": None if med >= 46 else round(float(med - (t["frame"] - capv[i])), 2),
                     "armed": bool(med <= 15 and r[C["rnone"]] <= 0.6)}
+        if PHASE == 1 and str(t["dec"]["grp"]).endswith(":grab"):
+            t["grab"] = True  # phase-1 gold-grab close-up (the phase-2 timing rule does not catch it)
 
     # presses (real or shadow) vs truth: the last press in [c - 25, c + 1]
     allp = [(vf(p[0]), p[1].replace("would-", ""), p) for p in res["pressLog"]]
