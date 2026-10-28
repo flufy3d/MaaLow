@@ -835,3 +835,37 @@ $TORCH python $D/s5_retrain.py eval --val r026 ... --models final,live_a ; s4_ex
 - 推 App：`s5_push.py --model` 推 `skills/dufu2.js`、两张表（`dufu1-table.js` + `dufu2-table.js`）和 `model/dufu1`；阶段一临时对拍用 `dufu1_pair`，跑完删。
 - live：`dufu_rounds.py data/moveid/p1/live --phase 1 --skill dufu2 --skill-args '{"mode":"shadow"}'`；`s5_pull.py --delete`、`s5_color.py`（`PHASE==1` 的 red→gold/none 重映射）、`s5_analyze.py`、`s5_ab.py`。
 - 阶段一没有红光，金=闪、其余卸；老师/学生颜色头仍输出 3 类，但 red 没有标签，决策不用 red。幕布 c5/c18 用 `gapNow` 的显式状态机；`k1:c18` 第二下用 `args.curtain2`（默认关）强制闪。
+
+### 阶段一实机重训（s5_retrain，2026-10-28）
+
+从 `data/moveid/p1/student/final.pt` 微调，原 120 局照旧用老师软标签，实机防守局用录像真值 + `s5_color`（阶段一 remap）+ 设备在决策时刻认出的前缀组（自训练）。实机局每 epoch 过 2 遍，lr 3e-4，2 epoch。阶段一分支：招式表读 `model/dufu1`；金光火球窗 / 火球雨只在阶段二；`k1:c18` 按最终配置 `curtain2` 标闪；没有决策行的接触 mask，不再冒充「没认出」；闪避 / 跑动 mask 保留已确认真实接触窗口的标签；val 只看 hard loss。
+
+```
+D=workspaces/WhereWindsMeet/tools/dufu_moveid
+TORCH="uv run --no-project --with torch --with timm --with numpy --with av --with opencv-python-headless \
+    --index https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match"
+# 实机局视图（frame_plan；已缓存的跳过）
+MOVEID_PHASE=1 $TORCH python $D/s5_retrain.py cache r030 ... r065 --procs 6
+# 训练 / 留出验证（r058-r065 不进训练）
+MOVEID_PHASE=1 $TORCH python $D/s5_retrain.py train --base final --tag live_a \
+    --live r030 ... r057 --val r058 ... r065 --epochs 2 --lr 3e-4 --live-rep 2
+MOVEID_PHASE=1 $TORCH python $D/s5_retrain.py eval --val r058 ... r065 --models final,live_a \
+    --out data/moveid/p1/student/live_eval.json
+# 原数据不退化：从 fold2 同样微调，第 2 折 OOF
+MOVEID_PHASE=1 $TORCH python $D/s5_retrain.py train --base fold2 --tag live_a_fold2 \
+    --live r030 ... r057 --val r058 ... r065 --epochs 2 --lr 3e-4 --live-rep 2
+MOVEID_PHASE=1 uv run --no-project --with numpy python $D/s4_gate.py --folds 2 \
+    --pred old=data/moveid/p1/student/oof.npz --pred new=data/moveid/p1/student/oof_live_a_fold2.npz
+# 导出（不要覆盖 model/dufu1）
+MOVEID_PHASE=1 $TORCH --with onnx --with onnxruntime python $D/s4_export.py --tag live_a \
+    --out workspaces/WhereWindsMeet/model/dufu1b
+# Pad 对拍 / 影子 / A-B 都要显式带模型
+MOVEID_PHASE=1 uv run python $D/s4_pad.py run --src workspaces/WhereWindsMeet/model/dufu1b
+MOVEID_PHASE=1 uv run python workspaces/WhereWindsMeet/tools/dufu_rounds.py data/moveid/p1/live --n 4 --phase 1 \
+    --skill dufu2 --ms 180000 --skill-args '{"mode":"shadow","provider":"qnn","model":"dufu1b","pair":150}'
+MOVEID_PHASE=1 uv run python workspaces/WhereWindsMeet/tools/dufu_rounds.py data/moveid/p1/live --n 12 --phase 1 \
+    --skill dufu2 --ms 360000 --skill-args '{"mode":"defend","provider":"qnn","parryLead":10,"curtainGap":false,"curtain2":true,"chain11":false}' \
+    --alt '[{"model":"dufu1"},{"model":"dufu1b"}]'
+```
+
+`s5_push.py --model` 在阶段一会把已存在的 `model/dufu1b` 一并推上去；实机用 `args.model`（默认 `dufu1`）选模型。
