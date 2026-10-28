@@ -4,7 +4,8 @@
 // Two arenas, one skill (args.phase; everything else defaults per phase):
 //   phase 2 (default since 2026-10-25 关 2: model dufu2b, 88 groups = 87 prefixes + idle): no poison, no 幕布, the quest
 //     line is not an end; 跑 from the 火球雨 (@see runTick) and the 金光火球 window (@see goldBeatTick).
-//   phase 1 (2026-10-27 顺序 7: model dufu1, 98 groups = the p1 table's 97 + idle; no red light at all — teacher: 金光
+//   phase 1 (2026-10-28 顺序 7: model dufu1b = the live-retrained student that passed 关 2; dufu1 is the order-4 base,
+//     98 groups = the p1 table's 97 + idle; no red light at all — teacher: 金光
 //     dodge, everything else 卸势): prep coats the blade with poison and puts the potion back (no 增益 / 伤害: defend does
 //     not attack); the quest line's 「阶段二」 ends the round (@see clearedTick); the 幕布 gap state machine
 //     (@see curtainTick: walk into the gap, dodge the sweep); args.chain11 forces a 闪避 on k1:c11+c15+c23. No 跑 /
@@ -37,7 +38,7 @@
 //             model (@see decide), potion at a quiet moment (@see potionTick), run from the 火球雨 (@see runTick).
 // provider (args.provider): "qnn" (default; falls back to cpu without the plugin: the result's `provider` says what
 //   ran) or "cpu". phase: 1 | 2 (default 2). Phase 2: model dufu2b, no poison / no curtain, the quest line is not an
-//   end, 跑 / 金光火球窗 / chain on. Phase 1: model dufu1, poison in prep, 幕布, the quest line's 阶段二 = cleared,
+//   end, 跑 / 金光火球窗 / chain on. Phase 1: model dufu1b, poison in prep, 幕布, the quest line's 阶段二 = cleared,
 //   no 跑 / 金光火球窗 / chain, args.chain11 / args.curtain2 / args.curtain / args.curtainGap as A/B switches.
 // Trace: one row per tick (TRACE_COLS), event TRACE_EVENT in chunks of TRACE_CHUNK rows (~25 KB each); run
 //   skills/event_pad.js after fetching them (tools/dufu_rounds.py does). args.pair N (shadow checks): every N-th
@@ -48,14 +49,14 @@
 //   maalow do skill dufu2 --args '{"mode":"defend","phase":1,"ms":600000}' --timeout 660000
 //   (phase 2 defaults since 2026-10-25 关 2: model dufu2b, 闪避 lead 5, run diag from the 火球雨, the 金光火球 window;
 //   the A/B switches: run, runDir, goldSeq, model, dodgeLead, chain, tools/dufu_moveid/README.md「顺序 5 续」;
-//   phase 1 defaults: model dufu1, 闪避 lead 5, 幕布 on with the gap walk, chain11 / curtain2 off)
+//   phase 1 defaults: model dufu1b, 闪避 lead 5, 幕布 on with the gap walk, chain11 / curtain2 off)
 import { stats } from "./lib/stats.js";
 import { BOSS_RED, BOSS_ROI, ME_X, countAtLeast, gapNow, health, readMean, readQi } from "./lib/dufu-reads.js";
 import { DEFAULTS as DEFAULTS2, GROUPS as GROUPS2 } from "./lib/dufu2-table.js";
 import { DEFAULTS as DEFAULTS1, GROUPS as GROUPS1 } from "./lib/dufu1-table.js";
 
 /** @type {SkillMeta} */
-export const meta = { description: "独夫 with the dufu2 move-ID student — phase 2 (default, model dufu2b) or phase 1 (model dufu1: poison prep, 幕布, quest-line 阶段二): shadow (look only) / defend (卸势 / 闪避 / potion)", timeout: 660_000 };
+export const meta = { description: "独夫 with the dufu2 move-ID student — phase 2 (default, model dufu2b) or phase 1 (model dufu1b: poison prep, 幕布, quest-line 阶段二): shadow (look only) / defend (卸势 / 闪避 / potion)", timeout: 660_000 };
 
 const FRAME_MS = 1000 / 30;
 /** @type {Box} */ const BIG = [290, 55, 530, 530];
@@ -293,9 +294,10 @@ export default function (args = {}) {
     for (const d of runDirs) if (!(d in RUN_DIRS)) throw new Error(`runDir ${d}: ${Object.keys(RUN_DIRS).join(" | ")}`);
     const tag = args.tag ?? String(Date.now());
     // args.model: the model directory under model/ (phase 2 default dufu2b = the student fine-tuned on the live rounds,
-    // tools/dufu_moveid/s5_retrain.py; dufu2 = the order-4 student. Phase 1 default dufu1), same inputs / outputs per
+    // tools/dufu_moveid/s5_retrain.py; dufu2 = the order-4 student. Phase 1 default dufu1b = the live-retrained student,
+    // tools/dufu_moveid/s5_retrain.py, 关 2 passed; dufu1 = the order-4 base), same inputs / outputs per
     // phase's group labels
-    const mdir = args.model ?? (phase === 1 ? "dufu1" : "dufu2b");
+    const mdir = args.model ?? (phase === 1 ? "dufu1b" : "dufu2b");
     const M_GLOB = `${mdir}/glob.onnx`, M_CROP = `${mdir}/crop.onnx`, M_HEAD = `${mdir}/head.onnx`;
     const start = Date.now();
     const untilMs = Math.min(args.ms ?? 600_000, remaining() - END_MARGIN_MS);
