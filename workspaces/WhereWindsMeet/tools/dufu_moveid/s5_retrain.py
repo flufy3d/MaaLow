@@ -1,5 +1,6 @@
-"""Order 5 (关 2 专攻): fine-tune the student on the live dufu2 rounds (recordings + truth contacts + colour), from its
-own weights, nothing frozen. The original 197 rounds stay in the mix with their teacher soft labels (as s4_train).
+"""Order 5 (关 2 专攻, and 顺序 7 for 阶段一): fine-tune the student on the live dufu2 rounds (recordings + truth
+contacts + colour), from its own weights, nothing frozen. The original rounds stay in the mix with their teacher soft
+labels (as s4_train). MOVEID_PHASE=1 reads data/moveid/p1 and model/dufu1 (see the phase-1 note under the labels).
 
     D=workspaces/WhereWindsMeet/tools/dufu_moveid
     TORCH="uv run --no-project --with torch --with timm --with numpy --with av --with opencv-python-headless \
@@ -19,9 +20,16 @@ Labels per video frame (same heads and rules as s4_common.labels / s3b_train):
   resp   on [c - 30, c]: dodge if the colour is gold, the group is unparryable in the move table, the group is a
          火球雨 (c7) group, or c is in a 金光火球 window (8..150 f after a k0:c11+c40 contact / dodge: the teacher's rule,
          only dodge); else parry. Grab-cutscene ticks: masked.
+         MOVEID_PHASE=1 (阶段一): same rule against model/dufu1/movetable.json (no 红光, so no red branch; the 火球雨
+         and 金光火球 window are phase-2 moves and are off). The 幕布 second hit k1:c18 is dodged as the phase-1
+         final runs did (dufu2.js args.curtain2=true, passed explicitly by the final config); an unrecognised
+         non-gold contact is labelled parry (the teacher's "else parry"), but a contact with no decision row at all
+         is masked (it is not a "did not recognise" example). Dodge / run masks keep the labels of frames that a
+         truth contact already labels, so a successful dodge no longer erases the previous contact's supervision.
   idle   frames as frame_labels: group idle, colour none, resp none.
   masked a dodged blow and a run leave no contact, so "no contact" there is not known: every label is masked on
-         [p - 45, p + 25] around each real dodge press with no truth contact in [p, p + 25], and on every run (+30 f).
+         [p - 45, p + 25] around each real dodge press with no truth contact in [p, p + 25], and on every run (+30 f),
+         except frames that a truth contact already labels (the previous contact's window stays supervised).
   history s3b_train.history on the truth contact frames (the device's live detection is close to it, s5 README).
 Frames cached = s3_common.frame_plan on the truth contacts (as the teacher / student caches).
 Training: s4_train.Loader / run_epoch unchanged; base weights = student/<base>.pt; original rounds: soft fold k
@@ -59,11 +67,13 @@ from s3_common import (  # noqa: E402
     write_json,
 )
 from s4_common import SOFT, STUDENT, VBYTES, VIEWS, heads, no_throttle, view_file  # noqa: E402
+from common import PHASE, REPO  # noqa: E402
 
 LIVE = OUT / "live"
-TABLE = read_json(HERE.parents[1] / "model" / "dufu2" / "movetable.json")
+TABLE = read_json(REPO / "workspaces" / "WhereWindsMeet" / "model" / f"dufu{PHASE}" / "movetable.json")
 GN = list(TABLE["groups"])
 C11 = "k0:c11+c40"
+CURTAIN2 = "k1:c18"                 # 阶段一 幕布第二下: dufu2.js args.curtain2 forces a dodge (final config)
 RESP = {"dodge": 0, "parry": 1}
 LOG = STUDENT / "live_log.json"
 
@@ -89,27 +99,32 @@ def live_labels(info: dict, G: int) -> tuple[np.ndarray, np.ndarray, list[dict]]
     lab = frame_labels(n, cs)
     y = np.full((n, 4), -100, np.int64)
     y[:, 3] = lab["tte"]
-    anchors = [t["frame"] for t in truth if (t.get("dec") or {}).get("grp") == C11]
-    anchors += [vf(p[0]) + 5 for p in res["pressLog"] if p[1] == "dodge" and p[2] is not None and 0 <= p[2] < len(GN) and GN[p[2]] == C11]
+    anchors = []
+    if PHASE == 2:  # 金光火球 window (phase-2 c11 move only)
+        anchors = [t["frame"] for t in truth if (t.get("dec") or {}).get("grp") == C11]
+        anchors += [vf(p[0]) + 5 for p in res["pressLog"] if p[1] == "dodge" and p[2] is not None and 0 <= p[2] < len(GN) and GN[p[2]] == C11]
     nxt = lab["next"]
     fr = np.array([c["frame"] for c in cs], np.int64)
     t_ = np.arange(n)
     dist = np.where(nxt >= 0, fr[np.maximum(nxt, 0)] - t_ if len(fr) else 0, 10 ** 6)
+    known = (nxt >= 0) & (dist <= MOVE_PRE)   # frames that a truth contact labels: keep them even inside a dodge / run mask
     for i in np.nonzero((nxt >= 0) & (dist <= MOVE_PRE))[0]:
         t = truth[nxt[i]]
         dec = t.get("dec") or {}
         g = dec.get("grp")
-        gid = GN.index(g) if g in GN else -100
-        y[i, 0] = gid
-        y[i, 1] = COLOR_IX.get(t["colour"], -100)
         row = TABLE["groups"].get(g) if g in GN else None
+        y[i, 0] = row["gid"] if row else -100
+        y[i, 1] = COLOR_IX.get(t["colour"], -100)
+        c7 = PHASE == 2 and bool(g) and g.split(":")[-1] == "c7"
+        curtain2 = PHASE == 1 and g == CURTAIN2
         if t.get("grab"):
             y[i, 2] = -100
-        elif t["colour"] == "gold" or (row and row["unparryable"]) or (g and g.split(":")[-1] == "c7") \
+        elif t["colour"] == "gold" or (row and row["unparryable"]) or c7 or curtain2 \
                 or any(8 < t["frame"] - a <= 150 for a in anchors):
             y[i, 2] = RESP["dodge"]
         elif row is None:
-            y[i, 2] = -100
+            # 阶段一: a decision row exists but the group is idle/unknown -> "else parry"; no row at all -> mask
+            y[i, 2] = RESP["parry"] if (PHASE == 1 and dec) else -100
         else:
             y[i, 2] = RESP["parry"]
     idle = lab["idle"]
@@ -126,7 +141,7 @@ def live_labels(info: dict, G: int) -> tuple[np.ndarray, np.ndarray, list[dict]]
     for r in (res.get("run") or {}).get("runs") or []:
         f0 = vf(r[0])
         m[max(0, int(f0 - 10)):int(f0 + r[3] / (1000 / 30) + 31)] = True
-    y[m] = -100
+    y[m & ~known] = -100
     return y, fr, cs
 
 
@@ -198,6 +213,7 @@ def build_recs(G: int, live_rounds: list[str], base: str):
     for e in d["events"]:
         byrec[e["rec"]].append(e)
     recs = {r["rec"]: Rec(r, byrec.get(r["rec"], []), pe, G) for r in d["recs"]}
+    orig_ids = set(recs)
     k = int(base[4:]) if base.startswith("fold") else None
     if k is None:
         zs = [np.load(SOFT / f"fold{j}.npz") for j in range(N_FOLDS)]
@@ -212,6 +228,8 @@ def build_recs(G: int, live_rounds: list[str], base: str):
     live = {}
     for rn in live_rounds:
         lr = LiveRec(live_info(rn), G)
+        if lr.rec in orig_ids:
+            raise SystemExit(f"live round {rn} has recording {lr.rec}, which is also an original training round")
         recs[lr.rec] = lr
         live[rn] = lr.rec
     return recs, orig, live, test, byrec
@@ -244,6 +262,13 @@ def cmd_train(a) -> None:
     torch.backends.cuda.matmul.allow_tf32 = True
     t0 = time.time()
     G = len(read_json(PREFIX / "prefix.json")["groups"])
+    log = read_json(LOG) if LOG.exists() else {}
+    prev = (log.get(a.base) or {}).get("train_live") or []
+    bad = sorted(set(a.val) & set(prev))
+    if bad:
+        raise SystemExit(f"val rounds {bad} were in {a.base}'s training live set: pick another held-out")
+    if set(a.live) & set(a.val):
+        raise SystemExit(f"rounds in both --live and --val: {sorted(set(a.live) & set(a.val))}")
     recs, orig, live, test, byrec = build_recs(G, sorted(set(a.live) | set(a.val)), a.base)
     model = build(G, pretrained=False).cuda().to(memory_format=torch.channels_last)
     model.load_state_dict(torch.load(STUDENT / f"{a.base}.pt"))
@@ -265,9 +290,8 @@ def cmd_train(a) -> None:
     steps, warm = a.epochs * nb, max(1, nb // 2)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / warm) * 0.5 * (1 + math.cos(math.pi * min(s, steps) / steps)))
-    log = read_json(LOG) if LOG.exists() else {}
     hist = []
-    va0 = run_epoch(model, vl, G)
+    va0 = run_epoch(model, vl, G, kd=0)     # hard-label loss only (KL to the base model is not a validation signal)
     print("val before", va0, flush=True)
     best = (va0["loss"], -1)
     dst = STUDENT / f"{a.tag}.pt"
@@ -275,7 +299,7 @@ def cmd_train(a) -> None:
     for ep in range(a.epochs):
         te = time.time()
         tr = run_epoch(model, tl, G, opt, sched, kd=a.kd)
-        va = run_epoch(model, vl, G)
+        va = run_epoch(model, vl, G, kd=0)
         hist.append({"epoch": ep, "train": tr, "val": va, "sec": round(time.time() - te, 1)})
         print(f"{a.tag} ep {ep} train {tr} val {va} {time.time() - te:.0f}s", flush=True)
         if va["loss"] < best[0]:
@@ -309,12 +333,14 @@ def cmd_eval(a) -> None:
         lr = LiveRec(info, G)
         recs[lr.rec] = lr
     out = {}
+    contacts = {}
     for mname in a.models.split(","):
         model = build(G, pretrained=False).cuda().to(memory_format=torch.channels_last)
         model.load_state_dict(torch.load(STUDENT / f"{mname}.pt"))
         P = predict(model, recs, list(recs), G)
         c = collections.Counter()
         errs = []
+        rows_out = []
         for rn, info in infos.items():
             rec = info["rec"]
             R = recs[rec]
@@ -346,6 +372,9 @@ def cmd_eval(a) -> None:
                         c["dodge_ok"] += int(rsp[i].argmax() == 0)
                 if med[i] <= 45:
                     errs.append(abs(int(med[i]) - 10))
+                rows_out.append({"round": rn, "frame": f, "kind": t["kind"], "lab": int(lab) if lab >= 0 else None,
+                                 "pred": int(rsp[i].argmax()) if lab >= 0 else None, "armed": arm,
+                                 "med": float(med[i]), "med_err": abs(int(med[i]) - 10) if med[i] <= 45 else None})
             idle = R.y[:, 0] == G
             c["idle_rows"] += int(idle.sum())
             c["idle_armed"] += int((idle & armed).sum())
@@ -356,10 +385,11 @@ def cmd_eval(a) -> None:
                       "idle_armed_rate": round(c["idle_armed"] / max(c["idle_rows"], 1), 4),
                       "tte_abs_err_p50_p90": [float(np.percentile(errs, 50)), float(np.percentile(errs, 90))] if errs else None}
         print(mname, json.dumps(out[mname]), flush=True)
+        contacts[mname] = rows_out
         del model
         torch.cuda.empty_cache()
     if a.out:
-        write_json(Path(a.out), {"val": a.val, "models": out})
+        write_json(Path(a.out), {"val": a.val, "models": out, "contacts": contacts})
 
 
 def main() -> None:

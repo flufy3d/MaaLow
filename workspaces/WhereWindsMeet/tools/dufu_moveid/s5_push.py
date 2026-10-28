@@ -24,6 +24,8 @@ WS = "WhereWindsMeet"
 ROOT = REPO / "workspaces"
 FILES = ["skills/dufu2.js", "skills/lib/dufu1-table.js", "skills/lib/dufu2-table.js"]
 MODELS = ["model/dufu1"] if PHASE == 1 else ["model/dufu2", "model/dufu2b"]
+if PHASE == 1 and (ROOT / WS / "model" / "dufu1b").exists():
+    MODELS.append("model/dufu1b")   # the live-retrained phase-1 student (s5_retrain.py), once exported
 
 
 def main() -> int:
