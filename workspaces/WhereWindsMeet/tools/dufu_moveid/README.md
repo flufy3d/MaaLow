@@ -873,3 +873,27 @@ MOVEID_PHASE=1 uv run python workspaces/WhereWindsMeet/tools/dufu_rounds.py data
 **阶段一 live_a（2026-10-28）**：r046–r065 共 20 局（19 有效，r056 空局），1509 接触；live 训练 r030–r057（27 局）+ 原 120 局，held-out r058–r065。留出 609 接触：应对判对 93.9% → **96.3%**，挨打前满足按键条件 81.9% → **94.0%**，空闲误报 2.28% → 2.07%。导出 `model/dufu1b`（int8 校准种子 2，int8/fp32 应对 argmax 一致 97.74%）；Pad CPU 240/240 位级一致、qnn 四头 240/240；影子 4 局致命决策 50/53。新旧 6 对 6 fresh A/B：88.1% → **92.6%**（1.25 挨打/分）。最终 16 局（r099–r114）**708/771 = 91.8%**，按局 bootstrap 95% 区间 [89.3%, 93.9%]；含未核实 93.4%；金招按成卸 1/246 = 0.41%；1.52 挨打/分。点估计过线，但区间下界 89.3%、16 局里 10 局是续局；fresh 6 局 90.8% [87.3%, 94.2%]。**2026-10-28 用户同意后，阶段一默认模型已从 `dufu1` 改为 `dufu1b`**；旧模型用 `"model":"dufu1"` 显式选择。
 
 **Fresh 16 确认（r116–r146 偶数局，每局前 shadow reset）**：919/998 = **92.1%**，区间 [89.7%, 94.3%]；金 0/317；1.38 挨打/分。两轮独立 16 局合并（r099–r114 + r116–r146）：**1627/1769 = 92.0%**，区间 **[90.3%, 93.5%]**，金 1/563 = 0.18%，1.45 挨打/分；按阶段二标准关 2 两条都过。
+
+### 顺序 6：闭环与进攻（2026-10-28）
+
+**闭环 `loop.py`**（阶段一 / 阶段二同一套，`MOVEID_PHASE` 选数据目录）：
+
+```
+D=workspaces/WhereWindsMeet/tools/dufu_moveid
+MOVEID_PHASE=1 uv run python $D/loop.py run --n 16 --tag gate3 --batch 8 \
+    --args '{"mode":"defend","provider":"qnn","model":"dufu1b","parryLead":10,"curtainGap":false,"curtain2":true,"chain11":false,"attack":true}'
+MOVEID_PHASE=1 uv run python $D/loop.py ab --n 12 --tag ab_attack \
+    --alt '[{"attack":false,"model":"dufu1b"},{"attack":true,"model":"dufu1b"}]'
+MOVEID_PHASE=1 uv run python $D/loop.py ingest --tag gate3     # s5_pull --delete -> s5_color -> s5_analyze
+MOVEID_PHASE=1 uv run python $D/loop.py gate --tag gate3       # s5_ab（按 attack 分组）+ 按局表
+MOVEID_PHASE=1 uv run python $D/loop.py train --tag live_b --live r... --val r...
+MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
+```
+
+- **fresh**：每局开打前，如果上一局是 `time`（角色还活着），先跑一局 `shadow`（不录像、不建 round 目录）让 boss 把角色打死；下一局 `dufu_enter` 就是满血 fresh。影子局不进 manifest，也不占 Pad 录像。
+- **守卫**：`run`/`ab` 开始前把 `AutoPickup`、`DismissIdleSlideshow`、`CloseItemTip` 临时关掉（`PUT /api/v1/guards` 的 `off`），结束时恢复原来的 `off` 列表。
+- **录像**：`ingest` 调 `s5_pull.py --delete`（大小 / 字节样本 / 逐帧解码校验后才删 Pad），再 `s5_color.py`、`s5_analyze.py`；`--batch N` 每 N 局自动 ingest 一次。
+- **manifest**：`data/moveid/p1/live/loop_<tag>.json`（局号、结果、args、时间）；`gate` 写 `loop_<tag>_gate.json`，`report` 写 `loop_<tag>_report.md`。
+- **train**：`s5_retrain cache -> train -> eval`，`s4_export --out model/dufu<PHASE>_<tag>`，再只推这个模型目录；不会覆盖正在用的 champion。擂台用 `ab` 的 `--alt [{"model":"a"},{"model":"b"}]`，`gate` 按 `attack` 分组看不出模型差异时用 `s5_ab --by model`。
+- **进攻（`dufu2.js` 的 `args.attack`，默认关）**：卸势成功 3 s 内 / boss 血条下降 3 s 内开「近门」；`P(接触 ≤45 帧) < 0.2` 且预测接触 >45 帧才起手；陌刀（读到 `combat/modao_charge.png`）蓄力 0.7 s，横刀 / 阶段二 轻蓄力 0.6 s；任何金光概率过线、接触预测进入 25 帧、硬直 / 喝药 / 幕布 / 跑动都立刻松手。气竭（boss 真气 ≤25 且 `combat/execute.png` 亮）先轻击 2.4 s 再点处决。所有进攻触摸走 contact 3，不占防守的 contact 1/2。
+- **6 对 6 fresh A/B（r148–r159，6 分钟/局）**：关 **1.11 挨打/分**、致命 372/397 = 93.7%、金被卸 1/120；开 **1.37 挨打/分**、致命 436/469 = 92.96%、金被卸 1/124，boss 每局掉 **26–46%** 血（关的 6 局 0–0.8%）。进攻开每 6 分钟多 0.26 下，但换来 26–46% 输出；关 3 的 16 局用哪一档见下方结果。

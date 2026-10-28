@@ -36,6 +36,8 @@
 //             take is computed every tick and written to the trace (`would`) for the offline check.
 //   "defend"  defense + potion only, no offense: walk in until the boss bar shows, re-lock, 卸势 / 闪避 by the
 //             model (@see decide), potion at a quiet moment (@see potionTick), run from the 火球雨 (@see runTick).
+//             args.attack adds the shared offense: a charge in the near gate after an ok / boss-bar drop, and the
+//             气竭 execute (@see atkTick).
 // provider (args.provider): "qnn" (default; falls back to cpu without the plugin: the result's `provider` says what
 //   ran) or "cpu". phase: 1 | 2 (default 2). Phase 2: model dufu2b, no poison / no curtain, the quest line is not an
 //   end, 跑 / 金光火球窗 / chain on. Phase 1: model dufu1b, poison in prep, 幕布, the quest line's 阶段二 = cleared,
@@ -56,7 +58,7 @@ import { DEFAULTS as DEFAULTS2, GROUPS as GROUPS2 } from "./lib/dufu2-table.js";
 import { DEFAULTS as DEFAULTS1, GROUPS as GROUPS1 } from "./lib/dufu1-table.js";
 
 /** @type {SkillMeta} */
-export const meta = { description: "独夫 with the dufu2 move-ID student — phase 2 (default, model dufu2b) or phase 1 (model dufu1b: poison prep, 幕布, quest-line 阶段二): shadow (look only) / defend (卸势 / 闪避 / potion)", timeout: 660_000 };
+export const meta = { description: "独夫 with the dufu2 move-ID student — phase 2 (default, model dufu2b) or phase 1 (model dufu1b: poison prep, 幕布, quest-line 阶段二): shadow (look only) / defend (卸势 / 闪避 / potion; args.attack: near-gate charge + 处决)", timeout: 660_000 };
 
 const FRAME_MS = 1000 / 30;
 /** @type {Box} */ const BIG = [290, 55, 530, 530];
@@ -168,6 +170,24 @@ const GAP_IN = 20, GAP_PUSH = 120; // me at ME_X: within GAP_IN (or a quarter of
 // dodge can take both). A/B switch.
 const CHAIN11_NAME = "k1:c11+c15+c23";
 const CURTAIN2_NAME = "k1:c18"; // the 幕布 second sweep (37/37 hit, 0 / 37 parried in the p1 data)
+// offense (args.attack; shared by both phases, boss pack only picks the weapon's charge): teacher's offense rules
+// (docs/dufu.md): the near gate opens after a 卸势 that landed (3 s) or a boss-bar drop (3 s); inside it, wait for a
+// quiet moment (P(contact within 45 f) < 0.2, the next contact > 45 f away), then charge once and release. 陌刀 蓄力 on
+// CHARGE (0.7 s), 横刀 轻蓄力 on LIGHT (0.6 s, HLIGHT_HOLD_MS in dufu.js is the full one); the phase only changes which
+// weapon the character is on. 气竭: the execute button up with the boss's 真气 drained -> 轻击 filler, 处决 at 2.4 s.
+const ATK_NEAR_MS = 1500, ATK_DROP_MS = 1500, ATK_BUSY_MS = 1500;
+const ATK_QUIET_F = 45, ATK_QUIET_P = 0.2;
+const ATK_MODAO_MS = 700, ATK_HENG_MS = 600;
+const ATK_HIT_QUIET_MS = 1000;
+/** @type {Point} */ const LIGHT = [945, 592]; // 轻击
+/** @type {Point} */ const HEAVY = [1020, 478]; // 陌刀 蓄力 / 横刀 重击 (dufu.js CHARGE)
+/** @type {Point} */ const EXECUTE = [852, 430];
+/** @type {Box} */ const EXEC_ROI = [815, 391, 75, 75];
+const EXEC_TH = 0.7, EXEC_FILL_MS = 2400, EXEC_LIGHT_MS = 300, EXEC_TAP_MS = 50;
+// the weapon icons (dufu.js OFF_T: the 蓄力 / 重击 disc at [988,446,64,68])
+/** @type {[string, Box][]} */ const WEAPON_T = [["combat/modao_charge.png", [988, 446, 64, 68]], ["combat/hengdao_heavy.png", [988, 446, 64, 68]]];
+const WEAPON_TH = 0.7, WEAPON_EVERY = 250;
+const BOSS_DROP_PX = 1.5, BOSS_DROP_WIN_MS = 1200, BOSS_DROP_MAX_PX = 80, BOSS_RING_MS = 4000;
 // end of the round (dufu.js deadCheck / haltCheck)
 /** @type {Box} */ const GREY_ROI = [100, 100, 880, 500];
 const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
@@ -181,7 +201,7 @@ const TRACE_EVENT = "dufu2_trace", PAIR_EVENT = "dufu2_pair", TRACE_CHUNK = 150;
 const TRACE_COLS = ["wall", "seq", "cap", "n", "fill", "dup", "hp", "qi", "boss", "h0", "h1", "h2", "h3",
     "grp", "grpP", "gold", "red", "none", "dodge", "parry", "rnone", "med", "p10", "act", "would", "contact", "pipe", "loop",
     "c7P", "run"];
-const ACT = { parry: 1, dodge: 2, potion: 3, lock: 4, walk: 5, run: 6 };
+const ACT = { parry: 1, dodge: 2, potion: 3, lock: 4, walk: 5, run: 6, attack: 7 };
 
 /**
  * The boss bar's fill in px-equivalent (red px / the bar's 6 rows). Not lib bossPx (the width of the box around any
@@ -237,7 +257,8 @@ function f32b64(arrs) {
  * @param {{mode?: "shadow" | "defend", provider?: "qnn" | "cpu", phase?: 1 | 2, ms?: number, potions?: number,
  *          trace?: boolean, pair?: number, tag?: string, approach?: boolean, dodgeLead?: number | null,
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
- *          model?: string, chain?: boolean, chain11?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number}} [args]
+ *          model?: string, chain?: boolean, chain11?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number,
+ *          attack?: boolean}} [args]
  */
 export default function (args = {}) {
     const mode = args.mode ?? "shadow";
@@ -288,6 +309,8 @@ export default function (args = {}) {
     // args.curtain2: phase 1 only, force the 闪避 on k1:c18 (the 幕布 second sweep: 37/37 hit, 0 parried;
     // the prefix group has no ok/pf so its label defaults to parry, @see the gate-1 live notes). Default off, A/B.
     const curtain2On = phase === 1 && (args.curtain2 ?? false);
+    // args.attack: the shared offense (defend only; default off until the A/B says it does not cost hits, @see atkTick)
+    const attackOn = defend && (args.attack ?? false);
     // args.curtain / args.curtainGap: the phase-1 幕布 state machine (default on) / its gap walk (false: only dodge)
     const curtainOn = phase === 1 && (args.curtain ?? true);
     const curtainGap = args.curtainGap ?? true;
@@ -508,7 +531,7 @@ export default function (args = {}) {
     /** In the 金光火球 window? @param {number} Tc */
     const inGoldSeq = (Tc) => goldSeq != null && Tc >= goldSeq.anchor + GOLD_SEQ_MIN_F * FRAME_MS && Tc <= goldSeq.anchor + GOLD_SEQ_F * FRAME_MS;
     let hits = 0, oks = 0, fills = 0, skipped = 0, dups = 0, ticks = 0, looks = 0;
-    const presses = { parry: 0, dodge: 0, potion: 0, lock: 0, walk: 0, run: 0 };
+    const presses = { parry: 0, dodge: 0, potion: 0, lock: 0, walk: 0, run: 0, attack: 0 };
     const would = { parry: 0, dodge: 0 };
     /** @type {any[]} */
     const pressLog = []; // [t ms, kind, grp, pGold, pDodge, pParry, med, remF, lead, src]
@@ -521,6 +544,14 @@ export default function (args = {}) {
     let potionsUsed = 0, potionTaps = 0, potionDueAt = 0, lastPotionFailAt = 0, lastPotionOkAt = 0, holdUntil = 0;
     /** @type {{at: number, hp0: number} | null} */ let potionPend = null;
     const potS = { oks: 0, fails: 0, waitWhy: /** @type {Record<string, number>} */ ({}) };
+    // offense (args.attack; @see atkTick). The boss-bar ring gives the "a hit landed" near-gate anchor (dufu.js's
+    // bossRingTick); the weapon read picks 陌刀 vs 横刀 by the 蓄力 / 重击 disc.
+    /** @type {{t: number, b: number}[]} */ const bossRing = [];
+    let lastDropAt = 0, weapon = "", lastWeaponRead = 0;
+    /** @type {{t: number, until: number, kind: string, w: string} | null} */ let atkHold = null;
+    let atkBusyUntil = 0, atkExecs = 0;
+    /** @type {{t: number, light: number, tapped: boolean} | null} */ let execPend = null;
+    /** @type {any[]} */ const atkLog = [];
     // lock / approach / end
     let lastLockRead = 0, lastLockTap = 0, lockLit = true, lastBossRead = 0, lastDeadCheck = 0;
     let deadSeen = 0, greySeen = 0, wonSeen = 0;
@@ -896,6 +927,131 @@ export default function (args = {}) {
         return ACT.potion;
     }
 
+    // ---- offense (args.attack): a shared near-gate / 气竭 state machine. Both phases use it; the phase only decides
+    // which weapon is on (phase 1 陌刀 when its icon is read, else 横刀; phase 2 always 横刀).
+    /** A short offense tap on contact 3 (never the defense's contact 1). @param {Point} p @param {number} [ms] */
+    function atkTap(p, ms = 50) {
+        if (!defend || halt) return false;
+        freeContact(3);
+        touch.down(p, 3);
+        ups.push({ c: 3, at: Date.now() + ms });
+        return true;
+    }
+    /** Lift a held offense finger now. @param {string} why */
+    function atkRelease(why) {
+        if (!atkHold) return;
+        const held = Date.now() - atkHold.t;
+        freeContact(3);
+        atkBuff(why, held);
+        atkHold = null;
+        atkBusyUntil = Date.now() + 300;
+    }
+    /** @param {string} why @param {number} held */
+    function atkBuff(why, held) {
+        atkLog.push([Math.round(Date.now() - start), "release", why, Math.round(held)]);
+        mark("atk", `release ${why} after ${Math.round(held)} ms`);
+    }
+    /** The boss bar's drop (>= BOSS_DROP_PX within BOSS_DROP_WIN_MS): the second near-gate anchor. @param {number} now */
+    function bossDropTick(now) {
+        if (bossNow <= 50) return;
+        const last = bossRing[bossRing.length - 1];
+        if (last && now - last.t < 200) return;
+        bossRing.push({ t: now, b: bossNow });
+        while (bossRing.length && now - bossRing[0].t > BOSS_RING_MS) bossRing.shift();
+        if (bossRing.length < 3) return;
+        const cur = Math.max(bossRing[bossRing.length - 1].b, bossRing[bossRing.length - 2].b); // one low read is no drop
+        let peak = 0;
+        for (const s of bossRing) if (now - s.t <= BOSS_DROP_WIN_MS) peak = Math.max(peak, s.b);
+        const d = peak - cur;
+        if (d >= BOSS_DROP_PX && d <= BOSS_DROP_MAX_PX) lastDropAt = now;
+    }
+    /** 陌刀 / 横刀 from the 蓄力 / 重击 disc (4 Hz); "" when neither template shows. @param {Image} im @param {number} now */
+    function weaponNow(im, now) {
+        if (now - lastWeaponRead < WEAPON_EVERY) return weapon;
+        lastWeaponRead = now;
+        const mo = match(WEAPON_T[0][0], { image: im, roi: WEAPON_T[0][1], threshold: WEAPON_TH }).hit;
+        const he = match(WEAPON_T[1][0], { image: im, roi: WEAPON_T[1][1], threshold: WEAPON_TH }).hit;
+        weapon = mo && !he ? "modao" : he && !mo ? "hengdao" : "";
+        return weapon;
+    }
+    /** 气竭: the execute button up and the boss's 真气 drained -> 轻击 filler, 处决 at EXEC_FILL_MS. @param {number} now
+     *  @param {Image} im @returns {number} an act */
+    function execTick(now, im) {
+        if (now - lastHitAt < 500) {
+            execPend = null;
+            return 0;
+        }
+        const low = qiNow >= 0 && qiNow <= 25;
+        const up = low && match("combat/execute.png", { image: im, roi: EXEC_ROI, threshold: EXEC_TH }).hit;
+        if (!up) {
+            execPend = null;
+            return 0;
+        }
+        if (!execPend) {
+            if (atkHold) atkRelease("execute"); // the 处决 window is worth more than the charge
+            execPend = { t: now, light: 0, tapped: false };
+            mark("atk", `气竭: execute button up (qi ${qiNow})`);
+        }
+        if (now - execPend.t >= EXEC_FILL_MS) {
+            if (!execPend.tapped) {
+                execPend.tapped = true;
+                if (atkTap(EXECUTE, EXEC_TAP_MS)) {
+                    atkExecs++;
+                    atkLog.push([Math.round(now - start), "execute", "", 0]);
+                    mark("atk", "处决 tap");
+                }
+            }
+            return ACT.attack;
+        }
+        if (now - execPend.light >= EXEC_LIGHT_MS) {
+            execPend.light = now;
+            atkTap(LIGHT, 60);
+        }
+        return ACT.attack;
+    }
+    /** Attack in a quiet window after an ok / a boss-bar drop (args.attack, @see the constants). @param {number} now
+     *  @param {Image} im @returns {number} an act */
+    function atkTick(now, im) {
+        if (!attackOn || halt) return 0;
+        const e = execTick(now, im);
+        if (e) return e;
+        if (atkHold) {
+            const stop = inCurtain || running || now < holdUntil || now - lastHitAt < 300
+                || (pred != null && (pred.med <= 25 || pWithin(20) >= 0.15
+                    || pred.col[0] >= (phase === 1 ? GOLD_DODGE_P1 : GOLD_DODGE_P)));
+            if (stop) {
+                atkRelease(inCurtain ? "curtain" : running ? "run" : now < holdUntil ? "potion" : now - lastHitAt < 300 ? "hit" : "defense");
+                return 0;
+            }
+            if (now >= atkHold.until) {
+                atkHold = null;
+                atkBusyUntil = now + ATK_BUSY_MS;
+            }
+            return 0;
+        }
+        if (now < atkBusyUntil || inCurtain || running || potionPend || now < holdUntil) return 0;
+        if (now - lastHitAt < ATK_HIT_QUIET_MS) return 0;
+        if (now - lastOkAt > ATK_NEAR_MS && now - lastDropAt > ATK_DROP_MS) return 0;
+        if (!pred) return 0;
+        if (pred.med <= ATK_QUIET_F || pWithin(ATK_QUIET_F) >= ATK_QUIET_P) return 0;
+        if (pred.col[0] >= (phase === 1 ? GOLD_DODGE_P1 : GOLD_DODGE_P)) return 0; // a gold tell: leave the hand free
+        if (decide(now)) return 0; // a defense press is due: never start a charge in front of it
+        const w = weaponNow(im, now);
+        const modao = phase === 1 && w === "modao";
+        const p = modao ? HEAVY : LIGHT;
+        const ms = modao ? ATK_MODAO_MS : ATK_HENG_MS;
+        const t = Date.now();
+        freeContact(3);
+        touch.down(p, 3);
+        ups.push({ c: 3, at: t + ms });
+        atkHold = { t, until: t + ms, kind: modao ? "charge" : "hlight", w: w || "?" };
+        lastOwnAt = t;
+        presses.attack++;
+        atkLog.push([Math.round(t - start), atkHold.kind, atkHold.w, ms, pred.med, r3(pWithin(ATK_QUIET_F))]);
+        mark("atk", `${atkHold.kind} ${atkHold.w} hold ${ms} ms (med ${pred.med}, p30 ${r3(pWithin(ATK_QUIET_F))})`);
+        return ACT.attack;
+    }
+
     // The end checks are spread over the ticks (one part per tick, each part every DEAD_EVERY): the 成功 page
     // templates, the 再次训练 button, and the grey screen (an 880x500 scan, only while the bars are gone).
     let endPart = 0;
@@ -976,6 +1132,7 @@ export default function (args = {}) {
             if (now0 - lastBossRead >= BOSS_EVERY) {
                 lastBossRead = now0;
                 bossNow = bossBar(img);
+                bossDropTick(now0);
                 if (bossNow > 50 && !bossSeen) {
                     bossSeen = true;
                     mark("boss", `bar after ${Math.round((now0 - t0) / 1000)} s`);
@@ -1043,6 +1200,9 @@ export default function (args = {}) {
             if (got) armed.parry = armed.dodge = null; // the contact came: the next prediction is a new one
             if (curPred()?.grp === C11_GID) lastC11At = now;
             if (defend) act = runTick(now);
+            // a charge in progress lets go before a defense press (the old skill's offYield: a held finger restarts it)
+            if (atkHold && pred && (pred.med <= 35 || pWithin(25) >= 0.15
+                || pred.col[0] >= (phase === 1 ? GOLD_DODGE_P1 : GOLD_DODGE_P))) atkRelease("defense");
             const d = decide(now);
             if (d && !canPress(d, now)) {
                 wouldAct = ACT[d.kind];
@@ -1059,6 +1219,7 @@ export default function (args = {}) {
             if (defend && !act) act = goldBeatTick(now);
             if (defend && !act) act = chainTick(now);
             if (defend && !act) act = potionTick(now);
+            if (defend && !act) act = atkTick(now, img);
             // 幕布 (phase 1): the gap walk runs even when a key went this tick; the covered fallback only when none did
             if (curtainOn) {
                 const c = curtainTick(img, now, act !== 0);
@@ -1122,6 +1283,7 @@ export default function (args = {}) {
                 touch.up(1);
                 touch.up(2);
             }
+            touch.up(3);
         } catch (_) { /* stopped */ }
         try {
             traceFlush();
@@ -1140,6 +1302,7 @@ export default function (args = {}) {
         chain11: chain11On ? { presses: chain11Log.length, log: chain11Log } : null,
         curtain2: curtain2On ? { presses: curtain2Log.length, log: curtain2Log } : null,
         curtain: curtainOn ? { gap: curtainGap, enters: curtainEnters, dodges: curtainDodges } : null,
+        attack: attackOn ? { presses: presses.attack, execs: atkExecs, log: atkLog, weapon } : null,
         hitsPerMin: fightMs > 0 ? Math.round((hits / (fightMs / 60_000)) * 100) / 100 : 0,
         ms, start, t0, marks, pressLog,
         trace: { event: TRACE_EVENT, rows: traceN, chunks: traceChunks, cols: TRACE_COLS },
