@@ -145,7 +145,10 @@ const SLOT_POTION_T = ["combat/potion_drill.png", "combat/potion_real.png"];
 // phase 1 prep (dufu.js prep, 2026-10-23): swap the poison into the slot, tap the slot icon to coat the blade, swap the
 // potion back. The pick swaps with the slot's item, so both swaps are checked. No 增益 / 伤害 in this skill (defend
 // does not attack).
-const PREP_MENU_MS = 600, PREP_USE_MS = 1500, PREP_SWAP_TRIES = 3, SLOT_POTION_TH = 0.75, COLUMN_TH = 0.8;
+const PREP_MENU_MS = 600, PREP_USE_MS = 2500, PREP_SWAP_TRIES = 3, SLOT_POTION_TH = 0.75, COLUMN_TH = 0.8;
+// the coating buff lands ~1.5 s after the slot tap; the game then shows the poison item in the slot again (r167 at 10 s).
+// Settle, check, and put the potion back once more before the fight starts.
+const PREP_SETTLE_MS = 2500;
 const POISON_T = ["combat/poison_real.png"];
 /** the poison is used by a tap on the slot icon (real fight 2026-10-23: 天工开物 398 -> 397, the blade glows green);
  *  dufu2's POTION tap (700, 690) there left 特殊道具 in the slot instead */
@@ -498,8 +501,15 @@ export default function (args = {}) {
                 sleep(PREP_USE_MS);
                 upsDue(true);
             }
-            const back = !poisoned || swapTo(true, "potion");
-            mark("prep", `${poisoned ? "poison" : "NO POISON"} + ${back ? "potion back" : "POTION NOT BACK"} in ${Date.now() - start} ms`);
+            let back = !poisoned || swapTo(true, "potion");
+            sleep(PREP_SETTLE_MS);
+            const pim = screenshot();
+            const settled = slotPotion(pim) && !match(POISON_T, { image: pim, roi: SLOT_ROI, threshold: 0.8 }).hit;
+            if (!settled) {
+                back = swapTo(true, "potion") && back;
+                mark("prep", `potion re-swap after settle (${back ? "ok" : "failed"})`);
+            }
+            mark("prep", `${poisoned ? "poison" : "NO POISON"} + ${back ? "potion back" : "POTION NOT BACK"}${settled ? "" : " (settled)"} in ${Date.now() - start} ms`);
         }
     }
 
@@ -542,6 +552,7 @@ export default function (args = {}) {
     const tm = { shot: [], pipe: [], prep: [], run: [], inferWall: [], reads: [], loop: [], head: [] };
     // potion
     let potionsUsed = 0, potionTaps = 0, potionDueAt = 0, lastPotionFailAt = 0, lastPotionOkAt = 0, holdUntil = 0;
+    let slotSwaps = 0, slotMiss = 0; // in-fight quick-slot swaps (the game reverted the slot to the poison after the coating, r167)
     /** @type {{at: number, hp0: number} | null} */ let potionPend = null;
     const potS = { oks: 0, fails: 0, waitWhy: /** @type {Record<string, number>} */ ({}) };
     // offense (args.attack; @see atkTick). The boss-bar ring gives the "a hit landed" near-gate anchor (dufu.js's
@@ -882,8 +893,8 @@ export default function (args = {}) {
         return 0;
     }
 
-    /** Potion at a quiet moment (defend). @param {number} now */
-    function potionTick(now) {
+    /** Potion at a quiet moment (defend). @param {number} now @param {Image} im */
+    function potionTick(now, im) {
         if (potionPend) {
             const healed = hpNow != null && hpNow >= potionPend.hp0 + POTION_HEAL;
             if (healed || lastHitAt > potionPend.at || now - potionPend.at >= POTION_CONFIRM_MS) {
@@ -917,6 +928,26 @@ export default function (args = {}) {
             potS.waitWhy[why] = (potS.waitWhy[why] ?? 0) + 1;
             return 0;
         }
+        // The quick slot can hold the poison again after the coating (live r167: every tap hit its cooldown). Swap the
+        // potion in before drinking, like dufu.js's potionTick; at most twice per round.
+        if (!slotPotion(im)) {
+            if (++slotMiss < 2) return 0;
+            if (slotSwaps >= 2) {
+                potS.waitWhy["slot not potion"] = (potS.waitWhy["slot not potion"] ?? 0) + 1;
+                return 0;
+            }
+            slotSwaps++;
+            slotMiss = 0;
+            tap(ITEM_OPEN);
+            sleep(PREP_MENU_MS);
+            upsDue(true);
+            tap(columnPick(screenshot(), SLOT_POTION_T));
+            sleep(PREP_MENU_MS);
+            upsDue(true);
+            mark("potion", `slot swap ${slotSwaps} (${slotPotion(screenshot()) ? "potion" : "still not potion"})`);
+            return 0;
+        }
+        slotMiss = 0;
         if (!tap(POTION)) return 0;
         potionTaps++;
         presses.potion++;
@@ -1218,7 +1249,7 @@ export default function (args = {}) {
             }
             if (defend && !act) act = goldBeatTick(now);
             if (defend && !act) act = chainTick(now);
-            if (defend && !act) act = potionTick(now);
+            if (defend && !act) act = potionTick(now, img);
             if (defend && !act) act = atkTick(now, img);
             // 幕布 (phase 1): the gap walk runs even when a key went this tick; the covered fallback only when none did
             if (curtainOn) {
