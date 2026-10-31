@@ -8,8 +8,8 @@
 //     98 groups = the p1 table's 97 + idle; no red light at all — teacher: 金光
 //     dodge, everything else 卸势): prep coats the blade with poison and puts the potion back (no 增益 / 伤害: defend does
 //     not attack); the quest line's 「阶段二」 ends the round (@see clearedTick); the 幕布 gap state machine
-//     (@see curtainTick: walk into the gap, dodge the sweep); args.chain11 forces a 闪避 on k1:c11+c15+c23. No 跑 /
-//     金光火球窗 / k2:c30 chain beat (phase-2 moves only).
+//     (@see curtainTick: dodge the sweep, the gap walk behind args.curtainGap). No 跑 / 金光火球窗 / k2:c30 chain beat
+//     (phase-2 moves only).
 //
 // Per 30 fps tick (tick n is due at t0 + n * 33.3 ms; one ring entry per tick, never two, never none):
 //   screenshot -> infer glob (whole screen -> 384x240, ring "glob", aux = the 4 contact-history values)
@@ -41,7 +41,7 @@
 // provider (args.provider): "qnn" (default; falls back to cpu without the plugin: the result's `provider` says what
 //   ran) or "cpu". phase: 1 | 2 (default 2). Phase 2: model dufu2b, no poison / no curtain, the quest line is not an
 //   end, 跑 / 金光火球窗 / chain on. Phase 1: model dufu1b, poison in prep, 幕布, the quest line's 阶段二 = cleared,
-//   no 跑 / 金光火球窗 / chain, args.chain11 / args.curtain2 / args.curtain / args.curtainGap as A/B switches.
+//   no 跑 / 金光火球窗 / chain, args.curtain2 / args.curtain / args.curtainGap as A/B switches.
 // Trace: one row per tick (TRACE_COLS), event TRACE_EVENT in chunks of TRACE_CHUNK rows (~25 KB each); run
 //   skills/event_pad.js after fetching them (tools/dufu_rounds.py does). args.pair N (shadow checks): every N-th
 //   tick the screenshot is saved (captures/dufu2_live/<tag>_<n>.png) and event PAIR_EVENT carries the head logits and
@@ -51,7 +51,7 @@
 //   maalow do skill dufu2 --args '{"mode":"defend","phase":1,"ms":600000}' --timeout 660000
 //   (phase 2 defaults since 2026-10-25 关 2: model dufu2b, 闪避 lead 5, run diag from the 火球雨, the 金光火球 window;
 //   the A/B switches: run, runDir, goldSeq, model, dodgeLead, chain, tools/dufu_moveid/README.md「顺序 5 续」;
-//   phase 1 defaults: model dufu1b, 闪避 lead 5, 幕布 on with the gap walk, chain11 / curtain2 off)
+//   phase 1 defaults: model dufu1b, 卸势 lead 10, 闪避 lead 5, 幕布 on without the gap walk, curtain2 on)
 import { stats } from "./lib/stats.js";
 import { BOSS_RED, BOSS_ROI, ME_X, countAtLeast, gapNow, health, readMean, readQi } from "./lib/dufu-reads.js";
 import { DEFAULTS as DEFAULTS2, GROUPS as GROUPS2 } from "./lib/dufu2-table.js";
@@ -168,10 +168,6 @@ const QUEST_WHITE = { lower: [0, 0, 190], upper: [180, 70, 255], method: 40 };
 const CURTAIN_TICKS = 12, CURTAIN_GONE_MS = 1200, CURTAIN_COVER_DODGE_MS = 800, BLACK_MEAN = 22;
 const GAP_IN = 20, GAP_PUSH = 120; // me at ME_X: within GAP_IN (or a quarter of the gap) no walking; GAP_PUSH px off
 // the centre = full stick (dufu.js's gap rule)
-// chain11 (phase 1, args.chain11, default off): the third blow of the gold chain (k2:c11) only comes in the chain whose
-// opening hit us and the head never names it (0 / 75); the second blow's group k1:c11+c15+c23 is dodged instead (one
-// dodge can take both). A/B switch.
-const CHAIN11_NAME = "k1:c11+c15+c23";
 const CURTAIN2_NAME = "k1:c18"; // the 幕布 second sweep (37/37 hit, 0 / 37 parried in the p1 data)
 // offense (args.attack; shared by both phases, boss pack only picks the weapon's charge): teacher's offense rules
 // (docs/dufu.md): the near gate opens after a 卸势 that landed (3 s) or a boss-bar drop (3 s); inside it, wait for a
@@ -260,7 +256,7 @@ function f32b64(arrs) {
  * @param {{mode?: "shadow" | "defend", provider?: "qnn" | "cpu", phase?: 1 | 2, ms?: number, potions?: number,
  *          trace?: boolean, pair?: number, tag?: string, approach?: boolean, dodgeLead?: number | null,
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
- *          model?: string, chain?: boolean, chain11?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number,
+ *          model?: string, chain?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number,
  *          attack?: boolean}} [args]
  */
 export default function (args = {}) {
@@ -295,10 +291,10 @@ export default function (args = {}) {
     const dodgeLead = args.dodgeLead === null ? null
         : typeof args.dodgeLead === "number" ? args.dodgeLead
             : DODGE_LEAD;
-    // args.parryLead: override every group's 卸势 lead (frames before the predicted contact) for a live A/B. null =
-    // the move table's per-group leads (the p1 table's global is 6; live hits in the first A/B had actual leads 1-5,
-    // i.e. too late, so the phase-1 sweep tests 6 vs 9 / 10).
-    const parryLead = typeof args.parryLead === "number" ? args.parryLead : null;
+    // args.parryLead: override every group's 卸势 lead (frames before the predicted contact) for a live A/B. Phase 1
+    // defaults to 10 (the finalized 2026-10-28 config; the table's global 6 pressed too late in the first A/B). Phase 2
+    // keeps null = the move table's per-group leads.
+    const parryLead = typeof args.parryLead === "number" ? args.parryLead : phase === 1 ? 10 : null;
     // args.run: run from the 火球雨 (phase 2 only, default on, @see runTick); args.runDir: one direction or a list
     // cycled per run (default diag: r036-r071 side 1.58 hits per 火球雨 episode (24), diag 0.64 (14))
     const runOn = phase === 2 && defend && (args.run ?? true);
@@ -307,16 +303,17 @@ export default function (args = {}) {
     const goldSeqOn = phase === 2 && (args.goldSeq ?? true);
     // args.chain: the k2:c30 chain beat (phase 2 only, default on since 2026-10-26, @see CHAIN_AFTER_F)
     const chainOn = phase === 2 && (args.chain ?? true);
-    // args.chain11: phase 1 only, force the 闪避 on k1:c11+c15+c23 (default off, @see CHAIN11_NAME)
-    const chain11On = phase === 1 && (args.chain11 ?? false);
     // args.curtain2: phase 1 only, force the 闪避 on k1:c18 (the 幕布 second sweep: 37/37 hit, 0 parried;
-    // the prefix group has no ok/pf so its label defaults to parry, @see the gate-1 live notes). Default off, A/B.
-    const curtain2On = phase === 1 && (args.curtain2 ?? false);
+    // the prefix group has no ok/pf so its label defaults to parry, @see the gate-1 live notes). Default on.
+    const curtain2On = phase === 1 && (args.curtain2 ?? true);
     // args.attack: the shared offense (defend only; default off until the A/B says it does not cost hits, @see atkTick)
     const attackOn = defend && (args.attack ?? false);
-    // args.curtain / args.curtainGap: the phase-1 幕布 state machine (default on) / its gap walk (false: only dodge)
+    // args.curtain / args.curtainGap: the phase-1 幕布 state machine (default on) / its gap walk (default off: only
+    // dodge; the finalized 2026-10-28 config does not walk)
     const curtainOn = phase === 1 && (args.curtain ?? true);
-    const curtainGap = args.curtainGap ?? true;
+    const curtainGap = args.curtainGap ?? false;
+    // the gold threshold: phase 1's is tighter (2.97 % answered by 卸势 in OOF, gate 2 allows 3 %; @see GOLD_DODGE_P1)
+    const goldDodgeP = phase === 1 ? GOLD_DODGE_P1 : GOLD_DODGE_P;
     for (const d of runDirs) if (!(d in RUN_DIRS)) throw new Error(`runDir ${d}: ${Object.keys(RUN_DIRS).join(" | ")}`);
     const tag = args.tag ?? String(Date.now());
     // args.model: the model directory under model/ (phase 2 default dufu2b = the student fine-tuned on the live rounds,
@@ -546,7 +543,6 @@ export default function (args = {}) {
     /** @type {any[]} */
     const pressLog = []; // [t ms, kind, grp, pGold, pDodge, pParry, med, remF, lead, src]
     /** @type {any[]} */
-    const chain11Log = []; // phase 1 args.chain11: [t ms, grp, remF, lead]
     const curtain2Log = []; // phase 1 args.curtain2: [t ms, grp, remF, lead]
     /** @type {{shot: number[], pipe: number[], prep: number[], run: number[], inferWall: number[], reads: number[], loop: number[], head: number[]}} */
     const tm = { shot: [], pipe: [], prep: [], run: [], inferWall: [], reads: [], loop: [], head: [] };
@@ -674,8 +670,7 @@ export default function (args = {}) {
      * contact is predicted at capture + median(tte); the press goes when it is <= lead frames away (lead from the
      * move table by the predicted prefix group, else the global default; @see lib/dufu2-table.js), unless it is more
      * than LATE_F past, or P(contact) = 1 - P(resp none) < CONTACT_P.
-     * Phase 1, args.chain11: the group k1:c11+c15+c23 (the second blow of the gold chain) is dodged whatever the resp
-     * head says (@see CHAIN11_NAME).
+     * Phase 1: args.curtain2 forces the 闪避 on k1:c18 whatever the resp head says (@see CURTAIN2_NAME).
      * @param {number} now @returns {{kind: "parry" | "dodge", Tc: number, remF: number, lead: number, src: string} | null}
      */
     function decide(now) {
@@ -687,21 +682,20 @@ export default function (args = {}) {
         // phase-1 grab follow-ups (k*:grab, the gold grab's close-up) cannot be answered: no press at all
         if (phase === 1 && name && name.endsWith(":grab")) return null;
         const row = name ? GROUPS[name] : null;
-        const gold = pred.col[0] >= (phase === 1 ? GOLD_DODGE_P1 : GOLD_DODGE_P);
+        const gold = pred.col[0] >= goldDodgeP;
         // the move table's unparryable groups (training: 卸住率 < 20 %; live: the closed loop's correction, e.g. the
         // 火球雨 c7 chain, 0 / 163 answered by 卸势 in r007-r023) are dodged whatever the resp head says
         const seq = inGoldSeq(Tc);
-        const chain11 = chain11On && name === CHAIN11_NAME;
         const curtain2 = curtain2On && name === CURTAIN2_NAME;
-        // phase 1, colour / table / chain rules are dodge rules: do not let the resp head's "no contact" suppress
+        // phase 1, colour / table / curtain rules are dodge rules: do not let the resp head's "no contact" suppress
         // them (12 gold contacts, P(gold) >= 0.02, would otherwise get no press; the OOF decision gains 12 correct,
         // 0 wrong). Phase 2 keeps the old gate.
-        const urgent = phase === 1 && (gold || chain11 || curtain2 || !!row?.unparryable);
+        const urgent = phase === 1 && (gold || curtain2 || !!row?.unparryable);
         if (1 - pn < CONTACT_P && !urgent) return null;
-        const kind = chain11 || curtain2 || gold || pd >= pp || row?.unparryable || seq ? "dodge" : "parry";
+        const kind = curtain2 || gold || pd >= pp || row?.unparryable || seq ? "dodge" : "parry";
         const lead = kind === "parry" ? parryLead ?? row?.parry_lead ?? DEFAULTS.parry_lead : dodgeLead ?? row?.dodge_lead ?? DEFAULTS.dodge_lead;
         if (remF > lead || remF < -LATE_F) return null;
-        return { kind, Tc, remF, lead, src: chain11 ? "chain11" : curtain2 ? "curtain2" : gold ? "gold" : row?.unparryable && pp > pd ? "table" : seq && pp > pd ? "goldSeq" : "resp" };
+        return { kind, Tc, remF, lead, src: curtain2 ? "curtain2" : gold ? "gold" : row?.unparryable && pp > pd ? "table" : seq && pp > pd ? "goldSeq" : "resp" };
     }
     /** May this press go now (lock / cooldown / already pressed for this contact)? @param {{kind: string, Tc: number}} d @param {number} now */
     function canPress(d, now) {
@@ -726,7 +720,6 @@ export default function (args = {}) {
         presses[d.kind]++;
         const p = /** @type {NonNullable<typeof pred>} */ (pred);
         if (d.kind === "dodge" && p.grp === C11_GID && d.src !== "goldBeat") goldSeqOpen(now, "dodge");
-        if (d.src === "chain11") chain11Log.push([now - start, p.grp, Math.round(d.remF * 10) / 10, d.lead]);
         if (d.src === "curtain2") curtain2Log.push([now - start, p.grp, Math.round(d.remF * 10) / 10, d.lead]);
         pressLog.push([now - start, d.kind, p.grp, r3(p.col[0]), r3(p.resp[0]), r3(p.resp[1]), p.med, Math.round(d.remF * 10) / 10, d.lead, d.src]);
         return ACT[d.kind];
@@ -1049,7 +1042,7 @@ export default function (args = {}) {
         if (atkHold) {
             const stop = inCurtain || running || now < holdUntil || now - lastHitAt < 300
                 || (pred != null && (pred.med <= 25 || pWithin(20) >= 0.15
-                    || pred.col[0] >= (phase === 1 ? GOLD_DODGE_P1 : GOLD_DODGE_P)));
+                    || pred.col[0] >= goldDodgeP));
             if (stop) {
                 atkRelease(inCurtain ? "curtain" : running ? "run" : now < holdUntil ? "potion" : now - lastHitAt < 300 ? "hit" : "defense");
                 return 0;
@@ -1065,7 +1058,7 @@ export default function (args = {}) {
         if (now - lastOkAt > ATK_NEAR_MS && now - lastDropAt > ATK_DROP_MS) return 0;
         if (!pred) return 0;
         if (pred.med <= ATK_QUIET_F || pWithin(ATK_QUIET_F) >= ATK_QUIET_P) return 0;
-        if (pred.col[0] >= (phase === 1 ? GOLD_DODGE_P1 : GOLD_DODGE_P)) return 0; // a gold tell: leave the hand free
+        if (pred.col[0] >= goldDodgeP) return 0; // a gold tell: leave the hand free
         if (decide(now)) return 0; // a defense press is due: never start a charge in front of it
         const w = weaponNow(im, now);
         const modao = phase === 1 && w === "modao";
@@ -1233,7 +1226,7 @@ export default function (args = {}) {
             if (defend) act = runTick(now);
             // a charge in progress lets go before a defense press (the old skill's offYield: a held finger restarts it)
             if (atkHold && pred && (pred.med <= 35 || pWithin(25) >= 0.15
-                || pred.col[0] >= (phase === 1 ? GOLD_DODGE_P1 : GOLD_DODGE_P))) atkRelease("defense");
+                || pred.col[0] >= goldDodgeP)) atkRelease("defense");
             const d = decide(now);
             if (d && !canPress(d, now)) {
                 wouldAct = ACT[d.kind];
@@ -1330,7 +1323,6 @@ export default function (args = {}) {
         run: runOn ? { dirs: runDirs, runs: runLog } : null,
         goldSeq: goldSeqOn ? goldSeqLog : null,
         chain: chainOn ? chainLog : null,
-        chain11: chain11On ? { presses: chain11Log.length, log: chain11Log } : null,
         curtain2: curtain2On ? { presses: curtain2Log.length, log: curtain2Log } : null,
         curtain: curtainOn ? { gap: curtainGap, enters: curtainEnters, dodges: curtainDodges } : null,
         attack: attackOn ? { presses: presses.attack, execs: atkExecs, log: atkLog, weapon } : null,

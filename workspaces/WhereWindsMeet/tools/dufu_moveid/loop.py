@@ -1,7 +1,8 @@
 """顺序 6: the closed loop around dufu2's live rounds (run -> pull/verify/delete -> analyze -> gate).
 
     MOVEID_PHASE=1 uv run python workspaces/WhereWindsMeet/tools/dufu_moveid/loop.py run --n 16 --tag gate3 \
-        --args '{"mode":"defend","provider":"qnn","model":"dufu1b","parryLead":10,"curtainGap":false,"curtain2":true,"chain11":false}'
+        --args '{"mode":"defend","provider":"qnn","model":"dufu1b"}'
+    # phase 1 now defaults to the finalized config: parryLead 10, curtainGap false, curtain2 true (chain11 removed).
     MOVEID_PHASE=1 uv run python .../loop.py ab --n 12 --tag ab_attack --alt '[{"attack":false},{"attack":true}]'
     MOVEID_PHASE=1 uv run python .../loop.py ingest --tag gate3
     MOVEID_PHASE=1 uv run python .../loop.py gate --tag gate3
