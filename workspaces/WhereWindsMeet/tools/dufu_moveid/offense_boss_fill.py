@@ -166,6 +166,11 @@ def main() -> None:
         out.append(r)
         print(f"{d.name} {args.get('offense')} frames {r['frames']} presses {len(r['presses'])}", flush=True)
     ONLINE.mkdir(parents=True, exist_ok=True)
+    prev = read_json(ONLINE / "bossfill.json", {}) or {}
+    merged = {x["round"]: x for x in prev.get("rounds", [])}
+    for x in out:
+        merged[x["round"]] = x
+    out = [merged[k] for k in sorted(merged)]
     write_json(ONLINE / "bossfill.json", {"rounds": out})
     # summary: per action dmg2 / dmg3 (only attributable) and old-ROI land dmg
     lines = ["# 进攻按键真实伤害（bossFill 重放）", "",

@@ -72,6 +72,7 @@
 - `dufu2.js` 保留 `bossBar()` 给防守（进场、boss 消失、结束判定、旧 `boss` trace 列）；进攻的 near 锚点、`bossPx` trace、`atk2Land` 伤害核算改用 `bossFill`。
 - 离线复核：r199/r201/r203 逐帧（每 2–3 帧抽样）比较旧读数/新读数；指标 = 相邻帧 |Δ| 的 p95、假掉/假升次数（回弹 ≤2 s）、真实处决台阶（-57~-59 px）是否保留。**先出离线对照，再与 M1 一起上机**；如果新读数与旧读数在真实台阶上不一致，停。
 - 防守 A/B 不受影响：`offense:"off"` 的触摸对拍（固定基线 `4c80b3c`，12 场景）必须继续 12/12。
+- **离线结果（2026-11-01，r199/r201/r203，15 Hz）**：旧读数假掉/回弹 **320 次**（设备 4 Hz trace 同口径 183 次），新读数 **2 次**；5 次有效处决台阶 old 57.3–58.0 px、new 57.5–58.0 px，真实台阶保留。新读数弱点：红色描边/红雾会把单行顶到 386（+16–36 px），只偏高；离线伤害核算用 0.5 s 最大滤波 + 单调包络（`offense_boss_fill.py` 的 `envelope`），live 暂不做包络，`atk2Land` 的 dmg 在红雾帧可能低估。脚本 `offense_boss_roi.py`，输出 `data/moveid/offense/online/boss_roi.json/.md`。
 
 ### 4.2 trace 新列
 
