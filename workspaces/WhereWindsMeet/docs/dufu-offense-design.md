@@ -46,13 +46,13 @@ OOF 在接触前 30 帧仍给 21–26% 的“空窗”，真值是 0；live trac
 | 动作 | 前置 | commit+safety | q | 单次净 HP |
 |---|---|---:|---:|---:|
 | execute | 气竭按钮 | 45 f | .80 | 31.49 px |
-| qishu | 长窗 / 气竭 | 70 f | **.90** | 28.30 px |
-| light | 横刀（陌刀先切） | 18 f（+24 f = 42 f） | **.80** | 4.18 px |
-| follow | 横刀 ok 蓝盘 | 37 f（+24 f = 61 f） | **.85** | 6.66 px |
-| charge | 陌刀 | 46 f | **.90** | ~0 HP，+12 真气 |
-| 整套 | 横刀 + burst 冷好 | 144 f | **.95** | 净 1.14 / 正步骤 7 px |
+| qishu | 长窗 / 气竭 | 70 f | **.85** | 28.30 px |
+| light | 横刀（陌刀先切） | 18 f（+24 f = 42 f） | **.70** | 4.18 px |
+| follow | 横刀 ok 蓝盘 | 37 f（+24 f = 61 f） | **.80** | 6.66 px |
+| charge | 陌刀 | 46 f | **.85** | ~0 HP，+12 真气 |
+| 整套 | 横刀 + burst 冷好 | 144 f | **.90** | 净 1.14 / 正步骤 7 px |
 
-> q 不是离线分析的原始值：2 对 2 实机回归里 v2 的 4.26 挨打/分（off 1.44）后，light/follow/qishu/charge/set 从 `.60/.70/.80/.85/.90` 收紧到上表；同时加 `pWithin(commit+safety) < .25` 的 horizon 硬门。`args.offenseQ` 可覆盖做 A/B。
+> q 不是离线分析的原始值。2 对 2 实机回归里旧 q（`.60/.70/.80/.85/.90`）v2 4.26 挨打/分，先收紧到 `.80/.85/.90/.90/.95` 仍只有 2.99 且伤害 21%/6min；现在取中间值 `.70/.80/.85/.85/.90`，同时保留 `pWithin(commit+safety) < .25` 的 horizon 硬门和 2.5 s c11/金光封锁。`args.offenseQ` 可覆盖做 A/B。
 | hlight | 横刀 | 39 f | .60 | 1.69 px（不划算） |
 
 关键修正：
@@ -162,7 +162,7 @@ can_attack(action):
 
 - 新 `skills/lib/dufu-offense.js`（纯决策）+ `dufu-offense-table.js`（`next.share` 编译表）；`dufu2.js` 的 `args.offense: "v2"` 接线、contact 3 动作、trace 10 列、`result.offense` 日志；`args.offense` 默认 `"off"`，legacy `args.attack` 保留。
 - 工具：`s5_offense_table.py` 重新生成 `next.share`；`s5_push.py` 已把两个新 lib 加入推送清单；`loop.py gate` 自动按 `offense` / legacy `attack` / `run` 分组。
-- 测试：`pytest` 39 passed；`dufu2_scheduler` **32 条**；`dufu_offense` **13 条**；固定基线 `4c80b3c` 的 `offense:"off"` 对拍 12/12 场景逐条一致。
+- 测试：`pytest` 39 passed；`dufu2_scheduler` **34 条**；`dufu_offense` **13 条**；固定基线 `4c80b3c` 的 `offense:"off"` 对拍 12/12 场景逐条一致。
 - 首版边界（有意保留）：
   - T4 `set` 只有接口，`dufu2` 恒传 `allow.set=false`；T5 `charge` 默认关，启用时才在陌刀窗口优先于切刀轻击。
   - 幕布 v1 **整段 `inCurtain` 封锁**，设计里的 c18+6 轻击窗暂缓；Stage 1 先看伤害是否够。
@@ -175,4 +175,6 @@ can_attack(action):
   - 6 分钟单局 smoke（r185）：boss 381 → 238（约 37.5%），但 2.43 挨打/分、致命 86.8%；动作 17 light / 17 follow / 5 qishu / 1 execute。
   - 2 对 2、6 分钟（r186–r189，旧 q）：`off` 1.44 挨打/分、fatal 105/117 = 89.7%；`v2` **4.26 挨打/分、fatal 103/126 = 81.8%**，r189 3.2 分钟死亡。loop p50/p95 与 off 同量级，不是 CPU。
   - 已收紧 q 并加 horizon（见 §3.3）；**Stage 1 暂停**。
-  - 新 q 2 对 2（r190–r193）：`off` **1.63 挨打/分、fatal 112/129 = 86.8%**；`v2` **2.99 挨打/分、fatal 122/139 = 87.8%**。v2 只剩 20 个动作（17 light / 2 qishu / 1 execute），6 分钟 boss 约 21%。q/horizon 降低了动作和伤害，但 hits/min 仍 >1.5；这批 off 自己也只有 86.8%，对局偏难。**Stage 1 仍未启动。**
+  - 新 q 2 对 2（r190–r193）：`off` **1.63 挨打/分、fatal 112/129 = 86.8%**；`v2` **2.99 挨打/分、fatal 122/139 = 87.8%**。v2 只剩 20 个动作（17 light / 2 qishu / 1 execute），6 分钟 boss 约 21%。q/horizon 降低了动作和伤害，但 hits/min 仍 >1.5；这批 off 自己也只有 86.8%，对局偏难。
+  - 关键 bug：v2 的 **c11 窗口 10 个里 7 个挨打**，off 7 个里 0 个。`dufu1-table` 里 `k2:c11` 是 `dodge/unparryable/fatal`，不是普通招；已加 `goldNow`：goldSeq / 当前金 tell / 最近 c11·c40 接触（按表的 dodge/unparryable 语义）后 2.5 s 封锁，阶段一/二都生效。
+  - q 取中间值 `.70/.80/.85/.85/.90`；测试 34/13/39；**Stage 1 仍未启动**，先做 c11 修复 + 中间 q 的 2 对 2 smoke。

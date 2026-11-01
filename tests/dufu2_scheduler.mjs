@@ -176,7 +176,7 @@ const tests = {
         assert.ok(qs[0].at >= t0 + 800 && qs[0].at <= t0 + 1000, `奇术 at ${qs[0].at - t0} (the ok is at 800)`);
         assert.equal(atk3(ts, POINTS.LIGHT).length, 0, "轻击 instead of 奇术");
         assert.equal(result.offense.actions.qishu, 1, JSON.stringify(result.offense.actions));
-        assert.ok(near(result.offense.qAvg, 0.9, 1e-9), `qAvg ${result.offense.qAvg}`);
+        assert.ok(near(result.offense.qAvg, 0.85, 1e-9), `qAvg ${result.offense.qAvg}`);
     },
     "offense v2: phase 1 switches to 横刀 once, then 轻击 (touch order)"() {
         const { result, touches, t0 } = run("offLight");
@@ -187,7 +187,7 @@ const tests = {
         assert.ok(sw[0].at < li[0].at, `light ${li[0].at - t0} before the switch ${sw[0].at - t0}`);
         assert.equal(result.offense.switches, 1);
         assert.ok(result.offense.actions.light >= 1);
-        assert.ok(result.offense.log.some((e) => e.ev === "land" && e.tier === 3 && e.q === 0.8), JSON.stringify(result.offense.log));
+        assert.ok(result.offense.log.some((e) => e.ev === "land" && e.tier === 3 && e.q === 0.7), JSON.stringify(result.offense.log));
         assert.ok(result.offense.log.some((e) => e.ev === "press" && e.a === "switch" && e.near === true), "the ok did not open the near gate");
         // no LIGHT on contact 3 before the switch (the switch itself is the only earlier touch)
         assert.ok(atk3All(ts.filter((t) => t.at < sw[0].at)).length === 0, "an offense touch before the switch");
@@ -205,6 +205,7 @@ const tests = {
         const { result, touches, t0 } = run("offGoldFireball");
         const ts = fightTouches(touches, t0);
         assert.ok(dodgeDowns(ts).length >= 1, "no opening dodge");
+        assert.equal(result.goldSeq.length, 1, JSON.stringify(result.goldSeq));
         const ps = atk3All(ts);
         assert.ok(ps.length >= 1, "no offense after the gold window");
         const inside = ps.filter((t) => t.at >= t0 + 900 && t.at < t0 + 5940);
@@ -212,6 +213,30 @@ const tests = {
         assert.ok(ps.some((t) => t.at >= t0 + 5940), `no offense after the window: ${ps.map((t) => t.at - t0)}`);
         // the extra dodges are the gold fireball cadence, not offense (contact 3)
         assert.ok(dodgeDowns(ts)[0].at <= t0 + 1000, `first dodge at ${dodgeDowns(ts)[0].at - t0}`);
+    },
+    "offense v2: a c11/c40 contact keeps the offense off for 2.5 s, then it recovers"() {
+        const { result, touches, t0, sent } = run("offGoldContact");
+        const ts = fightTouches(touches, t0);
+        assert.equal(result.hits, 1, JSON.stringify(result.contacts));
+        const early = atk3All(ts).filter((t) => t.at >= t0 + 1000 && t.at < t0 + 3300);
+        assert.equal(early.length, 0, `contact-3 touches inside the c11 quiet: ${JSON.stringify(early)}`);
+        assert.ok(atk3(ts, POINTS.LIGHT).some((t) => t.at >= t0 + 3330 && t.at <= t0 + 3600),
+            `no recovery light: ${atk3(ts, POINTS.LIGHT).map((t) => t.at - t0)}`);
+        const ev = sent.find((e) => e.name === "dufu2_trace");
+        const c = Object.fromEntries(ev.data.cols.map((k, i) => [k, i]));
+        assert.ok(ev.data.rows.some((r) => r[c.atkReason] === 15), "no gold T0 in the trace");
+    },
+    "offense v2: a phase-1 k2:c11 contact (dodge/unparryable) blocks for 2.5 s too"() {
+        const { result, touches, t0, sent } = run("offGoldContactP1");
+        const ts = fightTouches(touches, t0);
+        assert.equal(result.hits, 1, JSON.stringify(result.contacts));
+        const early = atk3All(ts).filter((t) => t.at >= t0 + 1000 && t.at < t0 + 3300);
+        assert.equal(early.length, 0, `contact-3 touches inside the phase-1 c11 quiet: ${JSON.stringify(early)}`);
+        assert.ok(atk3(ts, POINTS.LIGHT).some((t) => t.at >= t0 + 3330 && t.at <= t0 + 3600),
+            `no recovery light: ${atk3(ts, POINTS.LIGHT).map((t) => t.at - t0)}`);
+        const ev = sent.find((e) => e.name === "dufu2_trace");
+        const c = Object.fromEntries(ev.data.cols.map((k, i) => [k, i]));
+        assert.ok(ev.data.rows.some((r) => r[c.atkReason] === 15), "no gold T0 in the trace");
     },
     "offense v2: the 火球雨 (run) blocks; the same group without c7 acts"() {
         const { result, touches, t0 } = run("offRain");
@@ -235,7 +260,7 @@ const tests = {
         assert.equal(off.result.offense.actions.follow, 0);
         assert.ok(atk3(fightTouches(off.touches, off.t0), POINTS.LIGHT).length >= 1, "no 轻击 without the disc");
     },
-    "offense v2: a gold tell cancels the pending switch (reason gold)"() {
+    "offense v2: a phase-1 k2:c11 gold tell cancels the pending switch (reason gold)"() {
         const { result, touches, t0 } = run("offPreemptGold");
         const ts = fightTouches(touches, t0);
         assert.equal(atk3(ts, POINTS.SWITCH).length, 1, "the switch was not started");
@@ -358,7 +383,7 @@ const tests = {
         assert.equal(atk3All(fightTouches(high.touches, high.t0)).length, 0, "a light below the overridden q");
         assert.equal(high.result.offense.q.light, 0.99);
         const def = run("offNearDrop");
-        assert.equal(def.result.offense.q.light, 0.8);
+        assert.equal(def.result.offense.q.light, 0.7);
         assert.ok(atk3(fightTouches(def.touches, def.t0), POINTS.LIGHT).length >= 1);
     },
     "offense off: no contact-3 touch at all (the old defense path)"() {

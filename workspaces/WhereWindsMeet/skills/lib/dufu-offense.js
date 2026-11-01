@@ -55,9 +55,10 @@ const QUIET_P = {
     1: { 18: 0.83, 42: 0.81, 45: 0.809, 61: 0.755, 70: 0.71, 144: 0.45 },
     2: { 18: 0.78, 42: 0.745, 45: 0.743, 61: 0.672, 70: 0.62, 144: 0.38 },
 };
-/** the action tier's required P(empty window) (design 3.3 / 5.2; conservative stage-1 values 2026-11-01: live A/B
- *  showed the old thresholds let attacks start in front of contacts). `pick(input.q)` can override them for an A/B. */
-export const Q = { execute: 0.80, qishu: 0.90, light: 0.80, follow: 0.85, set: 0.95, charge: 0.90 };
+/** the action tier's required P(empty window) (design 3.3 / 5.2; conservative stage-1 values 2026-11-01, the middle
+ *  step after the first live A/B: the old low thresholds let attacks start in front of contacts). `pick(input.q)` can
+ *  override them for an A/B. */
+export const Q = { execute: 0.80, qishu: 0.85, light: 0.70, follow: 0.80, set: 0.90, charge: 0.85 };
 /** trace codes (result.offense.reasonNames is the reverse map) */
 export const TIER = { none: 0, execute: 1, qishu: 2, light: 3, follow: 3, set: 4, charge: 5 };
 export const REASON = {

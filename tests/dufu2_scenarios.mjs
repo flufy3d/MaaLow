@@ -185,8 +185,8 @@ export const SCENARIOS = {
         return {
             phase: 1, mode: "defend", fightMs: 2200, args: { offense: "v2" },
             scenario: {
-                // the boss drop at 300 opens the near gate; the switch starts ~780, the gold tell at 1300 cancels it
-                head: (t) => ({ gid: 43, med: 46, col: t >= 1300 ? 0 : 2, resp: 2 }),
+                // the boss drop at 300 opens the near gate; the switch starts ~780, the c11 gold tell at 1300 cancels it
+                head: (t) => ({ gid: 35, med: 46, col: t >= 1300 ? 0 : 2, resp: 2 }), // k2:c11 (phase 1)
                 weapon: () => "modao", boss: bossDrop(300),
             },
         };
@@ -218,6 +218,36 @@ export const SCENARIOS = {
         return {
             phase: 2, mode: "defend", fightMs: 2500, args: { offense: "v2" },
             scenario: { head: () => ({ gid: 87, med: 46, col: 2, resp: 2 }), weapon: () => "" },
+        };
+    },
+    offGoldContact() {
+        // k4:c11+c41 (gid 56, name has c11, not the k0:c11+c40 goldSeq opener) hits at 1000; the c11 quiet keeps the
+        // offense off until 2500 ms after the contact's capture time (~833). A boss drop at 1500 opens near at ~2000,
+        // so only goldNow stops the light until ~3333; then the quiet phase-2 light goes (P42 .745 >= q .70).
+        return {
+            phase: 2, mode: "defend", fightMs: 4500, args: { offense: "v2" },
+            scenario: {
+                head: (t) => (t >= 900 && t <= 1010
+                    ? { gid: 56, med: Math.round((1000 - t) / frameMs), col: 2, resp: 2 }
+                    : { gid: 87, med: 46, col: 2, resp: 2 }),
+                hp: (t) => (t >= 1000 ? 0.7 : 1),
+                boss: bossDrop(1500), weapon: () => "",
+            },
+        };
+    },
+    offGoldContactP1() {
+        // phase 1's k2:c11 (gid 35) is dodge / unparryable / fatal, not a normal move: a hit at 1000 keeps the
+        // offense off until 2500 ms after the contact (~833); the boss drop at 1500 opens near, then the quiet
+        // phase-1 light (P42 .81 >= .70) goes at ~3334.
+        return {
+            phase: 1, mode: "defend", fightMs: 4500, args: { offense: "v2" },
+            scenario: {
+                head: (t) => (t >= 900 && t <= 1010
+                    ? { gid: 35, med: Math.round((1000 - t) / frameMs), col: 2, resp: 2 }
+                    : { gid: 97, med: 46, col: 2, resp: 2 }),
+                hp: (t) => (t >= 1000 ? 0.7 : 1),
+                boss: bossDrop(1500), weapon: () => "hengdao",
+            },
         };
     },
     offOpeningQishu() {

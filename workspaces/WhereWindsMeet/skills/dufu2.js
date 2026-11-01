@@ -220,6 +220,7 @@ const ATK2_LAND_MS = 2000; // boss HP / 真气 after an action (design 6: 前 / 
 const ATK2_CHARGE_MS = 700; // 陌刀 蓄力 hold (dufu.js ATK_MODAO_MS)
 const ATK2_CHAIN_CLEAR_MS = 30 * FRAME_MS; // the 串中 clear (design 5.1: < 30 f after the last contact)
 const ATK2_OPENING_MS = 15_000; // dufu.js QS_OPEN_MS: the opening 奇术 window, from the first boss-bar sighting
+const ATK2_GOLD_QUIET_MS = 2500; // conservative: a c11/c40 contact keeps the offense off it for 2.5 s
 /** @type {Record<number, number>} */ const WEAPON_CODE = { "": 0, modao: 1, hengdao: 2 };
 // end of the round (dufu.js deadCheck / haltCheck)
 /** @type {Box} */ const GREY_ROI = [100, 100, 880, 500];
@@ -1220,6 +1221,25 @@ export default function (args = {}) {
         atk2Log.push({ t: Math.round(now - start), a: what, ev: "cancel", tier, q: r3(q), why, held: Math.round(held) });
         mark("atk2", `cancel ${what} (${why})${held ? ` after ${Math.round(held)} ms` : ""}`);
     }
+    /** The 金光火球 window, broader than goldSeq: the goldSeq cadence itself, a gold tell now, or a c11/c40 contact
+     *  < ATK2_GOLD_QUIET_MS ago (the tell / sequence can start before goldSeq opens). The c11/c40 group rule uses the
+     *  move table's semantics (dodge / unparryable, in BOTH phases); a c11/c40 name with no table row is kept
+     *  conservative. @param {number} now */
+    function goldNow(now) {
+        if (goldSeqOn && goldSeq != null && now <= goldSeq.anchor + GOLD_SEQ_F * FRAME_MS) return true;
+        if (pred != null && pred.col[0] >= goldDodgeP) return true;
+        if (lastContactGid < 0 || lastContactGid >= IDLE) return false;
+        const name = GRP_NAMES[lastContactGid];
+        if (!name || (!name.includes("c11") && !name.includes("c40"))) return false;
+        const row = GROUPS[name];
+        // phase 1's k2:c11 is dodge / unparryable / fatal, not a normal move: the table decides, not the phase. If the
+        // table has no row (or lacks the fields), stay conservative and keep the c11/c40 name rule.
+        const known = row != null && typeof row.unparryable === "boolean"
+            && (row.response === "dodge" || row.response === "parry" || row.response === "none");
+        if (known && row.response !== "dodge" && row.unparryable !== true) return false;
+        const last = contacts.length ? contacts[contacts.length - 1] : null;
+        return last != null && now - last.t <= ATK2_GOLD_QUIET_MS;
+    }
     /** Why a defense press / special window preempts the offense now ("" = none). The order is the defense's own:
      *  火球雨 > 幕布 > 喝药 > 挨打 1 s > a defense press due (the caller's decide result) > a predicted contact > a
      *  gold tell. @param {number} now @param {boolean} defenseDue the main loop's decide(now) was non-null */
@@ -1230,7 +1250,7 @@ export default function (args = {}) {
         if (lastHitAt && now - lastHitAt < ATK_HIT_QUIET_MS) return "hit";
         if (defenseDue) return "defense";
         if (pred != null && (pred.med <= 25 || pWithin(20) >= 0.15)) return "defense";
-        if (pred != null && pred.col[0] >= goldDodgeP) return "gold";
+        if (goldNow(now)) return "gold";
         return "";
     }
     /** Called before the defense's tick: a pending switch / held charge lets go at once. @param {number} now
@@ -1388,7 +1408,7 @@ export default function (args = {}) {
             curtainCovered: curtainOn && inCurtain && gapLast === "covered",
             curtainSweep: curtainOn && inCurtain,
             fireballRain: runOn && (running != null || (pred != null && pred.c7P >= RUN_P)),
-            goldFireball: goldSeqOn && goldSeq != null && now <= goldSeq.anchor + GOLD_SEQ_F * FRAME_MS,
+            goldFireball: goldNow(now),
             phaseTransition: false, // no read yet; the T4 整套 is off in v1 anyway
             running: running != null,
             potionPending: potionPend != null || now < holdUntil

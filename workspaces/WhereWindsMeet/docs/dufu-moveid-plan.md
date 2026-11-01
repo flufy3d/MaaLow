@@ -127,6 +127,6 @@ HEAD `7721712`。阶段一和阶段二的防守都已通过关 2；顺序 6 的�
 - 离线分析（30 fps 修正）结论：tte 不能当进攻门；`charge` 基本不打 HP；`strike` 不能独立按，整套净 HP 中位 1.14 px；可用输出是 execute / qishu / light / follow。总血量中位 2 条 × 381 px，当前 10 分钟约 21%，现实保守 TTK 16.9 分钟。
 - Gate：Stage 1 = 8 对 8、10 分钟/局，安全线 + 10 分钟 ≥1 条血（381 px）；Stage 2 = 8 局击杀确认，TTK 中位 ≤20 分钟（15 分钟 stretch，至少 6/8 击杀）。
 - 设计、调度、日志和停止条件见 [dufu-offense-design.md](dufu-offense-design.md)。
-- 首版实现已落地、默认关：`lib/dufu-offense.js` + 表、`dufu2.js` 的 `offense:"v2"` 接线、trace 10 列、`result.offense`、`loop.py gate` 按 offense 分组、`s5_push.py` 推送新 lib；pytest 39 passed，`dufu2_scheduler` 32 条、`dufu_offense` 13 条，`offense:"off"` 对 `4c80b3c` 的 12 个防守场景触摸逐条一致。
-- 实机安全回归：6 分钟 smoke 伤害约 37.5% 但 2.43 挨打/分；旧 q 2 对 2 off vs v2 = 1.44 vs 4.26 挨打/分、89.7% vs 81.8% 致命（r189 3.2 分钟死）。已收紧 q 到 `.80/.85/.90/.90/.95` 并加 horizon 门；新 q 2 对 2 = off 1.63/86.8%、v2 2.99/87.8%，v2 只剩 20 个动作、6 分钟 boss 约 21%。hits/min 仍未到 1.5，Stage 1 暂停。
+- 首版实现已落地、默认关：`lib/dufu-offense.js` + 表、`dufu2.js` 的 `offense:"v2"` 接线、trace 10 列、`result.offense`、`loop.py gate` 按 offense 分组、`s5_push.py` 推送新 lib；pytest 39 passed，`dufu2_scheduler` 34 条、`dufu_offense` 13 条，`offense:"off"` 对 `4c80b3c` 的 12 个防守场景触摸逐条一致。
+- 实机安全回归：6 分钟 smoke 伤害约 37.5% 但 2.43 挨打/分；旧 q 2 对 2 off vs v2 = 1.44 vs 4.26 挨打/分、89.7% vs 81.8% 致命（r189 3.2 分钟死）。收紧到 `.80/.85/.90/.90/.95` 后 off 1.63/86.8%、v2 2.99/87.8%，v2 只剩 20 个动作、6 分钟 boss 约 21%。发现 v2 c11 窗口 10/7 挨打（off 7/0）；已加 `goldNow` 阶段一/二 2.5 s 封锁，q 取中间值 `.70/.80/.85/.85/.90`；Stage 1 仍暂停，先做 2 对 2 smoke。
 - 首版边界：T4/T5 只有接口；幕布整段封锁（c18+6 暂缓）；阶段一切横刀后不回切；near 1500 ms；`range` 是 near 代理。
