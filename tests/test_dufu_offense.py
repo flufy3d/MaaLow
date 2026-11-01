@@ -50,6 +50,24 @@ def test_loop_gate_grouping():
     assert loop.by_key(plain) == "run"
 
 
+def test_loop_fresh_reset_recovers_death_panel(monkeypatch):
+    """A shadow that ends on the death panel is retried through dufu_enter, not aborted after three misses."""
+    sys.path.insert(0, str(TOOLS))
+    sys.path.insert(0, str(ROOT / "src"))
+    loop = _load("dufu_loop", TOOLS / "loop.py")
+    enters = []
+    shadows = iter([
+        {"value": {"reason": "time", "fightMs": 1000}},   # the first shadow died on screen but reported time
+        {"value": {"reason": "dead", "fightMs": 2000}},   # after enter (again 再次训练) the shadow reports dead
+    ])
+    monkeypatch.setattr(loop, "pad_idle", lambda: (True, {"busy": None}))
+    monkeypatch.setattr(loop, "enter", lambda: enters.append(1))
+    monkeypatch.setattr(loop, "cli", lambda *a, **k: next(shadows))
+    monkeypatch.setattr(loop.time, "sleep", lambda *_: None)
+    loop.fresh_reset({"provider": "qnn", "model": "dufu1b"})
+    assert len(enters) == 2
+
+
 def test_s5_ab_offense_arms():
     """s5_ab --by offense: the two offense values are two arms (the statistic itself is unchanged)."""
     if not (ROOT / "data" / "moveid" / "teacher_prefix" / "prefix.json").exists():

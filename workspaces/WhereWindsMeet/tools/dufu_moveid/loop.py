@@ -134,20 +134,49 @@ def last_round() -> tuple[str, str]:
     return rs[-1].name, str(v.get("reason") or "")
 
 
+def wait_idle(timeout_s: float = 60) -> None:
+    """Wait out a transient guard / recording tail; abort if something else is still running."""
+    end = time.time() + timeout_s
+    while True:
+        ok, why = pad_idle()
+        if ok:
+            return
+        if time.time() >= end:
+            raise SystemExit(f"pad busy: {why}")
+        print(f"pad busy ({why}); waiting", flush=True)
+        time.sleep(2)
+
+
 def fresh_reset(args: dict, tries: int = 3) -> None:
-    """No recording / round dir: a shadow run until the boss kills the character (the next dufu_enter is fresh)."""
+    """No recording / round dir: a shadow run until the boss kills the character (the next dufu_enter is fresh).
+
+    Stage 1 stopped after r203 because the first shadow reached the death panel, then the next try could not start
+    dufu2 from that panel. Call dufu_enter before every try: on the arena it is a no-op, on the death panel it taps
+    再次训练 and gives the next shadow a fresh fight. A shadow that returns time after actually dying is therefore
+    retried from the arena instead of aborting the whole batch.
+    """
     a = {"mode": "shadow", "provider": args.get("provider", "qnn"), "phase": PHASE, "ms": 180_000}
     if args.get("model"):
         a["model"] = args["model"]
+    last = None
     for i in range(tries):
-        if pad_idle()[0]:
-            r = cli("do", "skill", "dufu2", "--args", json.dumps(a), "--timeout", "240000", timeout=280)
-            v = r.get("value") or {}
-            print(f"  shadow reset {i + 1}: {v.get('reason')} {round(v.get('fightMs', 0) / 1000, 1)} s", flush=True)
-            if v.get("reason") == "dead":
-                return
+        if not pad_idle()[0]:
+            time.sleep(2)
+            continue
+        try:
+            enter()  # death panel -> 再次训练; in the arena this is just the normal no-op entry
+        except SystemExit as e:
+            print(f"  shadow reset {i + 1}: enter failed: {str(e)[:300]}", flush=True)
+            time.sleep(2)
+            continue
+        r = cli("do", "skill", "dufu2", "--args", json.dumps(a), "--timeout", "240000", timeout=280)
+        v = r.get("value") or {}
+        last = v.get("reason") or r.get("error") or "no reason"
+        print(f"  shadow reset {i + 1}: {v.get('reason')} {round(v.get('fightMs', 0) / 1000, 1)} s", flush=True)
+        if v.get("reason") == "dead":
+            return
         time.sleep(2)
-    raise SystemExit("could not reset the fight (shadow did not die)")
+    raise SystemExit(f"could not reset the fight (shadow did not die: {last})")
 
 
 def run_round(args: dict, ms: int) -> None:
@@ -162,10 +191,9 @@ def run_round(args: dict, ms: int) -> None:
 
 def do_run(tag: str, n: int, ms: int, args: dict | None, alt: list[dict] | None, batch: int) -> None:
     m = load_manifest(tag)
-    if not pad_idle()[0]:
-        raise SystemExit(f"pad busy: {pad_idle()[1]}")
     before = guards_off()
     try:
+        wait_idle()
         enter()
         prev = last_round()[1]
         start = len(m["rounds"])
