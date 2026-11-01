@@ -12,15 +12,21 @@ export const POINTS = {
 };
 
 
-/** One-hot-ish head logits for the phase. col: 0 gold / 1 red / 2 none; resp: 0 dodge / 1 parry / 2 none. */
-export function headLogits(phase, { gid, med = 46, col = 2, resp = 1 } = {}) {
+/** One-hot-ish head logits for the phase. col: 0 gold / 1 red / 2 none; resp: 0 dodge / 1 parry / 2 none.
+ *  `tte`: optional 47-bin probability array (the horizon tests); otherwise the one-hot `med` bin. */
+export function headLogits(phase, { gid, med = 46, col = 2, resp = 1, tte = null } = {}) {
     const NG = phase === 1 ? 98 : 88;
     const oCol = NG, oResp = NG + 3, oTte = NG + 6;
     const out = new Array(NG + 6 + 47).fill(-20);
     out[gid] = 20;
     out[oCol + col] = 20;
     out[oResp + resp] = 20;
-    out[oTte + Math.max(0, Math.min(46, med))] = 20;
+    if (Array.isArray(tte)) {
+        const sum = tte.reduce((a, b) => a + b, 0) || 1;
+        for (let i = 0; i < 47; i++) out[oTte + i] = tte[i] > 0 ? Math.log(tte[i] / sum) : -30;
+    } else {
+        out[oTte + Math.max(0, Math.min(46, med))] = 20;
+    }
     return out;
 }
 

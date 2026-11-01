@@ -55,8 +55,9 @@ const QUIET_P = {
     1: { 18: 0.83, 42: 0.81, 45: 0.809, 61: 0.755, 70: 0.71, 144: 0.45 },
     2: { 18: 0.78, 42: 0.745, 45: 0.743, 61: 0.672, 70: 0.62, 144: 0.38 },
 };
-/** the action tier's required P(empty window) (design 3.3 / 5.2) */
-export const Q = { execute: 0.80, qishu: 0.80, light: 0.60, follow: 0.70, set: 0.90, charge: 0.85 };
+/** the action tier's required P(empty window) (design 3.3 / 5.2; conservative stage-1 values 2026-11-01: live A/B
+ *  showed the old thresholds let attacks start in front of contacts). `pick(input.q)` can override them for an A/B. */
+export const Q = { execute: 0.80, qishu: 0.90, light: 0.80, follow: 0.85, set: 0.95, charge: 0.90 };
 /** trace codes (result.offense.reasonNames is the reverse map) */
 export const TIER = { none: 0, execute: 1, qishu: 2, light: 3, follow: 3, set: 4, charge: 5 };
 export const REASON = {
@@ -64,6 +65,7 @@ export const REASON = {
     defense: 10, hit: 11, potion: 12, executeWindup: 13, curtain: 14, gold: 15, running: 16, c30: 17,
     chain: 18, idle: 19, noBoss: 20, weapon: 21, q42: 22, q61: 23, q70: 24, q144: 25, near: 26, unknown: 27,
     stale: 28, // dufu2.js layer only: a queued switch action canceled because its window went stale
+    horizon: 29, // dufu2.js layer only: pWithin(commit+safety) was too high, so no attack started
 };
 /** @type {Record<number, string>} */
 export const REASON_NAMES = Object.fromEntries(Object.entries(REASON).map(([k, v]) => [v, k]));
@@ -119,6 +121,7 @@ export function nearNow(input) {
  *              phaseTransition?: boolean, running?: boolean, potionPending?: boolean, executeWindup?: boolean,
  *              c30Chain?: boolean},
  *   defenseBusyUntil?: number, pEmpty?: Record<number, number | null>,
+ *   q?: {execute: number, qishu: number, light: number, follow: number, set: number, charge: number},
  *   allow?: {set?: boolean, charge?: boolean},
  * }} input
  * @returns {{action: string | null, tier: number, q: number, reason: string, needsHengdao: boolean,
@@ -140,6 +143,7 @@ export function pick(input) {
     const near = nearNow(input);
     const phase = input.phase ?? 2;
     const weapon = input.weapon ?? "";
+    const q = input.q ?? Q; // the stage-1 defaults; dufu2.js may override via args.offenseQ for an A/B
     // 横刀? phase 2 is native (an unread weapon cannot be 陌刀 there); phase 1 must be read
     const heng = phase === 2 ? weapon !== "modao" : weapon === "hengdao";
     const switchFirst = !heng && (phase === 2 || weapon === "modao");
@@ -148,14 +152,14 @@ export function pick(input) {
     // ---- T4 整套 (phase change): its own window; everything else waits a transition out.
     // Interface only in v1 (dufu2.js does not run it): allow.set is off by default. The 整套 needs the near gate.
     if (sp.phaseTransition) {
-        if (input.allow?.set && pEmpty(input, null, 144) >= Q.set) {
-            return near ? act("set", TIER.set, Q.set, "transition", { needsHengdao: true, switchFirst }) : block("near");
+        if (input.allow?.set && pEmpty(input, null, 144) >= q.set) {
+            return near ? act("set", TIER.set, q.set, "transition", { needsHengdao: true, switchFirst }) : block("near");
         }
         return block("transition");
     }
     // ---- T1 气竭 处决: the button is the window (P(empty 45) = 1.00 in the design); no group and no near needed
     // (the button only shows next to a staggered boss, but the button itself is the strong signal).
-    if (input.executeButton) return act("execute", TIER.execute, Q.execute, "button");
+    if (input.executeButton) return act("execute", TIER.execute, q.execute, "button");
     // the group is the last contact's prefix group (design 4: the contact history's group / k / next.share). It is
     // null in a quiet spell (>= 30 f, no contact yet); the caller's pEmpty then carries the quiet_far anchor.
     const g = input.group;
@@ -168,25 +172,25 @@ export function pick(input) {
     if (share != null && share >= CHAIN_SHARE && input.lastContactAt && now - input.lastContactAt < CHAIN_CLEAR_F * FRAME_MS) return block("chain");
     const pE = (/** @type {number} */ f) => pEmpty(input, share, f);
     // ---- T2 奇术: a long window only; dufu.js qsTick allows it at the opening / a 气竭 window with no range gate
-    if (input.qishuReady && pE(70) >= Q.qishu) return act("qishu", TIER.qishu, Q.qishu, "long");
+    if (input.qishuReady && pE(70) >= q.qishu) return act("qishu", TIER.qishu, q.qishu, "long");
     // ---- the legacy near gate (dufu2 ATK_NEAR_MS / ATK_DROP_MS): everything below needs a recent ok / boss drop
     if (!near) return block("near");
     // ---- T5 陌刀 蓄力 (真气 only; opt-in, off by default): in phase 1 陌刀 a charge is taken instead of paying the
     // 24 f switch that light would need. Off unless the caller sets allow.charge; the design lists it last because it
     // deals no HP, and with light always available in the same window a literal last place would be unreachable.
-    if (input.allow?.charge && phase === 1 && weapon === "modao" && pE(45) >= Q.charge) {
-        return act("charge", TIER.charge, Q.charge, "charge", { holdMs: 700 });
+    if (input.allow?.charge && phase === 1 && weapon === "modao" && pE(45) >= q.charge) {
+        return act("charge", TIER.charge, q.charge, "charge", { holdMs: 700 });
     }
     // ---- T3 the 横刀 ok follow-up (the blue disc) and 轻击
-    if (input.blueDisc && heng && pE(61) >= Q.follow) return hengAction("follow", Q.follow, "disc");
-    if (pE(42) >= Q.light) {
-        if (heng) return hengAction("light", Q.light, "short");
-        if (switchFirst) return hengAction("light", Q.light, "short");
+    if (input.blueDisc && heng && pE(61) >= q.follow) return hengAction("follow", q.follow, "disc");
+    if (pE(42) >= q.light) {
+        if (heng) return hengAction("light", q.light, "short");
+        if (switchFirst) return hengAction("light", q.light, "short");
         return block("weapon"); // phase 1, weapon unread: do not toggle blind
     }
     // why nothing: which window failed (the trace's atkReason)
-    if (input.blueDisc && pE(61) < Q.follow) return block("q61");
-    if (input.qishuReady && pE(70) < Q.qishu) return block("q70");
+    if (input.blueDisc && pE(61) < q.follow) return block("q61");
+    if (input.qishuReady && pE(70) < q.qishu) return block("q70");
     return block("q42");
 }
 

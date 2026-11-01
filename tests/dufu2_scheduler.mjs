@@ -176,7 +176,7 @@ const tests = {
         assert.ok(qs[0].at >= t0 + 800 && qs[0].at <= t0 + 1000, `奇术 at ${qs[0].at - t0} (the ok is at 800)`);
         assert.equal(atk3(ts, POINTS.LIGHT).length, 0, "轻击 instead of 奇术");
         assert.equal(result.offense.actions.qishu, 1, JSON.stringify(result.offense.actions));
-        assert.ok(near(result.offense.qAvg, 0.8, 1e-9), `qAvg ${result.offense.qAvg}`);
+        assert.ok(near(result.offense.qAvg, 0.9, 1e-9), `qAvg ${result.offense.qAvg}`);
     },
     "offense v2: phase 1 switches to 横刀 once, then 轻击 (touch order)"() {
         const { result, touches, t0 } = run("offLight");
@@ -187,7 +187,7 @@ const tests = {
         assert.ok(sw[0].at < li[0].at, `light ${li[0].at - t0} before the switch ${sw[0].at - t0}`);
         assert.equal(result.offense.switches, 1);
         assert.ok(result.offense.actions.light >= 1);
-        assert.ok(result.offense.log.some((e) => e.ev === "land" && e.tier === 3 && e.q === 0.6), JSON.stringify(result.offense.log));
+        assert.ok(result.offense.log.some((e) => e.ev === "land" && e.tier === 3 && e.q === 0.8), JSON.stringify(result.offense.log));
         assert.ok(result.offense.log.some((e) => e.ev === "press" && e.a === "switch" && e.near === true), "the ok did not open the near gate");
         // no LIGHT on contact 3 before the switch (the switch itself is the only earlier touch)
         assert.ok(atk3All(ts.filter((t) => t.at < sw[0].at)).length === 0, "an offense touch before the switch");
@@ -228,7 +228,7 @@ const tests = {
         const ts = fightTouches(touches, t0);
         const he = atk3(ts, POINTS.HEAVY);
         assert.ok(he.length >= 1, "no follow tap");
-        assert.ok(he[0].at >= t0 + 900 && he[0].at <= t0 + 1200, `follow at ${he[0].at - t0}`);
+        assert.ok(he[0].at >= t0 + 400 && he[0].at <= t0 + 700, `follow at ${he[0].at - t0}`);
         assert.equal(result.offense.actions.follow, he.length);
         const off = run("offFollowOff");
         assert.equal(atk3(fightTouches(off.touches, off.t0), POINTS.HEAVY).length, 0, "a follow without the disc");
@@ -328,6 +328,39 @@ const tests = {
         assert.ok(result.offense.log.some((e) => e.ev === "cancel" && e.why === "stale" && e.a === "light"),
             JSON.stringify(result.offense.log));
     },
+    "offense v2: the commit horizon vetoes a start when a contact is likely inside the animation"() {
+        const { result, touches, t0, sent } = run("offHorizonHigh");
+        const ts = fightTouches(touches, t0);
+        assert.equal(atk3All(ts).length, 0, `contact-3 touches above the horizon: ${JSON.stringify(atk3All(ts))}`);
+        assert.equal(result.offense.presses, 0, JSON.stringify(result.offense.log));
+        const ev = sent.find((e) => e.name === "dufu2_trace");
+        const c = Object.fromEntries(ev.data.cols.map((k, i) => [k, i]));
+        assert.ok(ev.data.rows.some((r) => r[c.atkReason] === 29), "no horizon reason in the trace");
+    },
+    "offense v2: a low commit horizon starts the light"() {
+        const { result, touches, t0 } = run("offHorizonLow");
+        const ts = fightTouches(touches, t0);
+        const li = atk3(ts, POINTS.LIGHT);
+        assert.ok(li.length >= 1, "no light below the horizon");
+        assert.ok(li[0].at >= t0 + 700 && li[0].at <= t0 + 1000, `light at ${li[0].at - t0}`);
+        assert.ok(result.offense.log.some((e) => e.ev === "press" && e.a === "light"), JSON.stringify(result.offense.log));
+    },
+    "offense v2: the horizon rising during the switch cancels it as stale"() {
+        const { result, touches, t0 } = run("offSwitchHorizon");
+        const ts = fightTouches(touches, t0);
+        assert.ok(result.offense.cancels.stale >= 1, JSON.stringify(result.offense.cancels));
+        assert.equal(atk3(ts, POINTS.LIGHT).length, 0, "a light after the horizon rose");
+        assert.ok(result.offense.log.some((e) => e.ev === "cancel" && e.why === "stale" && e.a === "light"),
+            JSON.stringify(result.offense.log));
+    },
+    "offense v2: args.offenseQ overrides the q threshold (A/B switch)"() {
+        const high = run("offNearDrop", { offenseQ: { light: 0.99 } });
+        assert.equal(atk3All(fightTouches(high.touches, high.t0)).length, 0, "a light below the overridden q");
+        assert.equal(high.result.offense.q.light, 0.99);
+        const def = run("offNearDrop");
+        assert.equal(def.result.offense.q.light, 0.8);
+        assert.ok(atk3(fightTouches(def.touches, def.t0), POINTS.LIGHT).length >= 1);
+    },
     "offense off: no contact-3 touch at all (the old defense path)"() {
         const { result, touches } = run("offOff");
         assert.equal(result.offense, null);
@@ -343,7 +376,7 @@ const tests = {
         const rows = ev.data.rows;
         assert.ok(rows.every((r) => r.length === cols.length), "a trace row is short");
         const c = Object.fromEntries(cols.map((k, i) => [k, i]));
-        const qrow = rows.find((r) => r[c.atkTier] === 2 && Math.abs(r[c.nextShare] - 0.033) < 5e-4);
+        const qrow = rows.find((r) => r[c.atkTier] === 2 && Math.abs(r[c.nextShare]) < 5e-4);
         assert.ok(qrow, "no 奇术 / share row");
         assert.equal(qrow[c.range], 1, "the ok did not show as near in the trace");
         assert.equal(rows[0][c.weapon], 1, "phase-1 weapon code");

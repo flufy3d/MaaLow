@@ -46,11 +46,13 @@ OOF 在接触前 30 帧仍给 21–26% 的“空窗”，真值是 0；live trac
 | 动作 | 前置 | commit+safety | q | 单次净 HP |
 |---|---|---:|---:|---:|
 | execute | 气竭按钮 | 45 f | .80 | 31.49 px |
-| qishu | 长窗 / 气竭 | 70 f | .80 | 28.30 px |
-| light | 横刀（陌刀先切） | 18 f（+24 f = 42 f） | .60 | 4.18 px |
-| follow | 横刀 ok 蓝盘 | 37 f（+24 f = 61 f） | .70 | 6.66 px |
-| charge | 陌刀 | 46 f | .85 | ~0 HP，+12 真气 |
-| 整套 | 横刀 + burst 冷好 | 144 f | .90 | 净 1.14 / 正步骤 7 px |
+| qishu | 长窗 / 气竭 | 70 f | **.90** | 28.30 px |
+| light | 横刀（陌刀先切） | 18 f（+24 f = 42 f） | **.80** | 4.18 px |
+| follow | 横刀 ok 蓝盘 | 37 f（+24 f = 61 f） | **.85** | 6.66 px |
+| charge | 陌刀 | 46 f | **.90** | ~0 HP，+12 真气 |
+| 整套 | 横刀 + burst 冷好 | 144 f | **.95** | 净 1.14 / 正步骤 7 px |
+
+> q 不是离线分析的原始值：2 对 2 实机回归里 v2 的 4.26 挨打/分（off 1.44）后，light/follow/qishu/charge/set 从 `.60/.70/.80/.85/.90` 收紧到上表；同时加 `pWithin(commit+safety) < .25` 的 horizon 硬门。`args.offenseQ` 可覆盖做 A/B。
 | hlight | 横刀 | 39 f | .60 | 1.69 px（不划算） |
 
 关键修正：
@@ -160,7 +162,7 @@ can_attack(action):
 
 - 新 `skills/lib/dufu-offense.js`（纯决策）+ `dufu-offense-table.js`（`next.share` 编译表）；`dufu2.js` 的 `args.offense: "v2"` 接线、contact 3 动作、trace 10 列、`result.offense` 日志；`args.offense` 默认 `"off"`，legacy `args.attack` 保留。
 - 工具：`s5_offense_table.py` 重新生成 `next.share`；`s5_push.py` 已把两个新 lib 加入推送清单；`loop.py gate` 自动按 `offense` / legacy `attack` / `run` 分组。
-- 测试：`pytest` 39 passed；`dufu2_scheduler` 28 条；`dufu_offense` 12 条；固定基线 `4c80b3c` 的 `offense:"off"` 对拍 12/12 场景逐条一致。
+- 测试：`pytest` 39 passed；`dufu2_scheduler` **32 条**；`dufu_offense` **13 条**；固定基线 `4c80b3c` 的 `offense:"off"` 对拍 12/12 场景逐条一致。
 - 首版边界（有意保留）：
   - T4 `set` 只有接口，`dufu2` 恒传 `allow.set=false`；T5 `charge` 默认关，启用时才在陌刀窗口优先于切刀轻击。
   - 幕布 v1 **整段 `inCurtain` 封锁**，设计里的 c18+6 轻击窗暂缓；Stage 1 先看伤害是否够。
@@ -169,4 +171,7 @@ can_attack(action):
   - trace `range` 是 near 门代理 0/1，不是真实距离；`lock` 是锁图标。
   - 开场奇术按旧 `qsTick` 放行（boss 血条已出现、无 contact、15 s 内，P(empty70)=1）；可能远距离空放，Stage 1 观察。
   - 处决按钮 4 Hz 读取（最多 250 ms 延迟）；切刀 pending 在 3 s / 新 contact / 特殊窗 / near 过期时取消。
-- 下一步：push 新 lib 到 Pad → 6 分钟单局 smoke → Stage 1 8 对 8、10 分钟/局。
+- **实机安全回归（2026-11-01）**：
+  - 6 分钟单局 smoke（r185）：boss 381 → 238（约 37.5%），但 2.43 挨打/分、致命 86.8%；动作 17 light / 17 follow / 5 qishu / 1 execute。
+  - 2 对 2、6 分钟（r186–r189）：`off` 1.44 挨打/分、fatal 105/117 = 89.7%；`v2` **4.26 挨打/分、fatal 103/126 = 81.8%**，r189 3.2 分钟死亡。loop p50/p95 与 off 同量级，不是 CPU。
+  - 已收紧 q 并加 horizon（见 §3.3）；**Stage 1 暂停**，下一步先 push 新 q，再做 2 对 2 安全 smoke，过了才进 8 对 8、10 分钟。

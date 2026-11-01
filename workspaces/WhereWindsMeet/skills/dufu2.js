@@ -60,7 +60,7 @@
 import { stats } from "./lib/stats.js";
 import { BOSS_RED, BOSS_ROI, ICON_WHITE, ME_X, countAtLeast, gapNow, health, readMean, readQi } from "./lib/dufu-reads.js";
 import { NEXT_SHARE } from "./lib/dufu-offense-table.js";
-import { NEAR_DROP_MS, NEAR_OK_MS, WINDOWS as OFF_WINDOWS, emptyP, nearNow, pick as offensePick, quietP, REASON as OFF_REASON, REASON_NAMES as OFF_REASON_NAMES } from "./lib/dufu-offense.js";
+import { NEAR_DROP_MS, NEAR_OK_MS, Q as OFF_Q, WINDOWS as OFF_WINDOWS, emptyP, nearNow, pick as offensePick, quietP, REASON as OFF_REASON, REASON_NAMES as OFF_REASON_NAMES } from "./lib/dufu-offense.js";
 import { DEFAULTS as DEFAULTS2, GROUPS as GROUPS2 } from "./lib/dufu2-table.js";
 import { DEFAULTS as DEFAULTS1, GROUPS as GROUPS1 } from "./lib/dufu1-table.js";
 
@@ -205,8 +205,14 @@ const QS_LIT_PX = 30; // white strokes in the button: the 奇术 is ready (dufu.
 const EXEC_T = "combat/execute.png";
 const SWIRL_T = "combat/hengdao_swirl.png"; // the blue 爆发 disc on 重击 after a 横刀 ok (dufu.js pfTick)
 const ATK2_DISC_EVERY = 250, ATK2_QISHU_EVERY = 250, ATK2_EXEC_EVERY = 250; // the v2 button reads (4 Hz)
-/** commit + safety (frames -> ms, design 3.3): no new action until it is over */
-const ATK2_COMMIT_MS = { execute: 1500, qishu: 2333, light: 600, follow: 1233, set: 4800, charge: 700 };
+/** commit + safety (design 3.3: execute 45 f, qishu 70 f, light 42 f, follow 61 f, set 154 f, charge 46 f) as the
+ *  no-stack lock and the horizon window. All are >= dufu.js's OFF_NO_CANCEL_MS / OFF_COST_MS ("press to able to
+ *  defend": light 300, follow 900, qishu 2000, execute 1150 ms). */
+const ATK2_COMMIT_MS = { execute: 1500, qishu: 2333, light: 1400, follow: 2033, set: 5133, charge: 1533 };
+/** pWithin(commit + safety) at or above this: no attack starts (a contact is too likely inside the animation) */
+const ATK2_HORIZON_P = 0.25;
+/** the commit+safety frames of an action, for the pWithin horizon (45 / 70 / 42 / 61 / 154 / 46) */
+const atk2CommitF = (a) => Math.round((ATK2_COMMIT_MS[a] ?? 600) / FRAME_MS);
 const ATK2_EXEC_WINDUP_MS = 1500; // the 处决 animation: nothing else may start
 const ATK2_QISHU_COOL_MS = 3000; // a retry of a failed 奇术 tap
 const ATK2_SWITCH_WAIT_MS = 1500, ATK2_SWITCH_TRIES = 2; // the weapon confirms ~24 f after the switch tap
@@ -291,7 +297,8 @@ function f32b64(arrs) {
  *          trace?: boolean, pair?: number, tag?: string, approach?: boolean, dodgeLead?: number | null,
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
  *          model?: string, chain?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number,
- *          attack?: boolean, offense?: "off" | "v2", offenseSet?: boolean, offenseCharge?: boolean}} [args]
+ *          attack?: boolean, offense?: "off" | "v2", offenseSet?: boolean, offenseCharge?: boolean,
+ *          offenseQ?: {execute?: number, qishu?: number, light?: number, follow?: number, set?: number, charge?: number}}} [args]
  */
 export default function (args = {}) {
     const mode = args.mode ?? "shadow";
@@ -352,6 +359,15 @@ export default function (args = {}) {
     // charge is 真气 only), so both default off; the engine still reports them when switched on.
     const offenseSet = offenseOn && (args.offenseSet ?? false);
     const offenseCharge = offenseOn && (args.offenseCharge ?? false);
+    // args.offenseQ: A/B overrides for the engine's q thresholds (0..1); the conservative defaults are in
+    // lib/dufu-offense.js. Unknown keys / non-numbers are ignored.
+    const offenseQ = { ...OFF_Q };
+    if (args.offenseQ && typeof args.offenseQ === "object") {
+        for (const k of Object.keys(OFF_Q)) {
+            const v = args.offenseQ[k];
+            if (typeof v === "number" && isFinite(v)) offenseQ[k] = Math.max(0, Math.min(1, v));
+        }
+    }
     // args.curtain / args.curtainGap: the phase-1 幕布 state machine (default on) / its gap walk (default off: only
     // dodge; the finalized 2026-10-28 config does not walk)
     const curtainOn = phase === 1 && (args.curtain ?? true);
@@ -497,6 +513,7 @@ export default function (args = {}) {
     mark("start", `mode ${mode}, provider ${provider} (ran ${JSON.stringify(ran)}${Object.keys(fellBack).length ? `, fallback ${JSON.stringify(fellBack)}` : ""}), warm ${warmMs} ms, ${untilMs} ms`);
     if (offenseOn) {
         mark("atk2", `offense v2: ${phase === 1 ? "陌刀 -> 横刀 on long windows" : "横刀 native"}, set ${offenseSet ? "requested (T4 not implemented)" : "off"}, charge ${offenseCharge ? "on" : "off"}`);
+        mark("atk2", `q light ${offenseQ.light} follow ${offenseQ.follow} qishu ${offenseQ.qishu} charge ${offenseQ.charge} set ${offenseQ.set} execute ${offenseQ.execute}`);
         if (args.attack) mark("atk2", "legacy attack ignored (offense v2)");
     } else if (args.offense === "v2") {
         mark("atk2", `offense v2 ignored in ${mode} (defend only)`);
@@ -1334,6 +1351,7 @@ export default function (args = {}) {
                 || contacts.length !== s.contactN
                 || (lastC != null && (lastC.t > s.at || lastC.f !== s.contactF))
                 || !nearNow({ now, lastOkAt, lastDropAt }) // the queued light/follow would now be outside the near gate
+                || pWithin(atk2CommitF(s.action)) >= ATK2_HORIZON_P // the horizon worsened while switching
                 || now - s.at > 2 * ATK2_SWITCH_WAIT_MS;
             if (stale) {
                 lastAtkTier = 0;
@@ -1402,7 +1420,7 @@ export default function (args = {}) {
                 at: Math.round(h.at - start), held: Math.round(now - h.at), boss0: h.boss0, boss1: bossNow,
                 qi0: h.qi0, qi1: qiNow });
             mark("atk2", `release charge after ${Math.round(now - h.at)} ms, 真气 ${h.qi0} -> ${qiNow}`);
-            atk2BusyUntil = now + 800; // 46 f commit+safety (design 3.3): 700 ms hold + 800 ms
+            atk2BusyUntil = now + (ATK2_COMMIT_MS.charge - ATK2_CHARGE_MS); // 46 f commit+safety total (1533 ms)
         }
         if (atk2Switch) return atk2SwitchTick(now, im, defenseDue);
         if (now < atk2BusyUntil) return 0;
@@ -1438,12 +1456,21 @@ export default function (args = {}) {
             special: offenseSpecial(now),
             defenseBusyUntil: guard ? now + 2 * FRAME_MS : 0,
             pEmpty: pE,
+            q: offenseQ,
             allow: { set: false, charge: offenseCharge }, // the 整套 is interface-only in v1 (args.offenseSet logs it)
         });
         lastAtkTier = d.action ? d.tier : 0;
         lastAtkQ = d.action ? d.q : 0;
         lastAtkReason = OFF_REASON[d.reason] ?? 0;
         if (!d.action) return 0;
+        // start gate: P(a contact inside commit + safety) from the head's tte. 0.25 is deliberately conservative: the
+        // v2 A/B's hits clustered 0.25-1.5 s after a press. This is a probability veto, not the next.share prior.
+        if (pWithin(atk2CommitF(d.action)) >= ATK2_HORIZON_P) {
+            lastAtkTier = 0;
+            lastAtkQ = 0;
+            lastAtkReason = OFF_REASON.horizon ?? 0;
+            return 0;
+        }
         if (d.switchFirst) return atk2StartSwitch(now, d);
         return atk2Do(now, d);
     }
@@ -1724,6 +1751,7 @@ export default function (args = {}) {
             cancels: atk2Cancel, qAvg: atk2QN ? r3(atk2QSum / atk2QN) : null,
             pending: atk2Pend.length, log: atk2Log, lastWeapon: weapon,
             allow: { set: false, charge: offenseCharge }, setRequested: offenseSet, reasonNames: OFF_REASON_NAMES,
+            q: offenseQ,
             traceCols: TRACE_COLS.slice(-10),
             traceNote: "range = the near gate proxy (0/1: ok or boss-bar drop within 1.5 s), not a real distance; execute may act at 0",
         } : null,

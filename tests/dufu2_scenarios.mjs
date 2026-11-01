@@ -10,6 +10,15 @@ const p1Contact = (gid, c, opts = {}) => ({ head: timeline({ phase: 1, gid, cont
 /** The boss bar steps 300 -> 290 at t0: two low samples ~500 ms later open the legacy near gate (lastDropAt). */
 const bossDrop = (t0) => (t) => (t >= t0 ? 290 : 300);
 
+/** tte distribution: p in `bin`, 1-p at TTE_NONE (46). bin > 20 keeps the layer's pWithin(20) guard at 0, so it is
+ *  purely a commit-horizon signal. */
+const tteAt = (p, bin = 30) => {
+    const a = new Array(47).fill(0);
+    a[bin] = p;
+    a[46] = 1 - p;
+    return a;
+};
+
 export const SCENARIOS = {
     parry() {
         return { phase: 1, mode: "defend", fightMs: 3000, args: {}, scenario: p1Contact(1, 1500) };
@@ -76,9 +85,9 @@ export const SCENARIOS = {
         };
     },
     offQishu() {
-        // k0:c6 (gid 4, next.share .033) is a parry: an ok at 800, then its chain-ending group is the last contact;
-        // P(empty 70) from that group is .91, so 奇术 goes right after the detection.
-        const tl = timeline({ phase: 1, gid: 4, contacts: [800], resp: 1 });
+        // k1:c3 (gid 17, next.share 0) is a parry: an ok at 800, then its chain-ending group is the last contact;
+        // P(empty 70) from that group is .91 (>= the stage-1 q .90), so 奇术 goes right after the detection.
+        const tl = timeline({ phase: 1, gid: 17, contacts: [800], resp: 1 });
         return {
             phase: 1, mode: "defend", fightMs: 2400, args: { offense: "v2" },
             scenario: {
@@ -116,14 +125,14 @@ export const SCENARIOS = {
         return {
             phase: 2, mode: "defend", fightMs: 8000, args: { offense: "v2" },
             scenario: {
-                // k0:c11+c40 (gid 7) is dodged at ~950 (the gold-fireball window opens), then k0:c3 (gid 1);
-                // a boss-bar drop at 6.2 s opens the near gate for the first post-window action.
+                // k0:c11+c40 (gid 7) is dodged at ~950 (the gold-fireball window opens); after it ends, a k0:c3 ok at
+                // 6400 opens the near gate and the first post-window 轻击 goes (~6430).
                 head: (t) => {
                     if (t >= 950 && t <= 1050) return { gid: 7, med: Math.round((1000 - t) / frameMs), col: 0, resp: 1 };
-                    if (t >= 1100) return { gid: 1, med: 46, col: 2, resp: 2 };
+                    if (t >= 6000 && t <= 6410) return { gid: 2, med: Math.round((6400 - t) / frameMs), col: 2, resp: 1 }; // k0:c5, parry
                     return { gid: 87, med: 46, col: 2, resp: 2 };
                 },
-                weapon: () => "", boss: bossDrop(6200),
+                qi: (t) => (t >= 6400 ? 240 : 300), weapon: () => "",
             },
         };
     },
@@ -141,10 +150,14 @@ export const SCENARIOS = {
         };
     },
     offRainFree() {
+        // no 火球雨: a k0:c5 ok at 1400 opens the near gate and the 轻击 goes (P42 from that group .99 >= q .80)
+        const tl = timeline({ phase: 2, gid: 2, contacts: [1400], resp: 1 });
         return {
-            phase: 2, mode: "defend", fightMs: 2500, args: { offense: "v2" },
-            scenario: { head: () => ({ gid: 1, med: 46, col: 2, resp: 2 }),
-                weapon: () => "", boss: bossDrop(800) },
+            phase: 2, mode: "defend", fightMs: 3000, args: { offense: "v2" },
+            scenario: {
+                head: (t) => (t < 1450 ? tl(t) : { gid: 87, med: 46, col: 2, resp: 2 }),
+                qi: (t) => (t >= 1400 ? 240 : 300), weapon: () => "",
+            },
         };
     },
     offFollow() {
@@ -154,7 +167,7 @@ export const SCENARIOS = {
             scenario: {
                 head: (t) => (t < 450 ? tl(t) : { gid: 97, med: 46, col: 2, resp: 2 }),
                 qi: (t) => (t >= 400 ? 240 : 300),
-                blueDisc: (t) => t >= 500, weapon: () => "hengdao",
+                blueDisc: () => true, weapon: () => "hengdao", // the disc is already up when the ok at 400 lands
             },
         };
     },
@@ -241,11 +254,41 @@ export const SCENARIOS = {
             },
         };
     },
-    offNearDrop() {
-        // quiet, one boss-bar drop at 300 ms: near opens ~750 ms and the native 横刀 轻击 goes
+    offHorizonHigh() {
+        // near at ~750; the head's tte has 30% within 30 f -> pWithin(42) = .30 >= .25: the light must not even switch
         return {
-            phase: 2, mode: "defend", fightMs: 3000, args: { offense: "v2" },
-            scenario: { head: () => ({ gid: 87, med: 46, col: 2, resp: 2 }), weapon: () => "", boss: bossDrop(300) },
+            phase: 1, mode: "defend", fightMs: 3000, args: { offense: "v2" },
+            scenario: {
+                head: () => ({ gid: 97, med: 46, col: 2, resp: 2, tte: tteAt(0.30) }),
+                weapon: () => "modao", boss: bossDrop(300),
+            },
+        };
+    },
+    offHorizonLow() {
+        // the same window with 10% within 30 f: pWithin(42) = .10 < .25 -> 轻击 at ~750
+        return {
+            phase: 1, mode: "defend", fightMs: 3000, args: { offense: "v2" },
+            scenario: {
+                head: () => ({ gid: 97, med: 46, col: 2, resp: 2, tte: tteAt(0.10) }),
+                weapon: () => "hengdao", boss: bossDrop(300),
+            },
+        };
+    },
+    offSwitchHorizon() {
+        // horizon is .10 when the switch starts (~533) and .30 when it confirms (~1033): stale
+        return {
+            phase: 1, mode: "defend", fightMs: 3000, args: { offense: "v2" },
+            scenario: {
+                head: (t) => ({ gid: 97, med: 46, col: 2, resp: 2, tte: tteAt(t >= 600 ? 0.30 : 0.10) }),
+                weapon: (t) => (t >= 900 ? "hengdao" : "modao"), boss: bossDrop(100),
+            },
+        };
+    },
+    offNearDrop() {
+        // quiet phase 1, one boss-bar drop at 300 ms: near opens ~750 ms and the 横刀 轻击 goes (quiet P42 .81 >= q .80)
+        return {
+            phase: 1, mode: "defend", fightMs: 3000, args: { offense: "v2" },
+            scenario: { head: () => ({ gid: 97, med: 46, col: 2, resp: 2 }), weapon: () => "hengdao", boss: bossDrop(300) },
         };
     },
     offUnknownContact() {

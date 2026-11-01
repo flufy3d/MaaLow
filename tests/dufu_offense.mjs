@@ -62,8 +62,8 @@ const tests = {
             assert.equal(typeof REASON[reason], "number", `${reason} is missing from the trace codes`);
             assert.equal(decide(base(o)), null);
         }
-        // the same live chain 30 f after the contact is clear
-        assert.equal(pick(base({ group: { name: "x", nextShare: 0.3 }, lastContactAt: 100_000 - 31 * frameMs })).action, "light");
+        // the same live chain 30 f after the contact is clear (share .2 is exactly the light q .80)
+        assert.equal(pick(base({ group: { name: "x", nextShare: 0.2 }, lastContactAt: 100_000 - 31 * frameMs })).action, "light");
     },
     "execute (T1) wins over 奇术 / 轻击 / follow (and needs no group)"() {
         const d = pick(base({ executeButton: true, qishuReady: true, blueDisc: true }));
@@ -73,13 +73,24 @@ const tests = {
         assert.equal(d.reason, "button");
         assert.equal(pick(base({ executeButton: true, group: null })).action, "execute");
     },
-    "qishu (T2): only with P(empty 70) >= .80 (next.share <= ~.12)"() {
-        assert.equal(pick(base({ qishuReady: true, group: { name: "low", nextShare: 0.1 } })).action, "qishu");
+    "qishu (T2): only with P(empty 70) >= .90 (a chain-ending group)"() {
+        assert.equal(pick(base({ qishuReady: true, group: { name: "low", nextShare: 0 } })).action, "qishu");
         const high = pick(base({ qishuReady: true, group: { name: "mid", nextShare: 0.2 } }));
         assert.equal(high.action, "light", JSON.stringify(high));
         assert.equal(high.reason, "short");
         // the caller's pEmpty overrides the derived one
-        assert.equal(pick(base({ qishuReady: true, group: { name: "x", nextShare: 0.5 }, pEmpty: { 70: 0.81 } })).action, "qishu");
+        assert.equal(pick(base({ qishuReady: true, group: { name: "x", nextShare: 0.5 }, pEmpty: { 70: 0.91 } })).action, "qishu");
+        assert.notEqual(pick(base({ qishuReady: true, group: { name: "x", nextShare: 0.5 }, pEmpty: { 70: 0.89 } })).action, "qishu");
+        assert.equal(Q.qishu, 0.9);
+    },
+    "light (T3): P(empty 42) must reach .80; q is overridable for an A/B"() {
+        assert.equal(Q.light, 0.8);
+        assert.equal(pick(base({ pEmpty: { 42: 0.75 } })).action, null);
+        assert.equal(pick(base({ pEmpty: { 42: 0.75 } })).reason, "q42");
+        assert.equal(pick(base({ pEmpty: { 42: 0.80 } })).action, "light");
+        // the args.offenseQ analog: input.q overrides the thresholds
+        assert.equal(pick(base({ pEmpty: { 42: 0.85 }, q: { ...Q, light: 0.9 } })).action, null);
+        assert.equal(pick(base({ pEmpty: { 42: 0.85 }, q: { ...Q, light: 0.84 } })).action, "light");
     },
     "follow (T3, the blue disc) beats light; without the disc only light"() {
         const f = pick(base({ blueDisc: true }));
@@ -150,8 +161,8 @@ const tests = {
         assert.equal(pick(base({ weapon: "modao", allow: { charge: true } })).action, "charge");
         // execute (the button) and qishu (dufu.js qsTick: opening / 气竭, no range gate) do not need it
         assert.equal(pick(base({ ...no, executeButton: true })).action, "execute");
-        assert.equal(pick(base({ ...no, qishuReady: true })).action, "qishu");
-        assert.equal(pick(base({ qishuReady: true })).action, "qishu"); // and with a near anchor
+        assert.equal(pick(base({ ...no, qishuReady: true, group: { name: "z", nextShare: 0 } })).action, "qishu");
+        assert.equal(pick(base({ qishuReady: true, group: { name: "z", nextShare: 0 } })).action, "qishu"); // and with a near anchor
     },
     "a recent contact with no group blocks as unknown (never quiet_far)"() {
         const t = 100_000;
