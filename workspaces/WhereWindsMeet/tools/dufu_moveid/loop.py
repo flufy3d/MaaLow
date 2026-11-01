@@ -34,7 +34,7 @@ sys.path.insert(0, str(D))
 
 from maalow.client import Client  # noqa: E402
 
-from common import OUT, PHASE, WS  # noqa: E402
+from common import OUT, PHASE, WS, read_json  # noqa: E402
 
 LIVE = OUT / "live"
 
@@ -279,6 +279,36 @@ def train(tag: str, live: list[str], val: list[str], base: str = "final", epochs
     return model
 
 
+def offense_cycle(tag: str, export: bool = False, bossfill: bool = False) -> None:
+    """The batch cycle's offline half: the tag's rounds -> opportunity rows -> audit -> train (all r185+) -> optional
+    export; the eval summary is copied next to the manifest. Live A/B and promotion stay manual (`ab` + `gate`)."""
+    m = load_manifest(tag)
+    rounds = [x["round"] for x in m["rounds"]]
+    if not rounds:
+        raise SystemExit("no rounds in the manifest")
+    print(f"offense cycle {tag}: build/audit {len(rounds)} rounds", flush=True)
+    if py(D / "offense_online.py", "build", *rounds) != 0:
+        raise SystemExit("offense_online build failed")
+    if py(D / "offense_online.py", "audit", *rounds) != 0:
+        raise SystemExit("offense_online audit failed")
+    if bossfill:
+        p = subprocess.run(["uv", "run", "--no-project", "--with", "opencv-python-headless", "--with", "numpy",
+                            "python", str(D / "offense_boss_fill.py"), *rounds], cwd=ROOT, env=ENV)
+        if p.returncode != 0:
+            raise SystemExit("offense_boss_fill failed")
+    print("offense cycle: train all rounds", flush=True)
+    if py(D / "offense_online.py", "train") != 0:
+        raise SystemExit("offense_online train failed")
+    if export:
+        if py(D / "offense_online.py", "export") != 0:
+            raise SystemExit("offense_online export failed")
+    ev = read_json(ROOT / "data" / "moveid" / "offense" / "online" / "eval.json", {}) or {}
+    out = LIVE / f"loop_{tag}_offense.json"
+    out.write_text(json.dumps({"tag": tag, "rounds": rounds, "eval": ev,
+                               "at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"offense cycle -> {out}", flush=True)
+
+
 def report(tag: str) -> None:
     """The loop's daily report: per-round hits/min and gate 2 from the analysis, plus the manifest and the gate arms."""
     m = load_manifest(tag)
@@ -340,6 +370,10 @@ def main() -> None:
     t.add_argument("--live-rep", type=int, default=2)
     p = sub.add_parser("report")
     p.add_argument("--tag", required=True)
+    of = sub.add_parser("offense")
+    of.add_argument("--tag", required=True)
+    of.add_argument("--export", action="store_true", help="also regenerate skills/lib/dufu-offense-policy.js")
+    of.add_argument("--bossfill", action="store_true", help="also replay the videos for the real per-press damage")
     o = ap.parse_args()
     if o.cmd == "run":
         do_run(o.tag, o.n, o.ms, json.loads(o.args), None, o.batch)
@@ -353,6 +387,8 @@ def main() -> None:
         print(train(o.tag, o.live, o.val, o.base, o.epochs, o.lr, o.live_rep))
     elif o.cmd == "report":
         report(o.tag)
+    elif o.cmd == "offense":
+        offense_cycle(o.tag, o.export, o.bossfill)
 
 
 if __name__ == "__main__":

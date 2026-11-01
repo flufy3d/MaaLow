@@ -154,6 +154,15 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - Gate：Stage 1 = 8 对 8、10 分钟/局，安全线（挨打/分 ≤1.5、致命 ≥90%、金 ≤3%）+ 10 分钟 ≥1 条血（381 px）；Stage 2 = 8 局击杀确认，TTK 中位 ≤20 分钟（15 分钟 stretch，至少 6/8 击杀）。
 - 调度、动作表、日志和停止条件见 [dufu-offense-design.md](dufu-offense-design.md)。
 
+## 2026-11-01 进攻批次在线学习：M0 测量
+
+- 用户定口径：进攻改**批次在线学习**（每 4–8 局更新一次，不在同一局内更新）；先做安全的 M1 安全门控，再做 M2 动作排序；安全门仍是 6 分钟/局（挨打/分 ≤1.5、致命 ≥90%、金 ≤3%），输出 ≥30%（stretch 35%）；筛选 2 对 2，晋级 8 对 8、16 局。设计与 schema 见 [dufu-offense-online.md](dufu-offense-online.md)。
+- **BOSS_ROI 修正（offense-only）**：旧 `bossBar()` 用 6 行 ROI 的红色像素 / 6；HUD 把血条上下移 1–3 行时读数掉 1/6–1/2 再回弹（r199 47.07 s：365→241→365；r205 血条几乎一直在 y 28–32，正常只读到 5/6）。新增 `lib/dufu-reads.js` 的 `bossFill()`：高 ROI `[347,20,386,20]` 逐行取最大红色行宽，免疫垂直位移。`dufu2.js` 的防守（进场、boss 消失、结束判定、旧 `boss` trace 列）仍用 `bossBar()`；进攻的 near 锚点、`atk2Land` 伤害核算、trace `bossPx` 改用 `bossFill()`。`offense:"off"` 对拍仍 12/12。
+- **trace 增加机会级列**：`exe / disc / qishu / pE42 / pE61 / pE70 / cand / gate / hitAge / pol / prop`；`cand` 是规则引擎在 horizon / 学习门控之前的首选，`gate` 是学习门控分，`pol` 0/2/3，`prop` 确定性策略为 1000。旧列不动。
+- **数据脚本**：`tools/dufu_moveid/offense_online.py`（`build / audit / train / export`）把 r185–r211 的 trace + contacts 合成机会级数据（`data/moveid/offense/online/`，gitignored），按局切分；`offense_boss_fill.py` 用 `bossFill` 重放录像，给每次按键算真实 2 s / 3 s 伤害。
+- **首批审计（r185–r211，27 局）**：244,458 行、16,853 个机会、475 次进攻按键（execute 18 / qishu 49 / light 353 / follow 55）。按键后 61 帧内真值受击：execute 0/18、qishu 1/49、light 15/353、follow 4/55（合计 20/475 = 4.2%，低于全体 v2 行的 6.2%）——**按键窗内并不更危险**。
+- **v3 接口**：`args.offense:"v3"` = v2 + `lib/dufu-offense-policy.js` 学习门控（只能否决规则动作，execute 豁免；`args.offenseGateThr` 可做阈值 A/B）。默认仍 `off`，v2 保留。测试 41 passed（新增 `dufu_offense_policy.mjs` 的 Python↔JS 权重对拍与 v3 门控场景）。
+
 ## 历史
 
 - 方案设计（为什么换 / 目标 / 核心思路 / 运行时 / 模型 / 关卡 / 约束 / 顺序）：[dufu-moveid-plan.md](dufu-moveid-plan.md)

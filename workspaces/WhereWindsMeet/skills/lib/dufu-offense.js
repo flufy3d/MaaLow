@@ -67,6 +67,7 @@ export const REASON = {
     chain: 18, idle: 19, noBoss: 20, weapon: 21, q42: 22, q61: 23, q70: 24, q144: 25, near: 26, unknown: 27,
     stale: 28, // dufu2.js layer only: a queued switch action canceled because its window went stale
     horizon: 29, // dufu2.js layer only: pWithin(commit+safety) was too high, so no attack started
+    gate: 30, // dufu2.js layer only: the M1 learned safety gate vetoed the rule engine's action
 };
 /** @type {Record<number, string>} */
 export const REASON_NAMES = Object.fromEntries(Object.entries(REASON).map(([k, v]) => [v, k]));

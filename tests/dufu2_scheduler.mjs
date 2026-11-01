@@ -386,16 +386,38 @@ const tests = {
         assert.equal(def.result.offense.q.light, 0.7);
         assert.ok(atk3(fightTouches(def.touches, def.t0), POINTS.LIGHT).length >= 1);
     },
+    "offense v3: threshold 1 vetoes every non-execute action (reason 30)"() {
+        const { result, sent, touches, t0 } = run("offNearDrop", { offense: "v3", offenseGateThr: 1 });
+        assert.equal(atk3All(fightTouches(touches, t0)).length, 0, "an action allowed at a perfect-value threshold");
+        assert.ok(result.offense.gate.vetoes >= 1, JSON.stringify(result.offense));
+        assert.ok(result.offense.cancels.gate >= 1, JSON.stringify(result.offense.cancels));
+        assert.equal(result.offense.engine, "v3");
+        const ev = sent.find((e) => e.name === "dufu2_trace");
+        const c = Object.fromEntries(ev.data.cols.map((k, i) => [k, i]));
+        assert.ok(ev.data.rows.some((r) => r[c.atkReason] === 30), "no gate reason in the trace");
+        assert.ok(ev.data.rows.some((r) => r[c.cand] === 3 && r[c.pol] === 3), "candidate / policy not logged");
+    },
+    "offense v3: threshold 0 lets the same light through (v2 behavior)"() {
+        const { result, touches, t0 } = run("offNearDrop", { offense: "v3", offenseGateThr: 0 });
+        assert.ok(atk3(fightTouches(touches, t0), POINTS.LIGHT).length >= 1, "the light was vetoed at thr 0");
+        assert.equal(result.offense.gate.vetoes, 0);
+    },
+    "offense v3: the 处决 is never gated (perfect-value threshold)"() {
+        const { result, touches, t0 } = run("offExecute", { offense: "v3", offenseGateThr: 1 });
+        assert.ok(atk3(fightTouches(touches, t0), POINTS.EXECUTE ?? [852, 430]).length >= 1
+            || result.offense.actions.execute >= 1, JSON.stringify(result.offense));
+    },
     "offense off: no contact-3 touch at all (the old defense path)"() {
         const { result, touches } = run("offOff");
         assert.equal(result.offense, null);
         assert.equal(result.attack, null);
         assert.equal(touches.filter((t) => t.op === "down" && t.id === 3).length, 0, "an offense touch with offense off");
     },
-    "offense v2: the trace gets the 10 new columns at the end"() {
+    "offense v2: the trace gets the opportunity columns at the end"() {
         const { result, sent } = run("offQishu");
         const cols = result.trace.cols;
-        assert.deepEqual(cols.slice(-10), ["chainPos", "chainLen", "nextShare", "weapon", "atkTier", "atkQ", "atkReason", "bossPx", "lock", "range"]);
+        assert.deepEqual(cols.slice(-21), ["chainPos", "chainLen", "nextShare", "weapon", "atkTier", "atkQ", "atkReason", "bossPx",
+            "lock", "range", "exe", "disc", "qishu", "pE42", "pE61", "pE70", "cand", "gate", "hitAge", "pol", "prop"]);
         const ev = sent.find((e) => e.name === "dufu2_trace");
         assert.ok(ev, "no trace chunk");
         const rows = ev.data.rows;
@@ -404,6 +426,10 @@ const tests = {
         const qrow = rows.find((r) => r[c.atkTier] === 2 && Math.abs(r[c.nextShare]) < 5e-4);
         assert.ok(qrow, "no 奇术 / share row");
         assert.equal(qrow[c.range], 1, "the ok did not show as near in the trace");
+        assert.equal(qrow[c.cand], 2, "the engine's pick before the gate was not 奇术");
+        assert.ok(qrow[c.pE70] > 0.8, "pE70 was not logged");
+        assert.equal(qrow[c.pol], 2, "policy id");
+        assert.equal(qrow[c.prop], 1000, "deterministic propensity");
         assert.equal(rows[0][c.weapon], 1, "phase-1 weapon code");
         assert.equal(rows[0][c.range], 0, "near before any ok / drop");
     },

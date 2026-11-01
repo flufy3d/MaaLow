@@ -58,14 +58,15 @@
 //   phase 1 defaults: model dufu1b, 卸势 lead 10, 闪避 lead 5, 幕布 on without the gap walk, curtain2 on;
 //   offense v2 switches: offense, offenseSet, offenseCharge, tools/dufu_moveid/s5_offense_table.py)
 import { stats } from "./lib/stats.js";
-import { BOSS_RED, BOSS_ROI, ICON_WHITE, ME_X, countAtLeast, gapNow, health, readMean, readQi } from "./lib/dufu-reads.js";
+import { BOSS_RED, BOSS_ROI, ICON_WHITE, ME_X, bossFill, countAtLeast, gapNow, health, readMean, readQi } from "./lib/dufu-reads.js";
 import { NEXT_SHARE } from "./lib/dufu-offense-table.js";
+import { allow as policyAllow, value as policyValue, THRESHOLD as POLICY_THRESHOLD, VERSION as POLICY_VERSION } from "./lib/dufu-offense-policy.js";
 import { NEAR_DROP_MS, NEAR_OK_MS, Q as OFF_Q, WINDOWS as OFF_WINDOWS, emptyP, nearNow, pick as offensePick, quietP, REASON as OFF_REASON, REASON_NAMES as OFF_REASON_NAMES } from "./lib/dufu-offense.js";
 import { DEFAULTS as DEFAULTS2, GROUPS as GROUPS2 } from "./lib/dufu2-table.js";
 import { DEFAULTS as DEFAULTS1, GROUPS as GROUPS1 } from "./lib/dufu1-table.js";
 
 /** @type {SkillMeta} */
-export const meta = { description: "独夫 with the dufu2 move-ID student — phase 2 (default, model dufu2b) or phase 1 (model dufu1b: poison prep, 幕布, quest-line 阶段二): shadow (look only) / defend (卸势 / 闪避 / potion; args.offense v2: execute / qishu / light / follow on contact 3, or the legacy args.attack)", timeout: 660_000 };
+export const meta = { description: "独夫 with the dufu2 move-ID student — phase 2 (default, model dufu2b) or phase 1 (model dufu1b: poison prep, 幕布, quest-line 阶段二): shadow (look only) / defend (卸势 / 闪避 / potion; args.offense v2/v3: execute / qishu / light / follow on contact 3; v3 adds the learned safety gate; or the legacy args.attack)", timeout: 660_000 };
 
 const FRAME_MS = 1000 / 30;
 /** @type {Box} */ const BIG = [290, 55, 530, 530];
@@ -236,11 +237,17 @@ const TRACE_EVENT = "dufu2_trace", PAIR_EVENT = "dufu2_pair", TRACE_CHUNK = 150;
 // current contact chain (frames within HIST_GAP_F), nextShare = the last contact's prefix-group next.share (-1 none),
 // weapon 0 unknown / 1 陌刀 / 2 横刀, atkTier 0 none / 1 execute / 2 qishu / 3 light+follow / 4 set / 5 charge,
 // atkQ = the action's P(empty) requirement, atkReason = the numeric decision reason (result.offense.reasonNames),
-// bossPx = BOSS_ROI px, lock = the lock icon lit, range = the near gate as a 0/1 proxy (ok / boss drop within
+// bossPx = the offense boss read (lib bossFill: the widest red row of the tall ROI; the legacy `boss` column keeps
+// bossBar's 6-row count), lock = the lock icon lit, range = the near gate as a 0/1 proxy (ok / boss drop within
 // 1.5 s; NOT a real distance; an execute with range 0 is legal and the action log shows it).
+// Opportunity log (2026-11-01): exe / disc / qishu = the button reads, pE42 / pE61 / pE70 = the engine's P(empty) for
+// the action windows, cand = the engine's pick before the horizon / learned gate (a tier code; 0 = none this tick),
+// gate = the v3 value score x1000 (P(the press deals >= 2 px); 0 = not run), hitAge = frames since the last detected hit
+// (-1 = none), pol = 0 off / 2 v2 / 3 v3, prop = the press propensity x1000 (deterministic v2 / v3 = 1000).
 const TRACE_COLS = ["wall", "seq", "cap", "n", "fill", "dup", "hp", "qi", "boss", "h0", "h1", "h2", "h3",
     "grp", "grpP", "gold", "red", "none", "dodge", "parry", "rnone", "med", "p10", "act", "would", "contact", "pipe", "loop",
-    "c7P", "run", "chainPos", "chainLen", "nextShare", "weapon", "atkTier", "atkQ", "atkReason", "bossPx", "lock", "range"];
+    "c7P", "run", "chainPos", "chainLen", "nextShare", "weapon", "atkTier", "atkQ", "atkReason", "bossPx", "lock", "range",
+    "exe", "disc", "qishu", "pE42", "pE61", "pE70", "cand", "gate", "hitAge", "pol", "prop"];
 const ACT = { parry: 1, dodge: 2, potion: 3, lock: 4, walk: 5, run: 6, attack: 7 };
 
 /**
@@ -298,7 +305,8 @@ function f32b64(arrs) {
  *          trace?: boolean, pair?: number, tag?: string, approach?: boolean, dodgeLead?: number | null,
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
  *          model?: string, chain?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number,
- *          attack?: boolean, offense?: "off" | "v2", offenseSet?: boolean, offenseCharge?: boolean,
+ *          attack?: boolean, offense?: "off" | "v2" | "v3", offenseSet?: boolean, offenseCharge?: boolean,
+ *          offenseGateThr?: number,
  *          offenseQ?: {execute?: number, qishu?: number, light?: number, follow?: number, set?: number, charge?: number}}} [args]
  */
 export default function (args = {}) {
@@ -348,12 +356,14 @@ export default function (args = {}) {
     // args.curtain2: phase 1 only, force the 闪避 on k1:c18 (the 幕布 second sweep: 37/37 hit, 0 parried;
     // the prefix group has no ok/pf so its label defaults to parry, @see the gate-1 live notes). Default on.
     const curtain2On = phase === 1 && (args.curtain2 ?? true);
-    // args.offense: "off" (default) | "v2" — the v2 offense engine (defend only; contact 3; design
-    // docs/dufu-offense-design.md). args.attack is the legacy offense and is ignored while v2 is on: they are two
-    // different schedulers, never mixed.
+    // args.offense: "off" (default) | "v2" | "v3" — the v2 offense engine (defend only; contact 3; design
+    // docs/dufu-offense-design.md); v3 = v2 + the M1 learned safety gate (lib/dufu-offense-policy.js,
+    // docs/dufu-offense-online.md), which can only veto an action v2 would take. args.attack is the legacy offense and
+    // is ignored while v2/v3 is on: they are different schedulers, never mixed.
     const offenseArg = args.offense ?? "off";
-    if (offenseArg !== "off" && offenseArg !== "v2") throw new Error(`offense ${offenseArg}: off | v2`);
-    const offenseOn = defend && offenseArg === "v2";
+    if (offenseArg !== "off" && offenseArg !== "v2" && offenseArg !== "v3") throw new Error(`offense ${offenseArg}: off | v2 | v3`);
+    const offenseOn = defend && (offenseArg === "v2" || offenseArg === "v3");
+    const offenseGateOn = defend && offenseArg === "v3";
     // args.attack: the shared offense (defend only; default off until the A/B says it does not cost hits, @see atkTick)
     const attackOn = defend && !offenseOn && (args.attack ?? false);
     // args.offenseSet / args.offenseCharge: the T4 整套 / T5 蓄力 are interface-only in v1 (design 3.3: set ~0 HP,
@@ -369,6 +379,10 @@ export default function (args = {}) {
             if (typeof v === "number" && isFinite(v)) offenseQ[k] = Math.max(0, Math.min(1, v));
         }
     }
+    // args.offenseGateThr: A/B override for the v3 gate's veto threshold (0..1, all non-execute actions); null keeps the
+    // exported per-action thresholds. It can only make the gate stricter or looser, never add an action.
+    const offenseGateThr = typeof args.offenseGateThr === "number" && isFinite(args.offenseGateThr)
+        ? Math.max(0, Math.min(1, args.offenseGateThr)) : null;
     // args.curtain / args.curtainGap: the phase-1 幕布 state machine (default on) / its gap walk (default off: only
     // dodge; the finalized 2026-10-28 config does not walk)
     const curtainOn = phase === 1 && (args.curtain ?? true);
@@ -585,6 +599,9 @@ export default function (args = {}) {
     const contacts = [];
     let hpBase = /** @type {number | null} */ (null), hpNow = /** @type {number | null} */ (null), hpThis = /** @type {number | null} */ (null);
     let qiNow = -1, bossNow = 0, bossSeen = false, bossSeenAt = 0, bossGoneAt = 0;
+    // the offense's own boss read (lib bossFill): the widest single red row of the tall ROI, immune to the HUD moving the
+    // bar 1-3 rows. bossNow stays the defense's read (walk-in / boss gone / the legacy trace column).
+    let bossFillNow = 0;
     let prevCap = 0, lastSeq = -1;
     let lastParryAt = 0, lastDodgeAt = 0, lastOkAt = 0, lastHitAt = 0, lastOwnAt = 0;
     let realParryAt = 0; // our last real 卸势 touch (ok detection; the shadow's would-presses only set lastParryAt)
@@ -647,6 +664,11 @@ export default function (args = {}) {
     /** @type {{at: number, boss0: number, bossPrev: number, qi0: number, a: string, tier: number, q: number}[]} */
     const atk2Pend = [];
     let atk2QSum = 0, atk2QN = 0;
+    // the opportunity log's per-tick view: the engine's pick before the start gates (cand / pE42-70), the learned gate's
+    // score (v3; 0 = not run) and the policy id. Reset every atk2Tick so a tick another module owned reports cand 0.
+    let lastCand = 0, lastGate = 0;
+    /** @type {Record<number, number | null> | null} */ let lastPE = null;
+    let gateVetoes = 0, gatePasses = 0;
     let lastAtkTier = 0, lastAtkQ = 0, lastAtkReason = 0;
     /** the tick's prefix-chain view (trace) */
     let chainPos = 0, chainLen = 0;
@@ -1069,12 +1091,13 @@ export default function (args = {}) {
         atkLog.push([Math.round(Date.now() - start), "release", why, Math.round(held)]);
         mark("atk", `release ${why} after ${Math.round(held)} ms`);
     }
-    /** The boss bar's drop (>= BOSS_DROP_PX within BOSS_DROP_WIN_MS): the second near-gate anchor. @param {number} now */
+    /** The boss bar's drop (>= BOSS_DROP_PX within BOSS_DROP_WIN_MS): the second near-gate anchor. The ring uses the
+     *  offense read (bossFill) so a 1-3 row HUD move is not a drop. @param {number} now */
     function bossDropTick(now) {
-        if (bossNow <= 50) return;
+        if (bossFillNow <= 50) return;
         const last = bossRing[bossRing.length - 1];
         if (last && now - last.t < 200) return;
-        bossRing.push({ t: now, b: bossNow });
+        bossRing.push({ t: now, b: bossFillNow });
         while (bossRing.length && now - bossRing[0].t > BOSS_RING_MS) bossRing.shift();
         if (bossRing.length < 3) return;
         const cur = Math.max(bossRing[bossRing.length - 1].b, bossRing[bossRing.length - 2].b); // one low read is no drop
@@ -1213,6 +1236,37 @@ export default function (args = {}) {
             }
         }
     }
+    /** The M1 learned gate's input (lib/dufu-offense-policy.js FEATURES): this tick's state, no future contact. */
+    function gateState(now) {
+        const p = curPred();
+        const last = contacts.length ? contacts[contacts.length - 1] : null;
+        let hits90 = 0;
+        for (let i = contacts.length - 1; i >= 0; i--) {
+            if (contacts[i].f < tick - 1 - 90) break;
+            if (contacts[i].kind === "hit") hits90++;
+        }
+        return {
+            hp: hpNow, qi: qiNow, bossPx: bossFillNow,
+            grpP: p ? p.grpP : 0, p10: pWithin(10), med: p ? p.med : -1,
+            gold: p ? p.col[0] : 0, red: p ? p.col[1] : 0, none: p ? p.col[2] : 0,
+            dodge: p ? p.resp[0] : 0, parry: p ? p.resp[1] : 0, rnone: p ? p.resp[2] : 0,
+            c7P: p ? p.c7P : 0, nextShare: lastShare == null ? -1 : lastShare,
+            chainPos, chainLen, weapon, near: nearNow({ now, lastOkAt, lastDropAt }), lock: lockLit,
+            hitAgeF: lastHitAt ? (now - lastHitAt) / FRAME_MS : 300,
+            okAgeF: lastOkAt ? (now - lastOkAt) / FRAME_MS : 300,
+            lastKind: last ? (last.kind === "hit" ? -1 : 1) : 0,
+            hitsLast90: hits90,
+            c11Active: goldNow(now), // goldSeq / gold tell / a c11-c40 contact < 2.5 s (the same window as the engine's)
+        };
+    }
+    /** @param {number} now @param {string} a @param {number} tier @param {number} q @param {number} score @param {number} thr */
+    function atk2GateVeto(now, a, tier, q, score, thr) {
+        gateVetoes++;
+        atk2Cancel.gate = (atk2Cancel.gate ?? 0) + 1;
+        if (atk2Log.length >= 2000) atk2Log.shift();
+        atk2Log.push({ t: Math.round(now - start), a, ev: "cancel", tier, q: r3(q), why: "gate", gate: Math.round(score * 1000) });
+        mark("atk2", `gate veto ${a} (value ${r3(score)} < ${thr})`);
+    }
     /** @param {number} now @param {string} what @param {string} why @param {number} held @param {number} [tier]
      *  @param {number} [q] */
     function atk2CancelNow(now, what, why, held = 0, tier = 0, q = 0) {
@@ -1277,11 +1331,11 @@ export default function (args = {}) {
             const p = atk2Pend[i];
             if (now < p.at) continue;
             atk2Pend.splice(i, 1);
-            const dmg = p.boss0 > 50 && bossNow > 50 ? p.boss0 - bossNow : null;
+            const dmg = p.boss0 > 50 && bossFillNow > 50 ? p.boss0 - bossFillNow : null;
             if (atk2Log.length >= 2000) atk2Log.shift();
             atk2Log.push({ t: Math.round(now - start), a: p.a, ev: "land", tier: p.tier, q: r3(p.q), why: "",
-                at: Math.round(p.at - start), boss0: p.boss0, bossPrev: p.bossPrev, boss1: bossNow, qi0: p.qi0, qi1: qiNow, dmg });
-            mark("atk2", `land ${p.a}: boss ${p.boss0} -> ${bossNow}${dmg != null ? ` (${dmg} px)` : ""}, 真气 ${p.qi0} -> ${qiNow}`);
+                at: Math.round(p.at - start), boss0: p.boss0, bossPrev: p.bossPrev, boss1: bossFillNow, qi0: p.qi0, qi1: qiNow, dmg });
+            mark("atk2", `land ${p.a}: boss ${p.boss0} -> ${bossFillNow}${dmg != null ? ` (${dmg} px)` : ""}, 真气 ${p.qi0} -> ${qiNow}`);
         }
     }
     /** The boss bar `ms` ago (the closest ring sample; -1 when the ring is shorter). @param {number} ms */
@@ -1304,7 +1358,7 @@ export default function (args = {}) {
             atk2CancelNow(now, a, "disabled");
             return 0;
         }
-        const boss0 = bossNow, qi0 = qiNow, bossPrev = bossAt(ATK2_LAND_MS);
+        const boss0 = bossFillNow, qi0 = qiNow, bossPrev = bossAt(ATK2_LAND_MS);
         const near = nearNow({ now, lastOkAt, lastDropAt });
         if (a === "charge") {
             freeContact(3);
@@ -1330,7 +1384,8 @@ export default function (args = {}) {
         atk2QSum += d.q;
         atk2QN++;
         if (atk2Log.length >= 2000) atk2Log.shift();
-        atk2Log.push({ t: Math.round(now - start), a, ev: "press", tier: d.tier, q: r3(d.q), why: d.reason, boss0, bossPrev, qi0, near });
+        atk2Log.push({ t: Math.round(now - start), a, ev: "press", tier: d.tier, q: r3(d.q), why: d.reason, boss0, bossPrev, qi0, near,
+            gate: lastGate });
         atk2Pend.push({ at: now + ATK2_LAND_MS, boss0, bossPrev, qi0, a, tier: d.tier, q: d.q });
         mark("atk2", `${a} tier T${d.tier} q ${r3(d.q)} (${d.reason}, weapon ${weapon || "?"}, med ${pred?.med ?? -1})`);
         return ACT.attack;
@@ -1427,6 +1482,9 @@ export default function (args = {}) {
         chainLen = ch.len;
         chainPos = ch.pos;
         lastShare = lastContactGid >= 0 ? (NEXT_SHARE[phase]?.[lastContactGid] ?? null) : null;
+        lastCand = 0;
+        lastGate = 0;
+        lastPE = null;
         if (!defend || halt) return 0;
         weaponNow(im, now);
         atk2Reads(now, im);
@@ -1437,7 +1495,7 @@ export default function (args = {}) {
             atk2Hold = null;
             if (atk2Log.length >= 2000) atk2Log.shift();
             atk2Log.push({ t: Math.round(now - start), a: "charge", ev: "release", tier: h.tier, q: r3(h.q), why: "time",
-                at: Math.round(h.at - start), held: Math.round(now - h.at), boss0: h.boss0, boss1: bossNow,
+                at: Math.round(h.at - start), held: Math.round(now - h.at), boss0: h.boss0, boss1: bossFillNow,
                 qi0: h.qi0, qi1: qiNow });
             mark("atk2", `release charge after ${Math.round(now - h.at)} ms, 真气 ${h.qi0} -> ${qiNow}`);
             atk2BusyUntil = now + (ATK2_COMMIT_MS.charge - ATK2_CHARGE_MS); // 46 f commit+safety total (1533 ms)
@@ -1466,7 +1524,7 @@ export default function (args = {}) {
         // engine; this covers the tte head's own short window, which next.share cannot see.
         const guard = defenseDue || (pred != null && (pred.med <= 25 || pWithin(20) >= 0.15 || pred.col[0] >= goldDodgeP));
         const d = offensePick({
-            now, phase, weapon, bossPx: bossNow, qi: qiNow,
+            now, phase, weapon, bossPx: bossFillNow, qi: qiNow,
             executeButton: exeBtn, blueDisc, qishuReady,
             lastContactAt: last ? last.t : 0,
             lastContactKind: last ? last.kind : "",
@@ -1479,6 +1537,8 @@ export default function (args = {}) {
             q: offenseQ,
             allow: { set: false, charge: offenseCharge }, // the 整套 is interface-only in v1 (args.offenseSet logs it)
         });
+        lastCand = d.action ? d.tier : 0;
+        lastPE = pE;
         lastAtkTier = d.action ? d.tier : 0;
         lastAtkQ = d.action ? d.q : 0;
         lastAtkReason = OFF_REASON[d.reason] ?? 0;
@@ -1490,6 +1550,25 @@ export default function (args = {}) {
             lastAtkQ = 0;
             lastAtkReason = OFF_REASON.horizon ?? 0;
             return 0;
+        }
+        // M1 learned gate (v3 only): veto a rule action whose learned value P(damage >= 2 px) is below its threshold. It
+        // never adds an action and never relaxes a v2 gate; execute (the stagger window, the main damage) is always let
+        // through. The 2026-11-01 audit rejected the safety-hazard variant (no lift on pressed rows), @see
+        // docs/dufu-offense-online.md 5.5.
+        if (offenseGateOn && d.action !== "execute") {
+            const gs = gateState(now);
+            const score = policyValue(d.action, gs);
+            lastGate = Math.round(score * 1000);
+            const thr = offenseGateThr ?? (POLICY_THRESHOLD[d.action] ?? 0);
+            const ok = offenseGateThr != null ? score >= thr : policyAllow(d.action, gs);
+            if (!ok) {
+                atk2GateVeto(now, d.action, d.tier, d.q, score, thr);
+                lastAtkTier = 0;
+                lastAtkQ = 0;
+                lastAtkReason = OFF_REASON.gate ?? 0;
+                return 0;
+            }
+            gatePasses++;
         }
         if (d.switchFirst) return atk2StartSwitch(now, d);
         return atk2Do(now, d);
@@ -1578,6 +1657,7 @@ export default function (args = {}) {
             if (now0 - lastBossRead >= BOSS_EVERY) {
                 lastBossRead = now0;
                 bossNow = bossBar(img);
+                bossFillNow = bossFill(img);
                 bossDropTick(now0);
                 if (bossNow > 50 && !bossSeen) {
                     bossSeen = true;
@@ -1728,7 +1808,11 @@ export default function (args = {}) {
                     p ? p.med : -1, r3(pWithin(10)), act, wouldAct, got, Math.round(pipe * 10) / 10, loopMs,
                     p ? r3(p.c7P) : 0, running ? running.sign * (1 + Object.keys(RUN_DIRS).indexOf(running.dir)) : 0,
                     chainPos, chainLen, lastShare == null ? -1 : r3(lastShare), WEAPON_CODE[weapon] ?? 0,
-                    lastAtkTier, r3(lastAtkQ), lastAtkReason, bossNow, lockLit ? 1 : 0, nearGate ? 1 : 0]);
+                    lastAtkTier, r3(lastAtkQ), lastAtkReason, bossFillNow, lockLit ? 1 : 0, nearGate ? 1 : 0,
+                    exeBtn ? 1 : 0, blueDisc ? 1 : 0, qishuReady ? 1 : 0,
+                    lastPE ? r3(lastPE[42] ?? 0) : 0, lastPE ? r3(lastPE[61] ?? 0) : 0, lastPE ? r3(lastPE[70] ?? 0) : 0,
+                    lastCand, lastGate, lastHitAt ? Math.min(300, Math.round((now - lastHitAt) / FRAME_MS)) : -1,
+                    offenseArg === "v3" ? 3 : offenseOn ? 2 : 0, offenseOn ? 1000 : 0]);
                 traceN++;
                 if (rows.length >= TRACE_CHUNK) traceFlush();
             }
@@ -1765,15 +1849,18 @@ export default function (args = {}) {
         curtain: curtainOn ? { gap: curtainGap, enters: curtainEnters, dodges: curtainDodges } : null,
         attack: attackOn ? { presses: presses.attack, execs: atkExecs, log: atkLog, weapon } : null,
         offense: offenseOn ? {
-            engine: "v2", presses: offPresses, switches: atk2Count.switches,
+            engine: offenseGateOn ? "v3" : "v2", policy: offenseGateOn ? POLICY_VERSION : null,
+            gate: offenseGateOn ? { vetoes: gateVetoes, passes: gatePasses,
+                threshold: offenseGateThr ?? POLICY_THRESHOLD, override: offenseGateThr } : null,
+            presses: offPresses, switches: atk2Count.switches,
             actions: { execute: atk2Count.execute, qishu: atk2Count.qishu, light: atk2Count.light,
                 follow: atk2Count.follow, set: atk2Count.set, charge: atk2Count.charge },
             cancels: atk2Cancel, qAvg: atk2QN ? r3(atk2QSum / atk2QN) : null,
             pending: atk2Pend.length, log: atk2Log, lastWeapon: weapon,
             allow: { set: false, charge: offenseCharge }, setRequested: offenseSet, reasonNames: OFF_REASON_NAMES,
             q: offenseQ,
-            traceCols: TRACE_COLS.slice(-10),
-            traceNote: "range = the near gate proxy (0/1: ok or boss-bar drop within 1.5 s), not a real distance; execute may act at 0",
+            traceCols: TRACE_COLS.slice(-21),
+            traceNote: "bossPx = the offense boss read (lib bossFill: widest red row of the tall ROI); the legacy boss column is bossBar (6-row count). range = the near gate proxy (0/1: ok or boss-bar drop within 1.5 s), not a real distance; execute may act at 0",
         } : null,
         hitsPerMin: fightMs > 0 ? Math.round((hits / (fightMs / 60_000)) * 100) / 100 : 0,
         ms, start, t0, marks, pressLog,

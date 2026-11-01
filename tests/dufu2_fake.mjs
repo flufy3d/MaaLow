@@ -134,6 +134,12 @@ export function runFake(dufu, args = {}, scenario = {}) {
             const px = Math.round(ratio * 254);
             return px < 4 ? miss() : hitBox([415, 681, px, 5], 999);
         }
+        // the offense boss read (bossFill): the widest red row of the tall ROI, one row per colour call. Before the qi
+        // branch: the tall ROI overlaps the 真气 line's rows and this fake ignores colours.
+        if (x === 347 && w === 386 && h === 1 && y >= 20 && y < 40) {
+            const b = scenario.boss ? scenario.boss(rt()) : 300;
+            return b < 1 ? miss() : { hit: true, results: [{ box: [347, y, Math.round(b), 1], count: Math.round(b) }] };
+        }
         // boss 真气 line
         if (x === 347 && y === 35) {
             const q = scenario.qi ? scenario.qi(rt()) : 300;

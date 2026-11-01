@@ -25,6 +25,11 @@ def test_dufu_offense_decisions():
     run_node("dufu_offense.mjs")
 
 
+def test_dufu_offense_policy_fixture():
+    """The generated M1 policy must reproduce offense_online.py's scores (feature-order drift catches)."""
+    run_node("dufu_offense_policy.mjs")
+
+
 def test_dufu2_offense_off_touch_parity():
     """offense:"off" must reproduce the HEAD module's touches in every defense scenario (12)."""
     run_node("dufu2_off_parity.mjs")

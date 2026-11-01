@@ -135,3 +135,4 @@ HEAD `7721712`。阶段一和阶段二的防守都已通过关 2；顺序 6 的�
 - 离线复核推翻 qB/qC 方向：execute 5/6 成功、每次 -57~-59 px 是唯一稳定伤害；qishu 13 次持续约 0（血条 ROI 抖动）；follow 0 是 q .80 > quiet_far .755，结构不可达。改为 qD = light .70 / follow .72 / qishu 1.0 / execute .80，预期 6 分钟 +40~60 px；处决失败重试和 BOSS_ROI 单独验证。
 - 6 分钟 8 对 8 只跑 8/16 停：r204–r211 全 time；off 1.58/90.5%，v2 2.54/88.15%；v2 6 分钟输出 42/29/28/30%（平均 32%），输出已接近目标但安全失败；v2 c11 19 窗 10 中（off 12/1），c11 窗内无进攻 press，是防守链击。不跑 qD、不重训防守；第 9 局启动失败留下的空录像已 stop，不续跑。
 - 首版边界：T4/T5 只有接口；幕布整段封锁（c18+6 暂缓）；阶段一切横刀后不回切；near 1500 ms；`range` 是 near 代理。
+- **2026-11-01 批次在线学习（M0/M1）**：设计、数据 schema、门控与回滚见 [dufu-offense-online.md](dufu-offense-online.md)。修 BOSS_ROI（进攻专用 `bossFill`，高 ROI 单行最大红宽）、trace 加机会级列、`offense_online.py` 生成 27 局机会数据、`offense_boss_fill.py` 重放录像算真实按键伤害；安全型 hazard 门控离线无区分度，不部署；v3 改为 value 门控（P(≥2 px)），阈值 0.14（OOF veto 46.8%、总伤害保留 95.1%），待 2 对 2 验证。

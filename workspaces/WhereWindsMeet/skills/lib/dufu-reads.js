@@ -8,7 +8,11 @@ export const HP_RED = { lower: [[0, 100, 165], [174, 100, 165]], upper: [[6, 175
 export const QI_HSV = { lower: [88, 30, 150], upper: [108, 130, 255], method: 40 };
 /** @type {Box} */ export const LIT_ROI = [815, 575, 36, 36]; // f6.py's lit box (the skill icon's white strokes)
 export const ICON_WHITE = { lower: [0, 0, 216], upper: [180, 59, 255], method: 40 };
-/** @type {Box} */ export const BOSS_ROI = [347, 27, 386, 6]; // the boss bar
+/** @type {Box} */ export const BOSS_ROI = [347, 27, 386, 6]; // the boss bar (the legacy read: the defense's walk-in / end check)
+// The offense read: the bar is 5-6 rows tall and the HUD moves it 1-3 rows (r199 47.07 s: 365 -> 241 -> 365 with the bar at
+// y 30-34 instead of 27-32), so a 6-row ROI plus count / 6 reads 1/6-1/2 low and bounces back. The tall ROI takes the
+// widest single row instead: one row's red px is the bar's width whatever the vertical offset is.
+/** @type {Box} */ export const BOSS_ROI_TALL = [347, 20, 386, 20];
 export const BOSS_RED = { lower: [170, 0, 0], upper: [255, 130, 130] };
 export const BOSS_FULL = 386;
 // 金光 flare rule (f6.py: gold line + orange streak)
@@ -79,6 +83,24 @@ export function bossPx(im) {
     const hit = color({ ...BOSS_RED, image: im, roi: BOSS_ROI, count: 1 });
     if (!hit.hit) return 0;
     return Math.max(0, Math.min(BOSS_FULL, (hit.results[0]?.box?.[2] ?? 0) - 1));
+}
+
+/**
+ * The offense's boss-bar width: the widest single red row inside the tall ROI, 0 when none. One row is 1 px high, so its
+ * red px count is the bar's width; the max over rows is stable while the HUD moves the bar vertically (`bossBar` in
+ * dufu2.js divides 6 rows and drops 1/6-1/2 on a 1-3 row move). Offense only: the defense keeps bossBar. @param {Image} im
+ */
+export function bossFill(im) {
+    const [x, y0, w, h] = BOSS_ROI_TALL;
+    let best = 0;
+    for (let y = y0; y < y0 + h; y++) {
+        const hit = color({ ...BOSS_RED, image: im, roi: [x, y, w, 1], count: 1 });
+        if (hit.hit) {
+            const n = hit.results[0]?.count ?? 0;
+            if (n > best) best = n;
+        }
+    }
+    return Math.min(BOSS_FULL, best);
 }
 
 /** At least n px of colour c in roi of im, in `parts` bands (combat.js). @param {ColorOptions} c @param {Box} roi @param {number} n @param {Image} im @param {number} [parts] */
