@@ -56,6 +56,14 @@ const tests = {
         assert.equal(result.presses.dodge, 1);
         assert.ok(result.pressLog.some(([, kind, , gold]) => kind === "dodge" && gold >= 0.9), "pressLog gold not read");
     },
+    "c11 chain: c11Lead presses the opener at 14 frames instead of the global 5"() {
+        const base = run("c11Gold");
+        const b = dodgeDowns(fightTouches(base.touches, base.t0));
+        assert.ok(b.length >= 1 && near(b[0].at, base.t0 + 1500 - 5 * frameMs, 2 * frameMs), `default dodge at ${b[0]?.at - base.t0}`);
+        const c = run("c11Gold", { c11Lead: 14 });
+        const d = dodgeDowns(fightTouches(c.touches, c.t0));
+        assert.ok(d.length >= 1 && near(d[0].at, c.t0 + 1500 - 14 * frameMs, 2 * frameMs), `c11Lead dodge at ${d[0]?.at - c.t0}`);
+    },
     "phase 1: 幕布 covered falls back to one 闪避"() {
         const { result, touches, t0 } = run("curtainCovered");
         const ts = fightTouches(touches, t0);

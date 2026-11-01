@@ -306,7 +306,7 @@ function f32b64(arrs) {
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
  *          model?: string, chain?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number,
  *          attack?: boolean, offense?: "off" | "v2" | "v3", offenseSet?: boolean, offenseCharge?: boolean,
- *          offenseGateThr?: number,
+ *          offenseGateThr?: number, c11Lead?: number,
  *          offenseQ?: {execute?: number, qishu?: number, light?: number, follow?: number, set?: number, charge?: number}}} [args]
  */
 export default function (args = {}) {
@@ -345,6 +345,10 @@ export default function (args = {}) {
     // defaults to 10 (the finalized 2026-10-28 config; the table's global 6 pressed too late in the first A/B). Phase 2
     // keeps null = the move table's per-group leads.
     const parryLead = typeof args.parryLead === "number" ? args.parryLead : phase === 1 ? 10 : null;
+    // args.c11Lead: the c11 sequence's dodge lead (defense A/B, default off). Phase 1's global dodgeLead (5) is later
+    // than the move table's 14 for the k0:c11+c15+c23 opener; a dodge at 14 can still be inside its i-frames for the
+    // k1 beat at +5..+6, while a dodge at 5 expires before it. Only the groups whose name has c11 and only dodges.
+    const c11Lead = typeof args.c11Lead === "number" ? args.c11Lead : null;
     // args.run: run from the 火球雨 (phase 2 only, default on, @see runTick); args.runDir: one direction or a list
     // cycled per run (default diag: r036-r071 side 1.58 hits per 火球雨 episode (24), diag 0.64 (14))
     const runOn = phase === 2 && defend && (args.run ?? true);
@@ -808,7 +812,9 @@ export default function (args = {}) {
         const urgent = phase === 1 && (gold || curtain2 || !!row?.unparryable);
         if (1 - pn < CONTACT_P && !urgent) return null;
         const kind = curtain2 || gold || pd >= pp || row?.unparryable || seq ? "dodge" : "parry";
-        const lead = kind === "parry" ? parryLead ?? row?.parry_lead ?? DEFAULTS.parry_lead : dodgeLead ?? row?.dodge_lead ?? DEFAULTS.dodge_lead;
+        const lead = kind === "parry" ? parryLead ?? row?.parry_lead ?? DEFAULTS.parry_lead
+            : c11Lead != null && name != null && name.includes("c11") ? c11Lead
+                : dodgeLead ?? row?.dodge_lead ?? DEFAULTS.dodge_lead;
         if (remF > lead || remF < -LATE_F) return null;
         return { kind, Tc, remF, lead, src: curtain2 ? "curtain2" : gold ? "gold" : row?.unparryable && pp > pd ? "table" : seq && pp > pd ? "goldSeq" : "resp" };
     }

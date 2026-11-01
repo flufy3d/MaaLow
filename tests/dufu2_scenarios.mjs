@@ -29,6 +29,10 @@ export const SCENARIOS = {
     gold() {
         return { phase: 1, mode: "defend", fightMs: 3000, args: {}, scenario: p1Contact(1, 1500, { col: 0, resp: 1 }) };
     },
+    c11Gold() {
+        // k0:c11+c15+c23 (phase-1 gid 7): the gold c11 opener; the table's dodge lead is 14, the live global is 5
+        return { phase: 1, mode: "defend", fightMs: 3000, args: {}, scenario: p1Contact(7, 1500, { col: 0, resp: 1 }) };
+    },
     curtainCovered() {
         return { phase: 1, mode: "defend", fightMs: 2500, args: {}, scenario: { curtain: (t) => (t >= 1000 ? "covered" : null) } };
     },
