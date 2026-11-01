@@ -67,7 +67,7 @@ def test_gold_hit_branch_does_not_press_k1_k2():
     assert row["punish_action"] == "light"  # post gap 88 f, qi 50: light (42) yes, follow (61) yes, execute no
 
 
-def test_gold_dodged_branch_k1_still_hits_and_parry_is_zero():
+def test_gold_dodged_branch_uses_a_clean_second_dodge():
     mod = _load()
     ep = [contact(100, "k1:c11+c15+c23", "hit")]
     truth = ep + [contact(200, "k0:c6")]
@@ -77,10 +77,23 @@ def test_gold_dodged_branch_k1_still_hits_and_parry_is_zero():
     assert row["observed_branch"] == "dodge"
     assert row["k0_dodged_proven"] is True
     assert row["script_branch"] == "dodge"
-    assert row["k1_hits"] == 1
+    assert row["k1_hits"] == 1  # the truth contact is still a hit; the dodge is a counterfactual plan
+    assert row["first_dodge_clean"] is True
+    assert row["first_followup_avoided_script"] is True
+    assert row["followups"][0]["script_response"] == "dodge"
     assert row["parry_k1"] == 1 and row["parry_ok_k1"] == 0
     assert row["hitstun_hits"] == 0
     assert row["punish_action"] == "light"
+
+
+def test_first_followup_dodge_is_blocked_by_prior_hitstun():
+    mod = _load()
+    ep = [contact(100, "k1:c11+c15+c23", "hit")]
+    truth = [contact(90, "k0:c6", "hit")] + ep + [contact(200, "k0:c6")]
+    row = classify(mod, ep, truth, [], trace_rows(50))
+    assert row["first_dodge_clean"] is False
+    assert row["first_followup_avoided_script"] is False
+    assert row["followups"][0]["script_response"] == "none"
 
 
 def test_punish_windows_light_follow_execute_and_none():

@@ -65,14 +65,15 @@
       "role": "followup_after_dodge",
       "match": {"k": [0, 1, 2], "colour": ["none", "unknown"], "groups_contains": ["c11", "c40"]},
       "offset_f": [20, 67],
-      "response": "none",
+      "response": "dodge",
+      "press_lead_f": [2, 5],
       "state_required": ["idle"],
-      "state_forbidden": [],
+      "state_forbidden": ["hitstun", "parry_lock", "dodge_lock"],
       "branch_on_hit": "followup_after_dodge",
       "branch_on_ok": "punish",
       "branch_on_dodge": "punish",
       "branches": {"hit": "followup_after_dodge", "end": "punish"},
-      "note": "k0 dodged: the no-light follow-up still hits. 0 ok / 135 live k1 parry presses (17 at >=17 f lead); 33/33 k0-dodged episodes still hit. Do not press; save the cooldown for the punish window."
+      "note": "User rule 2026-11-01: the first no-light follow-up after the gold opener is dodge-only, not parry. The old policy answered it with parry (135 k1 parry presses, 0 ok), which was the wrong response, not proof that the follow-up is unparryable. The k0 dodge cooldown (500 ms) is over (gap 20-49 f); 33 proven k0-dodged first-contact episodes, all cooldown-ok, 21/33 have no prior hitstun and can schedule a clean second dodge at f0-4; 12/33 are already in hitstun from a prior hit. The later k1/k2 are unknown (user 2026-11-01); do not assume they are parryable. No live clean 2-5 f second dodge yet; a 2v2 is required before runtime."
     },
     {
       "id": "followup_after_parry",

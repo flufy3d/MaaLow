@@ -16,10 +16,13 @@ Two scopes are reported:
 For every episode the replay reports:
   observed    what the recorded policy did: gold opener hit/ok/dodged, follow-up hits, parry press leads.
   script      the branch script's plan: dodge the gold opener at t0 - 3 f (the observed 2-5 f i-frame window),
-              do not press the follow-up in the hitstun / after-dodge branches, and schedule one punish action in
-              the first contact-free window after the chain (offline only; runtime offense stays off).
-The acceptance is k1/k2 hits == 0 after the script. If that fails, the summary names the mechanical reason
-(hitstun coverage, unparryable after-dodge follow-ups, gold-parry forbidden) and says stop.
+              do not press in the hitstun branch, dodge the first no-light follow-up after a gold dodge
+              (user rule 2026-11-01: dodge-only, not parry), and schedule one punish action in the first
+              contact-free window after the chain (offline only; runtime offense stays off).
+The first follow-up dodge is a counterfactual: the old policy used parry there (135 presses, 0 ok); the
+replay evaluates whether a clean second dodge at f0 - 4 is possible, not whether it has already landed.
+The acceptance is k1/k2 hits == 0 after the script; if the later hits remain unknown, the summary says so
+instead of calling the chain a fixed cost.
 """
 from __future__ import annotations
 
@@ -300,7 +303,8 @@ def classify_episode(ep: list[dict], all_truth: list[dict], presses: list[dict],
     parry_ok_k1 = parry_ok_k2 = 0
     parry_leads_k1, parry_leads_k2 = [], []
     wasted = 0
-    for t in followups:
+    first_dodge = None
+    for idx, t in enumerate(followups):
         f = float(t["frame"])
         k = k_of(t)
         kind = str(t.get("kind"))
@@ -308,6 +312,19 @@ def classify_episode(ep: list[dict], all_truth: list[dict], presses: list[dict],
         st, src = state_at(f - 0.01, intervals)  # the state just before the contact (a hit starts its own stun)
         pp = press_window(f, presses, "parry", lo=0, hi=30)  # a real pre-contact attempt, not a 40 f leftover
         dp = press_window(f, presses, "dodge", lo=0, hi=30)
+        script_response = "parry" if script == "ok" else "none"
+        if idx == 0 and script == "dodge" and gold is None:
+            # User rule: the first no-light follow-up is dodge-only. The script skips the old policy's
+            # parry/dodge presses in the gap, so evaluate the clean second dodge at f0 - 4.
+            df = f - 4.0
+            gap_presses = [p for p in presses
+                           if not (p["kind"] in ("parry", "dodge") and opener_f + 5 <= p["f"] <= f - 1)]
+            dodge_intervals = state_intervals(all_truth, gap_presses)
+            dst, dsrc = state_at(df, dodge_intervals)
+            clean = dst in ("idle", "parry_cd")
+            script_response = "dodge" if clean else "none"
+            first_dodge = {"f": round(df, 2), "lead": 4.0, "state": dst, "state_src": dsrc,
+                           "clean": clean, "response": script_response, "contact_k": k, "contact_kind": kind}
         if kind == "hit":
             follow_hits += 1
             if k == 0:
@@ -338,11 +355,19 @@ def classify_episode(ep: list[dict], all_truth: list[dict], presses: list[dict],
             "hitstun_age_f": round(age, 2) if age is not None else None,
             "state_at_contact": st, "state_src": src,
             "parry_presses": pp, "dodge_presses": dp,
-            "script_response": "parry" if script == "ok" else "none",
+            "script_response": script_response,
+            "first_dodge": first_dodge if idx == 0 else None,
             "script_ok": (kind == "ok") if script == "ok" else None,
         })
         if kind == "hit":
             last_hit = f
+    first = rows[0] if rows else None
+    first_followup_hits = 1 if first and first["kind"] == "hit" else 0
+    first_followup_oks = 1 if first and first["kind"] == "ok" else 0
+    first_dodge_applicable = gold is None  # the observed gold opener was not hit, so the after-dodge branch is real
+    first_dodge_clean = (bool(first and first.get("first_dodge") and first["first_dodge"]["clean"])
+                         if first_dodge_applicable else None)
+    first_followup_avoided_script = first_dodge_clean
     last_end = float(ep[-1]["frame"])
     nxt = [float(t["frame"]) for t in all_truth if float(t["frame"]) > last_end]
     post_gap = max(0.0, (min(nxt) - last_end) if nxt else (video_end - last_end))
@@ -384,6 +409,12 @@ def classify_episode(ep: list[dict], all_truth: list[dict], presses: list[dict],
         "k0_avoided_observed": gold_kind != "hit",
         "k0_dodged_proven": gold is None and k0_press is not None,
         "k0_avoided_script": script == "dodge",
+        "first_dodge": first.get("first_dodge") if first else None,
+        "first_dodge_applicable": first_dodge_applicable,
+        "first_dodge_clean": first_dodge_clean,
+        "first_followup_hits": first_followup_hits,
+        "first_followup_oks": first_followup_oks,
+        "first_followup_avoided_script": first_followup_avoided_script,
         "followups": rows, "k0_hits": k0_hits, "k1_hits": k1_hits, "k2_hits": k2_hits,
         "followup_hits": follow_hits, "oks": oks, "hitstun_hits": hitstun_hits,
         "parry_k1": parry_k1, "parry_ok_k1": parry_ok_k1, "parry_leads_k1": sorted(parry_leads_k1),
@@ -415,6 +446,14 @@ def summarize(rows: list[dict]) -> dict:
         "k0_avoided_script": sum(1 for r in rows if r["k0_avoided_script"]),
         "k0_avoid_rate_observed": round(sum(1 for r in rows if r["k0_avoided_observed"]) / len(rows), 4),
         "k0_avoid_rate_script": round(sum(1 for r in rows if r["k0_avoided_script"]) / len(rows), 4),
+        "first_dodge_applicable": sum(1 for r in rows if r["first_dodge_applicable"]),
+        "first_dodge_clean": sum(1 for r in rows if r["first_dodge_clean"]),
+        "first_dodge_blocked": sum(1 for r in rows if r["first_dodge_clean"] is False),
+        "first_dodge_rate": round(sum(1 for r in rows if r["first_dodge_clean"])
+                                  / max(1, sum(1 for r in rows if r["first_dodge_applicable"])), 4),
+        "first_followup_hits": sum(r["first_followup_hits"] for r in rows),
+        "first_followup_oks": sum(r["first_followup_oks"] for r in rows),
+        "first_followup_avoided_script": sum(1 for r in rows if r["first_followup_avoided_script"]),
         "k0_hits": sum(r["k0_hits"] for r in rows),
         "k1_hits": sum(r["k1_hits"] for r in rows), "k2_hits": sum(r["k2_hits"] for r in rows),
         "k1_k2_hits": sum(r["k1_hits"] + r["k2_hits"] for r in rows),
@@ -440,29 +479,35 @@ def summarize(rows: list[dict]) -> dict:
     }
 
 
-def verdict(core: dict, ext: dict) -> dict:
+def verdict(core: dict, ext: dict, live: dict) -> dict:
     k1k2 = ext.get("k1_k2_hits", 0)
+    first_clean = live.get("first_dodge_clean", 0)
+    n = live.get("first_dodge_applicable", 0)
     reasons = [
-        f"gold opener hit at 4-21 f before k1/k2: {ext.get('hitstun_hits', 0)} follow-up hits are inside the "
-        f"{HITSTUN_F} f hitstun window; the first follow-up at +4..12 cannot be acted on.",
-        f"gold opener dodged: {ext.get('k1_k2_hits', 0)} follow-up hits still landed; live has "
-        f"{ext.get('parry_k1', 0)} k1 parry presses and {ext.get('parry_ok_k1', 0)} ok, "
-        f"{ext.get('parry_leads_k1_ge17', 0)} of them at >=17 f lead.",
-        "the only parryable follow-up branch requires parrying the gold k0 (old index 20 k1 ok, all after k0 ok/pf); "
-        "the 金光闪 teacher rule forbids it, and the 3 live k0 'ok' are none-colour follow-ups parried by a leftover "
-        "c6 parry at 17-20 f.",
-        "k0 dodge is possible (observed 3/38; 33 k1-start episodes in the full live set with a 2-5 f dodge press), "
-        "but it only saves the opener hit; it does not open a follow-up response.",
+        "User rule 2026-11-01: the first no-light follow-up after the gold opener is dodge-only; the old policy "
+        "answered it with parry (135 k1 parry presses, 0 ok), so the 0 ok was the wrong response, not proof that "
+        "the follow-up is unparryable.",
+        f"{n} proven k0-dodged first-contact episodes (full live); the k0 dodge cooldown (gap 20-49 f) is over; "
+        f"{first_clean}/{n} can schedule a clean second dodge at f0-4; the other {n - first_clean} are already in "
+        "hitstun from a prior hit.",
+        "The old policy pressed dodge on the first follow-up only 9 times: 7 were swallowed by an intervening "
+        "parry, 2 were too late (0.5/2.4 f); it never gave the first follow-up a clean 2-5 f dodge.",
+        "Later k1/k2: the user does not know; the offline counts still show their truth hits, and they must not "
+        "be assumed parryable or dodgeable.",
     ]
+    rec = ("PASS: k1/k2 are avoidable; only now consider runtime args.scriptDefense." if k1k2 == 0 else
+           f"NOT fixed cost: the first follow-up is dodge-only; the script can schedule a clean second dodge in "
+           f"{first_clean}/{n} proven k0-dodged episodes (counterfactual). The old 135 k1 parry 0 ok was the "
+           "wrong response. Ask the user before a 2v2; do not write runtime yet; later k1/k2 are unknown.")
     return {
         "pass": k1k2 == 0,
         "k1_k2_hits": k1k2,
         "k1_k2_hits_core29": core.get("k1_k2_hits", 0),
+        "first_dodge_clean": first_clean,
+        "first_dodge_applicable": n,
+        "first_dodge_rate": round(first_clean / max(1, n), 4),
         "mechanical_reasons": reasons,
-        "recommendation": "PASS: k1/k2 are avoidable; only now consider runtime args.scriptDefense."
-                          if k1k2 == 0 else
-                          "FAIL: c11 is a fixed cost under the gold-dodge rule. Stop; do not add runtime "
-                          "args.scriptDefense, do not tune lead/threshold, do not run 2v2/8v8 for c11.",
+        "recommendation": rec,
     }
 
 
@@ -481,6 +526,7 @@ def full_live_stats(names: dict[int, str]) -> dict:
     leads1: list[float] = []
     parry1 = parry1_ok = 0
     k1_start = k1_start_hits = k0_proven = 0
+    first_dodge_applicable = first_dodge_clean = 0
     gold_hits = gold_oks = 0
     used = 0
     for _, d in rounds:
@@ -516,16 +562,23 @@ def full_live_stats(names: dict[int, str]) -> dict:
             if any(t.get("kind") == "hit" for t in ep):
                 k1_start_hits += 1
             f0 = float(ep[0]["frame"])
-            if any(p["kind"] == "dodge" and p["grp"].startswith("k0:") and is_c11_name(p["grp"])
-                   and p["remF"] is not None and 1 <= p["remF"] <= 8 and f0 - 90 <= p["f"] <= f0 + 2
-                   for p in data["presses"]):
+            k0p = [p for p in data["presses"]
+                   if p["kind"] == "dodge" and p["grp"].startswith("k0:") and is_c11_name(p["grp"])
+                   and p["remF"] is not None and 1 <= p["remF"] <= 8 and f0 - 90 <= p["f"] <= f0 - 15]
+            if k0p:
                 k0_proven += 1
+                first_dodge_applicable += 1
+                prior_hit = any(t.get("kind") == "hit" and float(t["frame"]) < f0
+                                and f0 - 4 - float(t["frame"]) <= HITSTUN_F for t in truth)
+                if (f0 - max(p["f"] for p in k0p)) >= 15 and not prior_hit:
+                    first_dodge_clean += 1
     return {"rounds": used, "c11_contacts_by_k_kind": {f"k{k}:{kind}": v for (k, kind), v in sorted(by_k.items())},
             "k1_parry_presses": parry1, "k1_parry_ok": parry1_ok, "k1_parry_leads": describe(leads1),
             "k1_parry_leads_ge15": sum(1 for x in leads1 if x >= 15),
             "k1_parry_leads_ge17": sum(1 for x in leads1 if x >= 17),
             "k1_start_episodes": k1_start, "k1_start_with_hit": k1_start_hits,
-            "k0_dodge_proven": k0_proven, "k0_gold_hits": gold_hits, "k0_gold_oks": gold_oks}
+            "k0_dodge_proven": k0_proven, "k0_gold_hits": gold_hits, "k0_gold_oks": gold_oks,
+            "first_dodge_applicable": first_dodge_applicable, "first_dodge_clean": first_dodge_clean}
 
 
 def render_md(core: dict, ext: dict, rows: list[dict], ver: dict, live: dict) -> str:
@@ -546,6 +599,10 @@ def render_md(core: dict, ext: dict, rows: list[dict], ver: dict, live: dict) ->
                   f"{s.get('k0_dodged_proven', 0)} / {s.get('k0_avoided_script', 0)}/"
                   f"{s.get('episodes', 0)} ({100 * s.get('k0_avoid_rate_script', 0):.1f}%) |",
                   f"| k0 hits | {s.get('k0_hits', 0)} |",
+                  f"| first follow-up dodge clean / applicable | {s.get('first_dodge_clean', 0)}/"
+                  f"{s.get('first_dodge_applicable', 0)} ({100 * s.get('first_dodge_rate', 0):.1f}%) |",
+                  f"| first follow-up hits / oks | {s.get('first_followup_hits', 0)} / {s.get('first_followup_oks', 0)} |",
+                  f"| first follow-up avoided by script (counterfactual) | {s.get('first_followup_avoided_script', 0)} |",
                   f"| k1 hits / k2 hits | {s.get('k1_hits', 0)} / {s.get('k2_hits', 0)} |",
                   f"| k1+k2 hits | **{s.get('k1_k2_hits', 0)}** |",
                   f"| follow-up hits / oks | {s.get('followup_hits', 0)} / {s.get('oks', 0)} |",
@@ -580,20 +637,25 @@ def render_md(core: dict, ext: dict, rows: list[dict], ver: dict, live: dict) ->
               f"{live.get('k1_parry_leads', {}).get('max')}; >=15 f: {live.get('k1_parry_leads_ge15', 0)}; "
               f">=17 f: {live.get('k1_parry_leads_ge17', 0)}.",
               f"- k1-start episodes: {live.get('k1_start_episodes', 0)}, with a hit: "
-              f"{live.get('k1_start_with_hit', 0)}; k0:c11 dodge press at 1-8 f predicted lead: "
-              f"{live.get('k0_dodge_proven', 0)}.", ""]
+              f"{live.get('k1_start_with_hit', 0)}; separate k0:c11 dodge press at 1-8 f predicted lead: "
+              f"{live.get('k0_dodge_proven', 0)}.",
+              f"- first follow-up clean second dodge (f0-4, no prior hitstun): "
+              f"{live.get('first_dodge_clean', 0)}/{live.get('first_dodge_applicable', 0)}.", ""]
     lines += ["## Verdict", "", f"- pass: **{ver['pass']}**; k1+k2 hits = **{ver['k1_k2_hits']}** "
               f"(core29 {ver['k1_k2_hits_core29']}).", f"- {ver['recommendation']}", ""]
     lines += ["Mechanical reasons:", ""] + [f"- {x}" for x in ver["mechanical_reasons"]] + [""]
     lines += ["## Per-episode rows (extended38)", "",
-              "| round | start | n | gold observed | observed | script | k0 avoided (script) | k1 | k2 | parry k1 | post gap | punish |",
-              "|---|---:|---:|---|---|---|---|---:|---:|---:|---:|---|"]
+              "| round | start | n | gold observed | observed | script | script k0 dodge | first dodge clean | k1 | k2 | parry k1 | post gap | punish |",
+              "|---|---:|---:|---|---|---|---|---|---:|---:|---:|---:|---|"]
     for r in rows:
         if r["scope"] != "extended":
             continue
         g = "-" if not r["gold"] else f"{r['gold']['kind']}@{r['gold']['f']:.0f}"
+        fd = r.get("first_dodge") or {}
+        fdc = "n/a" if not r.get("first_dodge_applicable") else ("yes" if fd.get("clean") else "no")
         lines.append(f"| {r['round']} | {r['start']:.0f} | {r['n']} | {g} | {r['observed_branch']} | "
-                     f"{r['script_branch']} | {'yes' if r['k0_avoided_script'] else 'no'} | {r['k1_hits']} | "
+                     f"{r['script_branch']} | {'yes' if r['k0_avoided_script'] else 'no'} | "
+                     f"{fdc} | {r['k1_hits']} | "
                      f"{r['k2_hits']} | {r['parry_k1']} | {r['post_gap_f']:.0f} | {r['punish_action'] or '-'} |")
     lines += [""]
     return "\n".join(lines)
@@ -640,8 +702,8 @@ def main() -> None:
     ext_rows = [r for r in rows if r["scope"] == "extended"]
     core = summarize(core_rows)
     ext = summarize(ext_rows)
-    ver = verdict(core, ext)
     live = full_live_stats(names)
+    ver = verdict(core, ext, live)
     out = {
         "meta": {"script": str(a.script), "rounds": used, "gap_f": GAP_F, "hitstun_f": HITSTUN_F,
                  "dodge_iframe": DODGE_IFRAME, "allow_gold_parry": a.allow_gold_parry,
@@ -657,6 +719,8 @@ def main() -> None:
           f"k0 avoided observed {ext.get('k0_avoided_observed')}/{ext.get('episodes')}, "
           f"script {ext.get('k0_avoided_script')}/{ext.get('episodes')}; "
           f"k1+k2 hits {ext.get('k1_k2_hits')} (core29 {core.get('k1_k2_hits')}); "
+          f"first-followup dodge clean ext {ext.get('first_dodge_clean')}/{ext.get('first_dodge_applicable')}, "
+          f"full-live {live.get('first_dodge_clean')}/{live.get('first_dodge_applicable')}; "
           f"k1 parry {ext.get('parry_k1')} / ok {ext.get('parry_ok_k1')}; "
           f"full-live k1 parry {live.get('k1_parry_presses')} / ok {live.get('k1_parry_ok')}; "
           f"punish {ext.get('punish_actions')}; pass {ver['pass']}")

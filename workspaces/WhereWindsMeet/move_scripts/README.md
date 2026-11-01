@@ -26,6 +26,7 @@
   - `branches`：`hit` / `ok` / `dodge` / `whiff` 后跳到哪一拍。
 - `punish`：收招后的惩罚窗口。`min_gap_f` 是“到下一个真值接触至少多少帧”，`press_delay_f` 是硬直结束后的延迟；动作按 `execute > light > follow` 选，条件是各自的最小窗口。
 - `forbidden`：老师规则禁止的分支（金光 opener 不许 parry）。
+- **c11 2026-11-01 修正**：`gold_opener` 是闪避；`followup_after_dodge` 的 `response` 是 **`dodge`**，不是 `none`——老师明确“金光后的第一下只能闪，不能卸”。脚本在 `f0−4` 按，中间不按 parry；33 个 proven 第一下 episode 里 21/33 可排干净第二次 dodge，12/33 已被前置 hit 打进硬直。旧 135 次 k1 parry 0 ok 是用错应对，不是第一下不可防；后 k1/k2 未知。
 
 ## 离线回放
 
@@ -39,4 +40,4 @@ uv run python workspaces/WhereWindsMeet/tools/dufu_moveid/c11_replay.py \
 - `data/moveid/offense/online/c11_replay.json`：逐 episode 的 observed / script 分支、k0 是否避开、k1/k2 命中、按键 lead、hitstun 覆盖、post_gap、惩罚窗口。
 - `c11_replay.md`：汇总表。
 
-验收口径：脚本回放的 k1/k2 命中必须为 0；做不到就必须写机械原因并停，不允许用运行时开关去补。
+验收口径：先看第一下 `f0−4` 的干净第二次 dodge 覆盖（全 live 21/33）；k1/k2 后续未知，不能拿 6–10 帧 parry 的 0 ok 当结论。运行时只在第一下 2 对 2 验证通过后再谈，不允许用运行时开关去补。
