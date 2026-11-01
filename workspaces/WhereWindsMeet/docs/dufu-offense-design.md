@@ -127,11 +127,13 @@ can_attack(action):
 ### 6 分钟输出 A/B（安全通过后）
 
 - 目标：6 分钟 boss 伤害 **≥30%**（stretch 35%），同时挨打/分 ≤1.5；当前 qA（`.70/.80/.85`）约 22%。
-- `qB`：light **.65** / follow **.70** / qishu **.80** / execute .80；先 2 对 2 或 4 对 4、6 分钟。
-- `qC`：light **.60** / follow **.65** / qishu **.75** / execute .80；只在 qB 安全时试。
-- `offenseQ` 可以只写要覆盖的键；`loop.py` 的 `by_key` 在 manifest 里出现 `offenseQ` 时默认按 `offense,offenseQ` 分组，qB/qC 不会合并。
+- **离线复核（r199/r201/r203）修正了原 qB/qC 方向**：真正稳定的伤害来自 `execute`（5/6 次成功，每次 -57~-59 px）；13 次 `qishu` 持续伤害约 0（日志里 ±100 px 是 6 行血条的读数抖动回弹）；`follow` 0 次是因为阶段一 quiet_far 的 `pE(61)=0.755 < q.follow .80`，结构不可达；`light` 每次只有 1.2–1.8 px，降 light q 只会增加空挥。
+- **推荐 qD**：light **.70** / follow **.72** / qishu **1.0** / execute .80；即放行 follow、压掉无效 qishu，不降 light。预期 6 分钟 +35~50 px（follow）+5~10 px（qishu 让位），仍需实测。
+- **候选 2（代码）**：处决失败重试。当前 `lastExecuteAt` 硬锁 5 s；r199 有一次 qi 9→9 未回升却 12 s 不重试，白丢 58 px。改成按下 +2 s 后 qi 没回升 ≥30 且仍 ≤25 时允许补一次；需先把 `exeBtn` 写进 trace。
+- **候选 3（读数，不混批）**：`BOSS_ROI` 高度只有 6 行，UI 上下跳 1–3 行会丢掉 1/6–1/2 读数，制造假 drop/假 dmg/假 near（三局 15/123 次按键的 near 是假 drop 点亮）。单独改 ROI 并先做 2 对 2 读数对照，不与 qD 同批。
+- `offenseQ` 可以只写要覆盖的键；`loop.py` 的 `by_key` 在 manifest 里出现 `offenseQ` 时默认按 `offense,offenseQ` 分组。
 - 保留 `goldNow`、near 1500 ms、horizon `.25`、unknown/stale；不为了输出移除这些门。
-- 变体过安全线后再做 8 对 8、6 分钟确认，才考虑改默认；不过就停，不重训防守。
+- qD 先 2 对 2 或 4 对 4、6 分钟；过安全线后再做 8 对 8、6 分钟确认，才考虑改默认；不过就停，不重训防守。
 
 ### Stage 1：8 对 8，10 分钟/局（旧设计，已停用）
 

@@ -143,6 +143,8 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - **Stage 1 6/16 中止（2026-11-01）**：loop 在 r203 后 `fresh_reset` 停在“重伤/再次训练”页，Pad idle；非技能崩溃。off 3 局 2 死（1.84 / dead 2.63 / dead 3.54），v2 3 局 0 死（1.83 / 1.84 / 2.04）；部分 gate off **2.90 / 84.5%**、v2 **2.20 / 88.4%**，金 0/82、0/110。v2 10 分钟 boss 掉 104/172/142 px（27–45%）。**10 分钟 off 对照自己就死亡/超线，Stage 1 的 10 分钟安全门不成立**；未跑 Stage 2。6 局已 ingest，5 个旧录像未动。
 - **2026-11-01 用户定 6 分钟口径**：安全 gate 改 8 对 8、6 分钟/局；不重训防守；10 分钟 Stage1/Stage2 停用。真实战 boss 攻击更高、角色死更快，重点提高 6 分钟输出：目标 ≥30%（stretch 35%），同时挨打/分 ≤1.5。当前批次 `off_6min`（r204 起）正在跑，16 局、8 对 8，off vs v2。
 - **工具修复**：`loop.py` 的 `fresh_reset` 每次 shadow 前先 `dufu_enter`，可从“重伤/再次训练”页恢复；`do_run` 先关守卫再 `wait_idle`，避免被 `guard:WhereWindsMeet` 的瞬时 busy 直接退出。新增 `test_loop_fresh_reset_recovers_death_panel`，pytest 40 passed；提交 `c2f4ebf`。
+- **离线输出复核（r199/r201/r203，2026-11-01）**：`execute` 5/6 成功，每次 **-57~-59 px**，是唯一稳定伤害；13 次 `qishu` 持续伤害约 0，日志里的 ±100 px 是 6 行血条 ROI 抖动回弹；`follow` 0 次是因为阶段一 quiet_far `pE(61)=0.755 < q.follow .80`，不可达；`light` 每次约 1.2–1.8 px。6 分钟 22% 主要就是 1 次处决（59 px）。
+- **输出方案改为 qD**：light .70 / follow **.72** / qishu **1.0** / execute .80；预期 follow 找回 35–50 px、qishu 让位 5–10 px，目标 ≥30%。处决失败重试（qi 未回升时补一次）作为第二候选；`BOSS_ROI` 6 行抖动单独验证，不与 qD 混批。仍先过 6 分钟安全门。
 - 首版边界：T4/T5 只有接口；幕布整段封锁（c18+6 窗暂缓）；阶段一切横刀后不回切；near 1500 ms；`range` 是 near 代理不是距离；开场奇术放行。
 - Gate：Stage 1 = 8 对 8、10 分钟/局，安全线（挨打/分 ≤1.5、致命 ≥90%、金 ≤3%）+ 10 分钟 ≥1 条血（381 px）；Stage 2 = 8 局击杀确认，TTK 中位 ≤20 分钟（15 分钟 stretch，至少 6/8 击杀）。
 - 调度、动作表、日志和停止条件见 [dufu-offense-design.md](dufu-offense-design.md)。
