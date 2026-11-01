@@ -122,7 +122,7 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - **阶段一防守**：没有 ≥1pp 的低成本修正；79 个致命失败里 41 个是执行 / 机制（幕布 17、连段硬直 15、按键锁 8、喝药 1），38 个是模型（时机 16、没认出 12、认错 10）。继续调 lead / 阈值 / 历史 `chain11` 不会有量级变化。
 - **阶段二防守**：确认轮剩 257 个致命失败，主要是 k0 无光大组 79、k1 无光组 43、k2 无光组 40、k0:c27 25、火球雨各段合计约 37。
 - **进攻**：按 TTK / boss 掉血速度评估，不能只看 6 分钟 A/B 的 26–46%；防守 gate 不变，进攻保持 opt-in。v2 设计和 gate 见 [dufu-offense-design.md](dufu-offense-design.md)。
-- **gate X 与 A/B 规模**：已定两段式——8 对 8、10 分钟/局 A/B（安全线 + 10 分钟 ≥1 条血 381 px），过了再 8 局击杀确认（TTK 中位 ≤20 分钟，15 分钟 stretch）。
+- **gate 口径（2026-11-01 更新）**：当前只跑 **8 对 8、6 分钟/局** 安全 A/B；旧 10 分钟 Stage 1/Stage 2 停用（10 分钟 off 自己 2/3 死亡）。6 分钟安全通过后再做 `offenseQ` 输出 A/B，目标 boss 伤害 ≥30%（stretch 35%），不重训防守。
 - **数据纪律**：录像拉到 PC 逐帧校验后再从 Pad 删；模型 / 阈值改动前后都用同一关 2 口径 16 局 + 按局 bootstrap 报区间。
 
 ## 2026-10-31 干净基座
@@ -140,7 +140,9 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - 首版实现已落地、默认关：`lib/dufu-offense.js` + `dufu-offense-table.js`、`dufu2.js` 的 `args.offense:"v2"`、trace 10 列、`result.offense`、`loop.py gate` 按 offense 分组、`s5_push.py` 推送新 lib。
 - 测试：pytest 39 passed；`dufu2_scheduler` 34 条；`dufu_offense` 13 条；固定基线 `4c80b3c` 的 `offense:"off"` 对拍 12/12 逐条一致。
 - **实机安全回归（2026-11-01）**：6 分钟 smoke 伤害约 37.5%，但 2.43 挨打/分；旧 q 2 对 2 off vs v2 为 **1.44 vs 4.26 挨打/分、致命 89.7% vs 81.8%**（r189 3.2 分钟死亡），不是 CPU（loop p50/p95 同量级）。收紧到 `.80/.85/.90/.90/.95` 后：off **1.63 / 86.8%**，v2 **2.99 / 87.8%**，v2 只剩 20 个动作、6 分钟 boss 约 21%。关键 bug：v2 的 c11 窗口 10 个里 7 个挨打（off 7/0）；已加 `goldNow`（goldSeq / 金 tell / 最近 c11·c40 接触后 2.5 s，阶段一/二都生效），q 调到中间值 `.70/.80/.85/.85/.90`。修复后 2 对 2（r194–r197）：off **2.25 / 88.1% / c11 11 窗 9 中**，v2 **1.90 / 88.7% / c11 6 窗 0 中**；v2 6 分钟 boss 约 22%。c11 撞车已消失、v2 这一批优于 off，但伤害偏低；进入正式 Stage 1（8 对 8、10 分钟）。
-- **Stage 1 6/16 中止（2026-11-01）**：loop 在 r203 后 `fresh_reset` 停在“重伤/再次训练”页，Pad idle；非技能崩溃。off 3 局 2 死（1.84 / dead 2.63 / dead 3.54），v2 3 局 0 死（1.83 / 1.84 / 2.04）；部分 gate off **2.90 / 84.5%**、v2 **2.20 / 88.4%**，金 0/82、0/110。v2 10 分钟 boss 掉 104/172/142 px（27–45%）。**10 分钟 off 对照自己就死亡/超线，Stage 1 的 10 分钟安全门不成立**；未跑 Stage 2。6 局已 ingest，5 个旧录像未动。下一步需选：6 分钟安全 A/B + 单独 10 分钟 v2 伤害/存活，或先重训防守，或放宽 10 分钟安全线。
+- **Stage 1 6/16 中止（2026-11-01）**：loop 在 r203 后 `fresh_reset` 停在“重伤/再次训练”页，Pad idle；非技能崩溃。off 3 局 2 死（1.84 / dead 2.63 / dead 3.54），v2 3 局 0 死（1.83 / 1.84 / 2.04）；部分 gate off **2.90 / 84.5%**、v2 **2.20 / 88.4%**，金 0/82、0/110。v2 10 分钟 boss 掉 104/172/142 px（27–45%）。**10 分钟 off 对照自己就死亡/超线，Stage 1 的 10 分钟安全门不成立**；未跑 Stage 2。6 局已 ingest，5 个旧录像未动。
+- **2026-11-01 用户定 6 分钟口径**：安全 gate 改 8 对 8、6 分钟/局；不重训防守；10 分钟 Stage1/Stage2 停用。真实战 boss 攻击更高、角色死更快，重点提高 6 分钟输出：目标 ≥30%（stretch 35%），同时挨打/分 ≤1.5。当前批次 `off_6min`（r204 起）正在跑，16 局、8 对 8，off vs v2。
+- **工具修复**：`loop.py` 的 `fresh_reset` 每次 shadow 前先 `dufu_enter`，可从“重伤/再次训练”页恢复；`do_run` 先关守卫再 `wait_idle`，避免被 `guard:WhereWindsMeet` 的瞬时 busy 直接退出。新增 `test_loop_fresh_reset_recovers_death_panel`，pytest 40 passed；提交 `c2f4ebf`。
 - 首版边界：T4/T5 只有接口；幕布整段封锁（c18+6 窗暂缓）；阶段一切横刀后不回切；near 1500 ms；`range` 是 near 代理不是距离；开场奇术放行。
 - Gate：Stage 1 = 8 对 8、10 分钟/局，安全线（挨打/分 ≤1.5、致命 ≥90%、金 ≤3%）+ 10 分钟 ≥1 条血（381 px）；Stage 2 = 8 局击杀确认，TTK 中位 ≤20 分钟（15 分钟 stretch，至少 6/8 击杀）。
 - 调度、动作表、日志和停止条件见 [dufu-offense-design.md](dufu-offense-design.md)。
