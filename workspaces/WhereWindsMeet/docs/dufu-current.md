@@ -197,6 +197,17 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - 离线覆盖（`seq_coverage.py`，c11-only 32 条 / 95 拍，可触发 29 条 / 90 拍）：首个 k1 组 **22/29**，k1 offset 中位 15、计划提前 4–15（中位 10）；k2 组只有 **3/29**（其余第三拍多是 k1，不是 k2）；直接目标 **25/95 = 26.3%** 接触；至少一个计划拍的序列 **23/29 = 79.3%**，按“每计划拍省 1 下”算每条序列命中下降中位 **33.3%**（20–66.7%）。直接接触口径低于 30%，但按序列口径过线；k1 parry 是否能打断后续 k1 要靠 2 对 2 实测。
 - 阶段 C 入口：`loop.py by_key` 新增 `offense,seqDefense`；`c11_chain.py` 的 arm 标签在 args 有 `seqDefense` 时追加该键，旧局标签不变。**尚未上机、未改默认**。
 
+## 2026-11-01 阶段 C：c11 seqDefense 2 对 2（失败，回滚）
+
+- 配置：阶段一、6 分钟/局、`offense:"off"`、`model:"dufu1b"`；`seqDefense:false` vs `true`；tag `seq_c11_2v2b`。
+- 4 局：`r220` false **dead 0.9 s**（无效：trace 19 行、无 HP 读数，开局即死）；`r221` true **dead 4.77 min**；`r222` false time 5.79 min；`r223` true time 5.79 min。
+- 有效局独立复算（`contacts.json`，`c11_2v2_check.py`）：
+  - **false（仅 r222）**：3 真值受击 / 5.79 min = **0.52 挨打/分**；致命 **57/59 = 96.6%**（gate2）；金 0/18；c11 序列 **0** / 命中 **0**（该局没有 c11）。
+  - **true（r221+r223）**：36 真值受击 / 10.56 min = **3.41 挨打/分**；致命 **114/133 = 85.7%**（<90，gate2）；金 0/37；c11 **6 序列 / 18 接触 / 18 命中**（全部 hit）；`c11_chain.py` 独立复算同样 6/18/18。
+- seq 计划执行：r221 5 plans / 9 presses，r223 4 plans / 6 presses；k1 parry 实际提前 **7–10 帧**，k2 dodge **0.5–2.3 帧**（太晚）；没有产生 c11 ok（`k1:c11+c15+c23` gate2 0/8）。
+- **结论：失败/回滚。** true 臂有一次死亡、3.41 挨打/分、致命 85.7%，c11 命中/序列没有下降（18/18 hit）；`seqDefense` 保持 opt-in、默认 false，不跑 8 对 8、不设阶段一默认。r220 让 false 臂只有 1 个有效局，c11 对照不平衡（false 有效局没有 c11），但 true 臂的安全失败已足够回滚。
+- 下一步若要再试：先回答“k1 parry 为什么 7–10 帧仍 0 ok”（k1 是否可卸、7–10 帧是否在卸势窗口内），而不是改默认；候选是 k1 改 dodge 或第二拍预排，需新的 2 对 2。`offense:"off"`，输出不在本批次评价；安全门先失败。
+
 ## 历史
 
 - 方案设计（为什么换 / 目标 / 核心思路 / 运行时 / 模型 / 关卡 / 约束 / 顺序）：[dufu-moveid-plan.md](dufu-moveid-plan.md)
