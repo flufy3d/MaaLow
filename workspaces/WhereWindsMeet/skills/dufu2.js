@@ -60,7 +60,7 @@
 import { stats } from "./lib/stats.js";
 import { BOSS_RED, BOSS_ROI, ICON_WHITE, ME_X, bossFill, countAtLeast, gapNow, health, readMean, readQi } from "./lib/dufu-reads.js";
 import { NEXT_SHARE } from "./lib/dufu-offense-table.js";
-import { allow as policyAllow, value as policyValue, THRESHOLD as POLICY_THRESHOLD, VERSION as POLICY_VERSION } from "./lib/dufu-offense-policy.js";
+import { allow as policyAllow, value as policyValue, VALUE_THRESHOLD as POLICY_VALUE_THRESHOLD, VERSION as POLICY_VERSION } from "./lib/dufu-offense-policy.js";
 import { NEAR_DROP_MS, NEAR_OK_MS, Q as OFF_Q, WINDOWS as OFF_WINDOWS, emptyP, nearNow, pick as offensePick, quietP, REASON as OFF_REASON, REASON_NAMES as OFF_REASON_NAMES } from "./lib/dufu-offense.js";
 import { DEFAULTS as DEFAULTS2, GROUPS as GROUPS2 } from "./lib/dufu2-table.js";
 import { DEFAULTS as DEFAULTS1, GROUPS as GROUPS1 } from "./lib/dufu1-table.js";
@@ -1559,7 +1559,7 @@ export default function (args = {}) {
             const gs = gateState(now);
             const score = policyValue(d.action, gs);
             lastGate = Math.round(score * 1000);
-            const thr = offenseGateThr ?? (POLICY_THRESHOLD[d.action] ?? 0);
+            const thr = offenseGateThr ?? (POLICY_VALUE_THRESHOLD[d.action] ?? 0);
             const ok = offenseGateThr != null ? score >= thr : policyAllow(d.action, gs);
             if (!ok) {
                 atk2GateVeto(now, d.action, d.tier, d.q, score, thr);
@@ -1851,7 +1851,7 @@ export default function (args = {}) {
         offense: offenseOn ? {
             engine: offenseGateOn ? "v3" : "v2", policy: offenseGateOn ? POLICY_VERSION : null,
             gate: offenseGateOn ? { vetoes: gateVetoes, passes: gatePasses,
-                threshold: offenseGateThr ?? POLICY_THRESHOLD, override: offenseGateThr } : null,
+                threshold: offenseGateThr ?? POLICY_VALUE_THRESHOLD, override: offenseGateThr } : null,
             presses: offPresses, switches: atk2Count.switches,
             actions: { execute: atk2Count.execute, qishu: atk2Count.qishu, light: atk2Count.light,
                 follow: atk2Count.follow, set: atk2Count.set, charge: atk2Count.charge },

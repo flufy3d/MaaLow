@@ -163,6 +163,12 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - **数据脚本**：`tools/dufu_moveid/offense_online.py`（`build / audit / train / export`）把 r185–r211 的 trace + contacts 合成机会级数据（`data/moveid/offense/online/`，gitignored），按局切分；`offense_boss_fill.py` 用 `bossFill` 重放录像，给每次按键算真实 2 s / 3 s 伤害。
 - **首批审计（r185–r211，27 局）**：244,458 行、16,853 个机会、475 次进攻按键（execute 18 / qishu 49 / light 353 / follow 55）。按键后 61 帧内真值受击：execute 0/18、qishu 1/49、light 15/353、follow 4/55（合计 20/475 = 4.2%，低于全体 v2 行的 6.2%）——**按键窗内并不更危险**。
 - **v3 接口**：`args.offense:"v3"` = v2 + `lib/dufu-offense-policy.js` 学习门控（只能否决规则动作，execute 豁免；`args.offenseGateThr` 可做阈值 A/B）。默认仍 `off`，v2 保留。测试 41 passed（新增 `dufu_offense_policy.mjs` 的 Python↔JS 权重对拍与 v3 门控场景）。
+- **2 对 2、6 分钟 v2 vs v3（r212–r215，2026-11-01）**：
+  - r212 v2 **dead 5.2 分钟**、16 真值受击；r214 v2 time、23 受击。r213 v3 time、14 受击；r215 v3 time、11 受击。
+  - 安全（`s5_ab`）：v2 **3.73 挨打/分、致命 145/165 = 87.9%**；v3 **2.26、106/121 = 87.6%**。独立复算（`contacts.json`）：v2 3.55 / 86.2%，v3 2.15 / 83.9%。**两臂都没过 1.5 / 90%**。
+  - 输出（bossFill 重放）：v2 149 / 148 px（39% / 39%）；v3 **90 / 18 px（24% / 5%）**，明显回退。
+  - 机制：v3 门控把按键从 v2 的 29/33 次压到 9/11 次（gate veto 185/116 个候选 tick）；v3 的 boss 真气 p10 为 108/73，v2 只有 34/35；r215 的处决按钮 0 次。**chip 攻击在给 boss 叠真气/开处决窗，砍掉它们会连带丢掉主要伤害（execute）**。
+  - **结论：v3 回滚**，默认保持 `off`，不跑 8 对 8。c11 是防守链问题（本轮 v2 5/5、v3 5/10），另开独立防守里程碑；M2 的奖励必须用更长视窗（把后续 execute 窗口算进去），不能只看按键后 2 s 伤害。
 
 ## 历史
 
