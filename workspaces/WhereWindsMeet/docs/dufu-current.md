@@ -178,6 +178,17 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - **2 对 2、6 分钟（r216–r219，offense:"off"）**：off 1.89 挨打/分、致命 90.4%（r216 6、r218 15 真值受击）；c11Lead=14 **2.40、90.2%**（r217 6、r219 19 且 5.2 分钟死亡）。c11 序列 1 vs 5（局间波动大），第一下 dodge 仍出现 lead −0.8；r217 的提前 dodge 在 lead 14.5 按下但没盖住接触，随后 −0.8 的第二下也命中。
 - **结论：c11Lead 回滚**（默认 null），调度器只改提前量救不了 c11 链：提前 14 帧在 i-frame 外、按 0 帧又太晚；k1 的 parry 需要跨按键预排。下一步要么是独立防守重训（`loop.py train` + 8 对 8），要么是“双键预排”专门实验；在拿到证据前不再动默认防守。
 
+## 2026-11-01 阶段 A：episode / 节拍数据（离线）
+
+- 工具 `offense_episodes.py`（提交 `d5d3a5e`）：把 `contacts.json` 全部真值接触按 gap ≤ 30 帧聚成 episode；按局号排序后奇偶切 train/val，同一局不跨 split；输出 `data/moveid/offense/online/episodes.json` + `episodes.md`（gitignored）。
+- 范围 `r185–r219` 共 **35 局**（任务书写的 31 局是 `r185–r215`；后者 c11 接触正好 83 个）。2709 个真值接触全部分配（100%），1839 个 episode / 2709 拍；多拍 episode 487、接触 1357（50.1%）；train 18 / val 17 局，无重叠。
+- c11 主口径（全接触 episode 中首拍含 c11/c40）：**29 个 episode / 98 拍**；c11-only 交叉核对 32/95。两者差异来自首拍不是 c11 但后面含 c11 的 episode，以及 c11 之间夹了其它组。
+- 节拍表：相邻 gap 两主档 **4–6 帧（36/69）** 与 **9–13 帧（22/69）**；累计 offset 中位 **i1=9、i2=15、i3=21**。固定的是链内累计节拍，不是每一段 gap；3 拍链常见 `9→6`、`10→5`、`11→4`。intended 键：i0 dodge 26 / parry 1，i1 dodge 10 / parry 6，i2 parry 7 / dodge 15。
+- 第一下 dodge：29 个 c11 episode 里 28 个首拍 k0 是 hit，1 个从 k1 开始且没有 k0:c11 覆盖按键；c11-only 有 3 个 k1 开头，同样没有覆盖按键。按键级 151 条 k0:c11 dodge：real 23、uncertain 2、false positive 126；real 的实际提前量中位 **1.0 帧**（配置 lead=5 子集 0.8，lead=14 子集 12.2–18.3）。**没有 k0 闪避成功的证据**；失败不是没按，是默认 5 太晚、c11Lead=14 太早。
+- 第 2/3 拍：c11 index 1/2 共 **52 拍，ok=0**；intended 里 k1 parry 6 条中位实际提前 **0.4 帧**、k2 dodge 15 条 **0.3 帧**，均太晚。对照全部 episode index 1/2 的 ok 率 **73.5%/78.2%**，ok 由 parry 支撑（intended actual lead 中位 7.5 帧）。
+- 可行动上界（每拍 truth_resp + 默认 lead/冷却）：c11 **73/98 拍可排（74.5%）**，整链全可排 **9/29**；主要损失是 k2 dodge 与 k0 dodge 的 500 ms 冷却冲突（fast 档 k0→k2 只隔 10–11 帧）。
+- **结论：c11 的杠杆在链内第 2/3 拍，不在第一下。** 阶段 B 优先预排 k1 parry + k2 dodge，并处理 k0 dodge 占用的 500 ms 冷却；离线覆盖达标后再上机。未改任何默认、未上机。
+
 ## 历史
 
 - 方案设计（为什么换 / 目标 / 核心思路 / 运行时 / 模型 / 关卡 / 约束 / 顺序）：[dufu-moveid-plan.md](dufu-moveid-plan.md)

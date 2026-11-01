@@ -156,6 +156,23 @@ else: 按下
 - 机制：v3 把按键从 29/33 次压到 9/11 次（gate veto 185/116 个候选 tick），处决 2/2 → 1/0 次，r215 处决按钮 **0 次**。chip 与处决窗的因果关系本轮不足以定因（真气随处决重置、局间波动大）；**输出回退是明确的**。
 - **决定：v3 回滚**（默认 `off`，v2 保留），不跑 8 对 8。c11 仍是防守链问题（本轮 v2 5/5、v3 5/10），另开独立防守里程碑。M2 的奖励/标签必须覆盖更长视窗（把后续 execute 机会算进去），不能只看 2 s 伤害。
 
+## 5.7 阶段 A：episode / 节拍数据（2026-11-01，离线）
+
+- **目的**：把防守决策从“逐接触反应”升级到“逐序列/逐节拍”。先只做数据，不改实机。
+- **工具**：`tools/dufu_moveid/offense_episodes.py`（提交 `d5d3a5e`）。读阶段一 `live/rNNN/contacts.json`，全部真值接触按 gap ≤ 30 帧聚成 episode；按局号排序后奇偶切 train/val（同一局不跨 split）；输出 `data/moveid/offense/online/episodes.json` + `episodes.md`。
+- **schema**：episode 行含 `round/split/start/end/n/first_grp/prefix/pre_gap_f/post_gap_f`；每拍含 `i/frame/gap/off/grp/k/kind/colour/truth_resp/dec_resp/med/tte_err/fatal/presses`；另加 **intended**（pressLog 的预测接触帧落在 beat ±4 帧内）`{key, group, remF, actual_lead}`，用于把按键归到目标拍；`post_gap_f` 用 `result.t0 + fightMs` 的视频帧映射。
+- **审计**：r185–r219 共 35 局（31 局口径 = r185–r215，c11 接触 83 个）；2709 接触 100% 分配；1839 episode / 2709 拍；多拍 487、接触 1357（50.1%）；train 18 / val 17，无重叠。
+- **c11 节拍**：全接触 episode 主口径 29 个 / 98 拍。gap 两主档 4–6（36/69）与 9–13（22/69）；累计 offset 中位 i1=9、i2=15、i3=21。intended 键 i0 dodge 26/parry 1、i1 dodge 10/parry 6、i2 parry 7/dodge 15。
+- **三个答案**：
+  1. 不是固定 gap，固定的是累计节拍位置（~9 / ~15 / ~21）；按 index 查表，不用单一 gap 常数。
+  2. 没有 k0 闪避成功的证据：29 个 c11 episode 中 28 个首拍 k0 hit，3 个 k1 开头的 episode（c11-only）也没有 k0:c11 覆盖按键；按键级 151 条 k0:c11 dodge 中 real 23 条实际提前中位 1.0 帧（lead=5 子集 0.8，lead=14 子集 12.2–18.3），失败是太晚或太早，不是没按。
+  3. c11 index 1/2 共 52 拍、ok=0；intended 里 k1 parry 中位提前 0.4 帧、k2 dodge 0.3 帧，均太晚。对照全部 episode index 1/2 的 ok 率 73.5%/78.2%，ok 由 parry 支撑（intended actual lead 中位 7.5）。
+- **可行动上界**：按每拍 truth_resp + 默认 lead/冷却，c11 73/98 拍可排（74.5%），整链 9/29；主要损失是 k2 dodge 与 k0 dodge 的 500 ms 冷却冲突（fast 档 k0→k2 只隔 10–11 帧）。
+- **阶段 B 候选（未实施）**：
+  - **S（推荐）**：识别到 k0:c11 后跳过 k0 dodge（数据上 k0 dodge 从未盖住），预排 **k1 parry（offset1−10）** + **k2 dodge（offset2−5）**。离线覆盖上界：k1 27/27、k2 25/25，至少一拍 27/29、两拍 25/29（未计 episode 外冷却）。
+  - **K（保守）**：保留 k0 dodge，再预排 k1 parry + k2 dodge；k1 parry 需越过 `armed.dodge` 的 6 帧 GRACE 阻挡，k2 dodge 在 fast 档与 k0 dodge 冷却冲突（仅 11/25 可排），三拍全排 11/29。
+  - 两者都 arg-gated（`args.seqDefense`，默认 false），不改 `off` 行为；先在 `tests/dufu2_scenarios.mjs` 用 k0 1500 / k1 1510 / k2 1521 验证至少 2 个正确按键，再用 `episodes.json` 复核覆盖，不达标不上机。
+
 ## 6. M2：学习型动作排序（M1 稳定后）
 
 - 候选仍是 `pick` 给出的可行动作（execute/light/follow/qishu/no-op）。
