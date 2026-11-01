@@ -44,9 +44,12 @@ def test_loop_gate_grouping():
     loop = _load("dufu_loop", TOOLS / "loop.py")
     legacy = {"rounds": [{"args": {"attack": False}}, {"args": {"attack": True}}]}
     offense = {"rounds": [{"args": {"offense": "off"}}, {"args": {"offense": "v2"}}]}
+    q = {"rounds": [{"args": {"offense": "v2", "offenseQ": {"light": 0.65}}},
+                    {"args": {"offense": "v2", "offenseQ": {"light": 0.70}}}]}
     plain = {"rounds": [{"args": {"model": "dufu1b"}}]}
     assert loop.by_key(legacy) == "attack"
     assert loop.by_key(offense) == "offense"
+    assert loop.by_key(q) == "offense,offenseQ"
     assert loop.by_key(plain) == "run"
 
 
@@ -78,5 +81,9 @@ def test_s5_ab_offense_arms():
     v2 = ab.arm_key({"offense": "v2"}, ["offense"])
     assert off != v2
     assert off == 'offense="off"' and v2 == 'offense="v2"'
+    # q variants are separate arms when grouped on both keys
+    q65 = ab.arm_key({"offense": "v2", "offenseQ": {"light": 0.65}}, ["offense", "offenseQ"])
+    q70 = ab.arm_key({"offense": "v2", "offenseQ": {"light": 0.70}}, ["offense", "offenseQ"])
+    assert q65 != q70
     # the legacy key still groups on its own
     assert ab.arm_key({"attack": False}, ["attack"]) != ab.arm_key({"attack": True}, ["attack"])

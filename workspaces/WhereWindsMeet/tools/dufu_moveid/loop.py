@@ -246,9 +246,11 @@ def gate(tag: str, by: str | None = None) -> None:
 
 
 def by_key(m: dict) -> str:
-    """The switch the manifest's A/B grouped on: `offense` when any round sets it (v2, 2026-11-01), else the legacy
-    `attack` (old manifests), else s5_ab's own default (`run`). Old gate files keep their meaning: nothing is mixed."""
+    """The switch the manifest's A/B grouped on: `offense,offenseQ` when any round overrides q (so qB/qC are separate
+    arms), else `offense` (v2, 2026-11-01), else the legacy `attack` (old manifests), else `run`."""
     args = [x.get("args") or {} for x in m.get("rounds", [])]
+    if any("offenseQ" in a for a in args):
+        return "offense,offenseQ"
     if any("offense" in a for a in args):
         return "offense"
     if any("attack" in a for a in args):
