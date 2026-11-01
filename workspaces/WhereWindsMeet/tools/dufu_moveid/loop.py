@@ -160,8 +160,10 @@ def fresh_reset(args: dict, tries: int = 3) -> None:
         a["model"] = args["model"]
     last = None
     for i in range(tries):
-        if not pad_idle()[0]:
-            time.sleep(2)
+        try:
+            wait_idle(30)  # a transient guard / recording tail is not a failed reset
+        except SystemExit:
+            print(f"  shadow reset {i + 1}: pad stayed busy", flush=True)
             continue
         try:
             enter()  # death panel -> 再次训练; in the arena this is just the normal no-op entry
