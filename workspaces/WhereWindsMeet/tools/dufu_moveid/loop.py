@@ -257,6 +257,8 @@ def by_key(m: dict) -> str:
         return "offense,offenseQ"
     if any("c11Lead" in a for a in args):
         return "offense,c11Lead"
+    if any("scriptDefense" in a for a in args):
+        return "offense,scriptDefense"
     if any("seqDefense" in a for a in args):
         return "offense,seqDefense"
     if any("offense" in a for a in args):

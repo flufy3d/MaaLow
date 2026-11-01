@@ -53,21 +53,25 @@ def test_loop_gate_grouping():
                     {"args": {"offense": "v2", "offenseQ": {"light": 0.70}}}]}
     c11 = {"rounds": [{"args": {"offense": "off"}}, {"args": {"offense": "off", "c11Lead": 14}}]}
     seq = {"rounds": [{"args": {"offense": "off", "seqDefense": False}}, {"args": {"offense": "off", "seqDefense": True}}]}
+    script = {"rounds": [{"args": {"offense": "off", "scriptDefense": False}},
+                         {"args": {"offense": "off", "scriptDefense": True}}]}
     plain = {"rounds": [{"args": {"model": "dufu1b"}}]}
     assert loop.by_key(legacy) == "attack"
     assert loop.by_key(offense) == "offense"
     assert loop.by_key(q) == "offense,offenseQ"
     assert loop.by_key(c11) == "offense,c11Lead"
     assert loop.by_key(seq) == "offense,seqDefense"
+    assert loop.by_key(script) == "offense,scriptDefense"
     assert loop.by_key(plain) == "run"
 
 
 def test_c11_chain_arm_label():
-    """c11_chain's arm label adds seqDefense only when the round set it (old rounds keep their label)."""
+    """c11_chain's arm label adds scriptDefense/seqDefense only when the round set them (old rounds keep their label)."""
     sys.path.insert(0, str(TOOLS))
     sys.path.insert(0, str(ROOT / "src"))
     chain = _load("dufu_c11_chain", TOOLS / "c11_chain.py")
     assert chain.arm_of({"offense": "off"}) == "c11Lead=None,offense=off"
+    assert chain.arm_of({"offense": "off", "scriptDefense": True}) == "c11Lead=None,scriptDefense=True,offense=off"
     assert chain.arm_of({"offense": "off", "seqDefense": True}) == "c11Lead=None,seqDefense=True,offense=off"
     assert chain.arm_of({"c11Lead": 14, "seqDefense": False, "offense": "v2"}) == "c11Lead=14,seqDefense=False,offense=v2"
 

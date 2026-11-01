@@ -125,6 +125,40 @@ const tests = {
         assert.equal(result.pressLog.filter(([, , , , , , , , , src]) => src === "seq").length, 2,
             `pressLog: ${JSON.stringify(result.pressLog)}`);
     },
+    "c11 chain scriptDefense: dodges k0 and the first follow-up, never parries the first"() {
+        // User rule 2026-11-01: the gold k0 and the first no-light follow-up are both dodged. The plan owns both
+        // beats, so the old generic k1 卸势 cannot swallow the first dodge.
+        const { result, touches, t0 } = run("c11ScriptDodge", { scriptDefense: true });
+        const ts = fightTouches(touches, t0);
+        const ds = dodgeDowns(ts), ps = parryDowns(ts);
+        assert.equal(ps.length, 0, `卸势 taps: ${ps.map((t) => t.at - t0)}`);
+        assert.equal(ds.length, 2, `闪避 taps: ${ds.map((t) => t.at - t0)}`);
+        assert.ok(near(ds[0].at, t0 + 1500 - 3 * frameMs, 2 * frameMs), `k0 dodge at ${ds[0].at - t0}`);
+        assert.ok(near(ds[1].at, t0 + 1500 + 33 * frameMs - 4 * frameMs, 2 * frameMs),
+            `first dodge at ${ds[1].at - t0}`);
+        assert.equal(result.script.plans, 1, JSON.stringify(result.script));
+        assert.equal(result.script.presses, 2, JSON.stringify(result.script));
+        assert.equal(result.script.skips, 0, JSON.stringify(result.script));
+        assert.equal(result.script.cancels, 0, JSON.stringify(result.script));
+        assert.deepEqual(result.script.log.map((r) => r[1]), ["plan", "press", "first-head", "press"], JSON.stringify(result.script.log));
+        assert.deepEqual(result.script.log.map((r) => r[2]), [0, 0, 1, 1], JSON.stringify(result.script.log));
+        assert.equal(result.pressLog.filter(([, , , , , , , , , src]) => src === "script").length, 2,
+            `pressLog: ${JSON.stringify(result.pressLog)}`);
+    },
+    "c11 chain scriptDefense: a hit opener suppresses the first follow-up"() {
+        // The opener landed: k1/k2 are in hitstun, so the plan must not press the first follow-up (the user rule only
+        // says the after-dodge branch is dodgeable). The generic k1 卸势 is suppressed too.
+        const { result, touches, t0 } = run("c11ScriptHit", { scriptDefense: true });
+        const ts = fightTouches(touches, t0);
+        assert.equal(dodgeDowns(ts).length, 1, `闪避 taps: ${dodgeDowns(ts).map((t) => t.at - t0)}`);
+        assert.equal(parryDowns(ts).length, 0, `卸势 taps: ${parryDowns(ts).map((t) => t.at - t0)}`);
+        assert.equal(result.script.plans, 1, JSON.stringify(result.script));
+        assert.equal(result.script.presses, 1, JSON.stringify(result.script));
+        assert.equal(result.script.cancels, 1, JSON.stringify(result.script));
+        assert.ok(!result.script.log.some((r) => r[1] === "press" && r[2] === 1), JSON.stringify(result.script.log));
+        assert.equal(result.pressLog.filter(([, , , , , , , , , src]) => src === "script").length, 1,
+            `pressLog: ${JSON.stringify(result.pressLog)}`);
+    },
     "phase 1: 幕布 covered falls back to one 闪避"() {
         const { result, touches, t0 } = run("curtainCovered");
         const ts = fightTouches(touches, t0);

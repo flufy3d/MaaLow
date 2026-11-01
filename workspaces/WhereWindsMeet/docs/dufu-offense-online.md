@@ -208,9 +208,13 @@ else: 按下
 - **k0 的闪避窗口**：33 个 k1 开头 episode 的 k0 dodge 按键预测提前 1–8 帧（实际 2–5）；`c11Lead=14`（实际 12–18）全部失败，默认 lead=5 实际中位约 1 帧太晚。脚本 `t0−3` 可以 38/38 排上（counterfactual，离线用真值 t0；运行时还要加头部 tte 误差）。
 - **惩罚窗口存在**：extended38 post gap 中位 114.5 帧，34/38 ≥61；脚本会排 33 条 light、2 条 execute、3 条无窗口。离线没有实机伤害验证，offense 仍 `off`；这只是“有窗口/能排”，不是“打中了”。
 
-**结论：不是固定成本，是之前用错了应对。** 金光 k0 只能闪；金光后的第一下也只能闪，我们之前用 parry 打，0 ok 是打错招。第一下现在有 **21/33** 的干净第二次 dodge 覆盖（counterfactual），但还没有实机干净 2–5 帧闪避成功；后 k1/k2 未知。之前“c11 固定成本、停止”的结论作废。
+**结论：不是固定成本，是之前用错了应对。** 金光 k0 只能闪；金光后的第一下也只能闪，我们之前用 parry 打，0 ok 是打错招。第一下现在有 **21/33** 的干净第二次 dodge 覆盖（离线），2 对 2 已把 clean plan 做到 **6/6**；后 k1/k2 未知。之前“c11 固定成本、停止”的结论作废。
 
-**决定：先不写运行时，先问用户是否跑一次 2 对 2 验证第一下。** 验证配置：阶段一、`offense:"off"`、`model:"dufu1b"`、6 分钟；脚本逻辑是 k0 `t0−3` 闪、中间不 parry、第一下 `f0−4` 闪。如果第一下能稳定闪掉，再谈后 k1/k2 和运行时 `args.scriptDefense`；如果第一下也闪不掉，再回到固定成本。`seqDefense` 保持 opt-in、默认 false；v2 保留；默认 `offense:"off"` 不变。**未上机、未跑 2 对 2。**
+**决定（已被 2 对 2 取代）**：用户批准后已写默认 false 的 `args.scriptDefense` 并跑 r224–r227；**第一下 6/6 clean**，但安全门失败，`scriptDefense` 保持默认 false。详见下面的 2 对 2 结果。`seqDefense` 保持 opt-in、默认 false；v2 保留；默认 `offense:"off"` 不变。
+
+**运行时（2026-11-01，默认 false）**：`dufu2.js` 的 `args.scriptDefense` 实现上述计划（阶段一 defend only；与 `seqDefense` 互斥）；`Tc1` 取头部 c11/c40 拍 +20..67 帧、否则 fallback `Tc0+33`；k0 命中/skip 不按第一下，第一下按下后保留 6 帧 grace；后 k1/k2 交回 `decide()`。`result.script` 记录计划日志；`scriptDefense:false` 与旧路径逐条一致。
+
+**2 对 2 结果（r224–r227，2026-11-01）**：false（r224/r226）vs true（r225/r227），6 分钟/局。false **27 hits / 11.58 min = 2.33/min**，致命 **90.2%**（with unverified），无死亡；true **29 / 10.41 = 2.78/min**，致命 **89.5%**，**r227 4.60 min 死亡**；金卸 0/39 vs 0/48。c11：false **4 seq / 12 contacts / 12 hit**；true **2 seq / 8 contacts / 8 hit**，true 的 2 条都是 **k0 hit** 的链，6 条 clean plan 没有 c11 contact。**第一下 6/6 clean**（5 head + 1 fallback；无 c11 contact），**第一下 dodge 本身成立，不是固定成本**；失败点是 k0（9 plans 里 2 hit / 1 skip；计划按 `Tc0−3` 但预测 Tc0 偏晚约 2–3 帧，实际 lead 0.4 / −0.6），所有 8 个 c11 hit 都来自这 2 条 k0-hit 链。**安全门失败，`scriptDefense` 保持默认 false 回滚**；不跑 8 对 8，下一步若要继续只应针对 k0 lead 再做一次经用户批准的 2 对 2。
 
 ## 6. M2：学习型动作排序（M1 稳定后）
 
@@ -264,4 +268,4 @@ loop.py ab (v2 vs vN, 6 min) -> ingest -> offense_online.py build -> train -> ev
 | M1.3 v3 | `offense:"v3"` 接线 | `off` 12/12，v2 不变 | **通过** |
 | M1.4 筛选 | 2 对 2、6 分钟 | v3 安全不差于 v2 且输出不明显下降 | **失败/回滚**：v3 2.15 vs v2 3.55 挨打/分，输出 24%/5% vs 39%/39% |
 | M1.5 晋级 | 8 对 8、16 局 | 安全门全过 + 输出 ≥30% | 未跑（筛选失败，按 §9 回滚） |
-| c11 分支脚本 | `move_scripts/c11.json` + `c11_replay.py` | 第一下干净第二次 dodge 覆盖 | **待验证**：第一下 21/33 可排（counterfactual）；k1/k2 44/54 是真值，后续未知；未跑 2 对 2 |
+| c11 分支脚本 | `move_scripts/c11.json` + `c11_replay.py` + `scriptDefense` | 第一下 2 对 2 | **第一下 6/6 clean；安全门失败/回滚**：true 2.78 挨打/分、r227 4.6 min 死亡；k0 2 hit/1 skip；`scriptDefense` 默认 false |

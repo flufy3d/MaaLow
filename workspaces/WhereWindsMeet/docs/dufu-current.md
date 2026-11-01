@@ -122,7 +122,7 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - **阶段一防守**：没有 ≥1pp 的低成本修正；79 个致命失败里 41 个是执行 / 机制（幕布 17、连段硬直 15、按键锁 8、喝药 1），38 个是模型（时机 16、没认出 12、认错 10）。继续调 lead / 阈值 / 历史 `chain11` 不会有量级变化。
 - **阶段二防守**：确认轮剩 257 个致命失败，主要是 k0 无光大组 79、k1 无光组 43、k2 无光组 40、k0:c27 25、火球雨各段合计约 37。
 - **进攻**：按 TTK / boss 掉血速度评估，不能只看 6 分钟 A/B 的 26–46%；防守 gate 不变，进攻保持 opt-in。v2 设计和 gate 见 [dufu-offense-design.md](dufu-offense-design.md)。
-- **c11 防守链**：第一下已改为**闪避**（老师 2026-11-01：金光 k0 只能闪，金光后的第一下也只能闪；k1/k2 未知）。之前 135 次 k1 parry 0 ok 是用错应对；离线 33 个 proven 第一下 episode 里 **21/33** 可排干净第二次 dodge，12/33 已被前置 hit 打进 hitstun。待 2 对 2 验证第一下；`seqDefense` 保持 opt-in、默认 false。
+- **c11 防守链**：第一下已改为**闪避**（老师 2026-11-01：金光 k0 只能闪，金光后的第一下也只能闪；k1/k2 未知）。之前 135 次 k1 parry 0 ok 是用错应对；离线 33 个 proven 第一下 episode 里 **21/33** 可排干净第二次 dodge。2 对 2（r224–r227）第一下 **6/6 clean**（无 c11 contact），但 true 臂 **2.78 挨打/分、r227 4.6 min 死亡**、安全门失败，`scriptDefense` **默认 false 回滚**；失败点在 k0（2 hit / 1 skip，实际 lead 0.4/−0.6），不是第一下。
 - **gate 口径（2026-11-01 更新）**：当前只跑 **8 对 8、6 分钟/局** 安全 A/B；旧 10 分钟 Stage 1/Stage 2 停用（10 分钟 off 自己 2/3 死亡）。6 分钟安全通过后再做 `offenseQ` 输出 A/B，目标 boss 伤害 ≥30%（stretch 35%），不重训防守。
 - **数据纪律**：录像拉到 PC 逐帧校验后再从 Pad 删；模型 / 阈值改动前后都用同一关 2 口径 16 局 + 按局 bootstrap 报区间。
 
@@ -223,8 +223,19 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
   - **core29**：gold opener 缺失 **1/29 = 3.4%**；第一下 applicable 1/1、clean 1/1；k1 **41** hit / k2 **3** hit = **44**，0 ok（这是真值；第一下闪掉后后面的拍会怎么变还不知道）；post gap 中位 **101 帧**（60–799），**29/29 ≥42、28/29 ≥61**；脚本会排 **27 条 light、2 条 execute**（qi≤25）。
   - **extended38**：gold opener 缺失 **4/38 = 10.5%**（proven dodge 2；无按键 2；首拍直接 k1 的 3/38；r219 9012 是 gold 缺失但 follow-up k0 仍 hit）；第一下 applicable 4、clean **1/4**（r201 5696；另 3 条被前置 hit 打进 hitstun）；**全 live 33 个 proven 第一下 episode 里 clean 21/33**；k1 **51** / k2 **3** = **54**，0 ok（同样是真值，不代表脚本失败）；post gap 中位 **114.5 帧**（7–799），**35/38 ≥42、34/38 ≥61**；脚本会排 **33 条 light、2 条 execute、3 条无窗口**（r198 12507、r209 7680、r221 664）。
   - **惩罚输出**：这是“会排”的输出，不是实机伤害；offense 仍 `off`，没有上机，也没有点任何确认/付费按钮。
-- **机械结论：不是固定成本，是之前用错了应对。** 金光 k0 只能闪；金光后的第一下也只能闪，我们之前用 parry 打，0 ok 是打错招。第一下现在有 **21/33** 的干净第二次 dodge 覆盖（counterfactual），但还没有实机干净 2–5 帧闪避成功；后 k1/k2 未知。之前“c11 固定成本、停止”的结论作废。
-- **决定：先不写运行时，先问用户是否跑一次 2 对 2 验证第一下。** 验证配置：阶段一、`offense:"off"`、`model:"dufu1b"`、6 分钟；脚本逻辑是 k0 `t0−3` 闪、中间不 parry、第一下 `f0−4` 闪。如果第一下能稳定闪掉，再谈后 k1/k2 和运行时 `args.scriptDefense`；如果第一下也闪不掉，再回到固定成本。`seqDefense` 保持 opt-in、默认 false；v2 保留；默认 `offense:"off"` 不变。**未上机、未跑 2 对 2。**
+- **机械结论：不是固定成本，是之前用错了应对。** 金光 k0 只能闪；金光后的第一下也只能闪，我们之前用 parry 打，0 ok 是打错招。第一下现在有 **21/33** 的干净第二次 dodge 覆盖（离线），2 对 2 已把 clean plan 做到 **6/6**；后 k1/k2 未知。之前“c11 固定成本、停止”的结论作废。
+- **决定（已被 2 对 2 取代）**：用户批准后已写默认 false 的 `scriptDefense` 并跑 r224–r227；**第一下 6/6 clean**，但安全门失败，`scriptDefense` 保持默认 false。详见下面的运行时小节。`seqDefense` 保持 opt-in、默认 false；v2 保留；默认 `offense:"off"` 不变。
+
+### 2026-11-01 c11 第一下 dodge 运行时（scriptDefense，默认 false）
+
+- **实现**：`dufu2.js` 新增 `args.scriptDefense`（默认 false，只对阶段一 `defend` 生效；与 `seqDefense` 互斥，同时开时 `seqDefense` 被忽略）。计划在 `k0:*c11*` 金光 opener 上加载：`Tc0−3` 帧按 **dodge**；k0 闪掉后中间**不按 parry**；第一下无光 follow-up 在 `Tc1−4` 帧按 **dodge**。`Tc1` 取头部任意 c11/c40 拍（k0/k1/k2）且 offset 在 **+20..67** 帧，低于 +20 的读数是命中分支的快速 k1，忽略；头部不叫时 fallback `Tc0+33`。k0 命中或 skip 时不按第一下，计划保留到 deadline 以压住通用 k1 卸势；第一下按下后保留 6 帧 grace，避免同一接触被通用路径再按一次 parry。后 k1/k2 仍交回 `decide()`，不新增规则。计划按键全部走 `canPress`/`press`；`result.script` 记录 plans/presses/skips/cancels 和 log。
+- **测试**：`tests/dufu2_scenarios.mjs` 新增 `c11ScriptDodge`（k0 闪掉、第一下 +33 帧）与 `c11ScriptHit`（k0 命中）两档；`dufu2_scheduler.mjs` 42 条全过，`uv run pytest -q` 56 passed；`scriptDefense:false` 与旧路径逐条一致（默认关）。
+- **2 对 2（r224–r227，2026-11-01）**：tag `seq_c11_first_dodge_2v2`，阶段一、6 分钟/局、`offense:"off"`、`model:"dufu1b"`；`scriptDefense:false`（r224/r226）vs `true`（r225/r227）。
+  - **安全/总量**：false **27 hits / 11.58 min = 2.33/min**，致命 **90.2%**（with unverified；without 88.4%），无死亡；true **29 / 10.41 = 2.78/min**，致命 **89.5%**（without 87.4%），**r227 4.60 min 死亡**；金卸 **0/39 vs 0/48**。安全门失败（死亡 + 挨打/分升高）。
+  - **c11**：false **4 seq / 12 contacts / 12 hit**；true **2 seq / 8 contacts / 8 hit**。true 的 2 条 seq 都是 **k0 opener hit** 的链（r225 2 次；k0 press 实际 lead 0.4 / −0.6），6 条 clean plan 没有产生任何 c11 contact。
+  - **第一下：6/6 clean plan 成功**（r225 4/4 + r227 2/2；5 次 head 预测 + 1 次 fallback；均无 c11 contact）。**第一下 dodge 本身成立，不是固定成本。**
+  - **失败点是 k0**：9 plans 里 **2 次 opener hit、1 次 skip（`pressed`）**；计划按 `Tc0−3` 按（预测 remF 2.0–2.7），但预测 Tc0 偏晚约 2–3 帧，2 次失败的实际 lead 0.4 / −0.6；**所有 8 个 c11 hit 都来自这 2 条 k0-hit 链**。
+  - **结论/回滚**：`scriptDefense` **保持默认 false**，不设阶段一默认、不跑 8 对 8；第一下已验证，下一步若要继续只应针对 k0 lead（3 → 5 或 4）再做一次**经用户批准**的 2 对 2；不改 `seqDefense`/默认/v2。
 
 ## 历史
 

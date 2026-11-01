@@ -68,6 +68,38 @@ export const SCENARIOS = {
         const { c0, c1, c2 } = C11_CHAIN_FAST;
         return { phase: 1, mode: "defend", fightMs: 3000, args: {}, scenario: c11ChainWorld(c0, c1, c2) };
     },
+    c11ScriptDodge() {
+        // args.scriptDefense: the gold k0 is dodged (no hp drop at c0), the first no-light follow-up is at c0 + 33 f
+        // and named as k1 from 12 f before it (the after-dodge branch; the hit branch's fast k1 is absent). The plan
+        // presses k0 at c0 - 3 f and the first follow-up at c1 - 4 f, with no parry in the gap.
+        const c0 = 1500, c1 = c0 + 33 * frameMs;
+        return {
+            phase: 1, mode: "defend", fightMs: 4500, args: {},
+            scenario: {
+                head: (t) => {
+                    if (t >= c0 - 12 * frameMs && t <= c0 + 2 * frameMs) return { gid: 7, med: Math.round((c0 - t) / frameMs), col: 0, resp: 1 };
+                    if (t >= c1 - 12 * frameMs && t <= c1 + 2 * frameMs) return { gid: 21, med: Math.round((c1 - t) / frameMs), col: 2, resp: 1 };
+                    return { gid: 97, med: 46, col: 2, resp: 2 };
+                },
+                hp: (t) => (t >= c1 ? 0.8 : 1), // k0 dodged; the first follow-up is the only hit
+            },
+        };
+    },
+    c11ScriptHit() {
+        // The same timeline, but the opener lands (hp drops at c0): the plan must not press the first follow-up.
+        const c0 = 1500, c1 = c0 + 33 * frameMs;
+        return {
+            phase: 1, mode: "defend", fightMs: 4500, args: {},
+            scenario: {
+                head: (t) => {
+                    if (t >= c0 - 12 * frameMs && t <= c0 + 2 * frameMs) return { gid: 7, med: Math.round((c0 - t) / frameMs), col: 0, resp: 1 };
+                    if (t >= c1 - 12 * frameMs && t <= c1 + 2 * frameMs) return { gid: 21, med: Math.round((c1 - t) / frameMs), col: 2, resp: 1 };
+                    return { gid: 97, med: 46, col: 2, resp: 2 };
+                },
+                hp: (t) => (t >= c1 ? 0.6 : t >= c0 ? 0.8 : 1), // k0 and the first follow-up hit
+            },
+        };
+    },
     curtainCovered() {
         return { phase: 1, mode: "defend", fightMs: 2500, args: {}, scenario: { curtain: (t) => (t >= 1000 ? "covered" : null) } };
     },

@@ -51,6 +51,8 @@ def arm_of(args: dict) -> str:
     """The A/B arm: c11Lead / offense, plus seqDefense only when the round set it (the S plan, stage C). Rounds without
     the key keep the old label, so the previous reports stay comparable (`seqDefense=None` is not spelled out)."""
     arm = f"c11Lead={args.get('c11Lead')}"
+    if "scriptDefense" in args:
+        arm += f",scriptDefense={args['scriptDefense']}"
     if "seqDefense" in args:
         arm += f",seqDefense={args['seqDefense']}"
     return f"{arm},offense={args.get('offense', 'off')}"

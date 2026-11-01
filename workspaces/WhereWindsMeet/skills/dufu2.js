@@ -53,6 +53,10 @@
 //   press, so the game cooldowns, `armed` and the potion hold block it like any other press (retried every tick, skipped
 //   after Tc + LATE_F); the plan is canceled SEQ_MAX_F (45) frames after k0 and does not restart within SEQ_CD_F (30).
 //   Phase 2 is not enabled (its k1:c11+c40 is an unparryable 闪避, not a 卸势).
+// args.scriptDefense (phase 1 defend only, default off; mutually exclusive with seqDefense): the 2026-11-01 rule —
+//   the gold k0 is dodged at Tc0 - 3 f, no parry in the gap, then the first no-light follow-up is dodged at Tc1 - 4 f
+//   (the after-dodge first beat is +28.7..44.6 f; a head reading below +20 is ignored). The later k1/k2 stay generic
+//   (the user does not know them). @see scriptTick; the offline c11 replay / 2v2 measure the first-dodge coverage.
 // Trace: one row per tick (TRACE_COLS), event TRACE_EVENT in chunks of TRACE_CHUNK rows (~25 KB each); run
 //   skills/event_pad.js after fetching them (tools/dufu_rounds.py does). args.pair N (shadow checks): every N-th
 //   tick the screenshot is saved (captures/dufu2_live/<tag>_<n>.png) and event PAIR_EVENT carries the head logits and
@@ -138,6 +142,13 @@ const CHAIN_GAP_F = [40, 58], CHAIN_AFTER_F = 34, CHAIN_COVER_F = 8;
 // in the slow one; 45 leaves the press a late frame and the skip). SEQ_CD_F: no new plan for this long after one ends
 // (the same chain's later c11 groups must not start a second one).
 const SEQ_G1_F = 15, SEQ_MAX_F = 45, SEQ_CD_F = 30;
+// script plan (args.scriptDefense, phase 1; @see scriptTick): user rule 2026-11-01 — the gold k0 is dodged, and the
+// first no-light follow-up is also dodged, never parried. k0 at Tc0 - 3 f (the observed 2-5 f i-frame window), then the
+// first c11 beat at Tc1 - 4 f (the after-dodge first follow-up is +28.7..44.6 f; a head reading is accepted only at
+// >= SCRIPT_FIRST_MIN_F, so the fast k1 of the hit branch is ignored); SCRIPT_FALLBACK_F is the median first-beat
+// offset when the head does not name it. No parry in the gap; the later k1/k2 are left to decide() (unknown).
+const SCRIPT_K0_LEAD_F = 3, SCRIPT_FIRST_LEAD_F = 4, SCRIPT_FIRST_MIN_F = 20, SCRIPT_FIRST_MAX_F = 67,
+    SCRIPT_FALLBACK_F = 33, SCRIPT_CD_F = 30;
 /** run directions (stick unit vector, y down = away from the locked boss); the sign of x alternates per run */
 /** @type {Record<string, [number, number]>} */
 const RUN_DIRS = { side: [1, 0], diag: [0.7071, 0.7071], back: [0, 1] };
@@ -298,6 +309,8 @@ const r1 = (/** @type {number} */ x) => Math.round(x * 10) / 10;
 /** A c11 chain beat's group name: `k` is "k0:" / "k1:" / "k2:" (the S plan's beats and its skipped opener).
  *  @param {string | null} name @param {string} k */
 const isSeqBeat = (name, k) => name != null && name.startsWith(k) && name.includes("c11");
+/** A c11/c40 chain beat's group name for the script plan. @param {string | null} name @param {string} k */
+const isScriptBeat = (name, k) => name != null && name.startsWith(k) && (name.includes("c11") || name.includes("c40"));
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 /** base64 of bytes. @param {ArrayLike<number>} b */
 function b64(b) {
@@ -327,7 +340,7 @@ function f32b64(arrs) {
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
  *          model?: string, chain?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number,
  *          attack?: boolean, offense?: "off" | "v2" | "v3", offenseSet?: boolean, offenseCharge?: boolean,
- *          offenseGateThr?: number, c11Lead?: number, seqDefense?: boolean,
+ *          offenseGateThr?: number, c11Lead?: number, seqDefense?: boolean, scriptDefense?: boolean,
  *          offenseQ?: {execute?: number, qishu?: number, light?: number, follow?: number, set?: number, charge?: number}}} [args]
  */
 export default function (args = {}) {
@@ -370,8 +383,11 @@ export default function (args = {}) {
     // than the move table's 14 for the k0:c11+c15+c23 opener; a dodge at 14 can still be inside its i-frames for the
     // k1 beat at +5..+6, while a dodge at 5 expires before it. Only the groups whose name has c11 and only dodges.
     const c11Lead = typeof args.c11Lead === "number" ? args.c11Lead : null;
+    // args.scriptDefense: the first-follow-up dodge plan (phase 1 defend only, default off; @see scriptTick). It is
+    // mutually exclusive with seqDefense: the script owns the k0 + first follow-up, and the later beats stay generic.
+    const scriptOn = phase === 1 && defend && (args.scriptDefense ?? false);
     // args.seqDefense: the S plan (phase 1 defend only, default off; @see seqTick and the header note)
-    const seqOn = phase === 1 && defend && (args.seqDefense ?? false);
+    const seqOn = phase === 1 && defend && (args.seqDefense ?? false) && !scriptOn;
     // The S plan's keys and leads. k1 uses the phase-1 table's response for k1:c11+c15+c23 (parry; a missing row falls
     // back to parry), k2 is the unparryable 闪避. The leads are decide()'s own expressions for these groups (phase 1:
     // 卸势 10, 闪避 5; args.c11Lead still overrides the c11 dodge lead as it does for the opener).
@@ -568,7 +584,8 @@ export default function (args = {}) {
     } else if (args.offense === "v2") {
         mark("atk2", `offense v2 ignored in ${mode} (defend only)`);
     }
-    if (args.seqDefense && !seqOn) mark("seq", `seqDefense ignored (${phase === 1 ? mode : "phase 2"})`);
+    if (args.seqDefense && !seqOn) mark("seq", `seqDefense ignored (${scriptOn ? "scriptDefense" : phase === 1 ? mode : "phase 2"})`);
+    if (args.scriptDefense && !scriptOn) mark("script", `scriptDefense ignored (${phase === 1 ? mode : "phase 2"})`);
 
     // ---- trace
     /** @type {number[][]} */
@@ -671,6 +688,14 @@ export default function (args = {}) {
     const seqN = { plans: 0, presses: 0, skips: 0, cancels: 0 };
     /** @type {any[]} */
     const seqLog = []; // [t ms, event, target (0 = the plan / 1 = k1 / 2 = k2), key, Tc ms, remF, grp]; times since start
+    // the first-follow-up script (args.scriptDefense, phase 1; @see scriptTick): k0 = 0 due / 1 pressed / -1 skipped,
+    // first = 0 due / 1 pressed / -1 skipped; hit = the opener contact landed (no first press); Tc1 = the first beat.
+    /** @type {{Tc0: number, Tc1: number | null, k0: 0 | 1 | -1, first: 0 | 1 | -1, hit: boolean, src: string | null} | null} */
+    let scriptPlan = null;
+    let scriptCdUntil = 0;
+    const scriptN = { plans: 0, presses: 0, skips: 0, cancels: 0 };
+    /** @type {any[]} */
+    const scriptLog = []; // [t ms, event, target (0 = k0 / 1 = first), key, Tc ms, remF, grp]; times since start
     /** @type {any[]} */
     const curtain2Log = []; // phase 1 args.curtain2: [t ms, grp, remF, lead]
     /** @type {{shot: number[], pipe: number[], prep: number[], run: number[], inferWall: number[], reads: number[], loop: number[], head: number[]}} */
@@ -846,6 +871,10 @@ export default function (args = {}) {
         // path, so a cooldown-blocked plan still leaves the generic fallback.
         if (seqPlan != null && (isSeqBeat(name, "k0:")
             || (seqPlan.k1 !== -1 && isSeqBeat(name, "k1:")) || (seqPlan.k2 !== -1 && isSeqBeat(name, "k2:")))) return null;
+        // args.scriptDefense: the plan owns the opener and the first no-light follow-up. Suppress every c11 beat while
+        // it runs, so the old generic k1 卸势 cannot swallow the first dodge; the later beats are generic again once
+        // the plan ends (the user does not know their response yet).
+        if (scriptPlan != null && (isScriptBeat(name, "k0:") || isScriptBeat(name, "k1:") || isScriptBeat(name, "k2:"))) return null;
         // phase-1 grab follow-ups (k*:grab, the gold grab's close-up) cannot be answered: no press at all
         if (phase === 1 && name && name.endsWith(":grab")) return null;
         const row = name ? GROUPS[name] : null;
@@ -979,6 +1008,131 @@ export default function (args = {}) {
             mark("seq", "cancel (deadline)");
             seqPlan = null;
             seqCdUntil = now + SEQ_CD_F * FRAME_MS;
+        }
+        return act;
+    }
+
+    /**
+     * The first-follow-up dodge plan (args.scriptDefense, phase 1 defend only; @see SCRIPT_K0_LEAD_F):
+     *   start  the k0:c11 gold opener (P(gold) >= goldDodgeP, a contact time known) opens one plan.
+     *   k0     a 闪避 for Tc0, due at Tc0 - 3 f (the observed 2-5 f window).
+     *   hit    a contact landing around Tc0 (lastHitAt >= Tc0 - 2 f): the opener was not dodged; do not press the
+     *          first follow-up (the k1/k2 are in hitstun), keep the plan's suppression until the deadline.
+     *   first  after k0 was pressed and no opener hit: the first c11 beat at Tc1 >= Tc0 + 20 f (the after-dodge
+     *          first follow-up is +28.7..44.6 f; a head reading below +20 is the fast k1 of the hit branch), a 闪避
+     *          at Tc1 - 4 f. If the head does not name it, Tc1 = Tc0 + 33 f (the observed median).
+     *   end    the first press goes / is skipped -> CD; the deadline Tc0 + 67 f also ends the plan.
+     * Every press goes through canPress / press.
+     * @param {number} now @returns {number} an act
+     */
+    function scriptTick(now) {
+        const p = curPred();
+        const name = p != null && p.grp < IDLE ? GRP_NAMES[p.grp] : null;
+        if (!scriptPlan) {
+            if (now < scriptCdUntil || !p || !isScriptBeat(name, "k0:") || p.col[0] < goldDodgeP || p.med >= TTE_NONE) return 0;
+            const Tc0 = p.capT + p.med * FRAME_MS;
+            if ((Tc0 - now) / FRAME_MS < -LATE_F) return 0;
+            scriptPlan = { Tc0, Tc1: null, k0: 0, first: 0, hit: false, src: null };
+            scriptN.plans++;
+            scriptLog.push([now - start, "plan", 0, "", Math.round(Tc0 - start), r1((Tc0 - now) / FRAME_MS), name]);
+            mark("script", `plan ${name}: k0 -${SCRIPT_K0_LEAD_F} f, first -${SCRIPT_FIRST_LEAD_F} f`);
+        }
+        const s = scriptPlan;
+        let act = 0;
+        if (s.k0 === 0) {
+            if (now >= s.Tc0 - SCRIPT_K0_LEAD_F * FRAME_MS) {
+                const d = { kind: /** @type {"dodge"} */ ("dodge"), Tc: s.Tc0, remF: (s.Tc0 - now) / FRAME_MS,
+                    lead: SCRIPT_K0_LEAD_F, src: "script" };
+                const why = canPress(d, now);
+                if (!why) {
+                    act = press(d, now);
+                    if (act) {
+                        s.k0 = 1;
+                        scriptN.presses++;
+                        scriptLog.push([now - start, "press", 0, d.kind, Math.round(s.Tc0 - start), r1(d.remF), name]);
+                        mark("script", `k0 ${d.kind} at ${r1(d.remF)} f`);
+                    }
+                } else if (now > s.Tc0 + LATE_F * FRAME_MS) {
+                    s.k0 = -1;
+                    s.first = -1;
+                    scriptN.skips++;
+                    scriptLog.push([now - start, "skip", 0, d.kind, Math.round(s.Tc0 - start), r1(d.remF), why]);
+                    mark("script", `k0 skipped (${why})`);
+                }
+            }
+        } else if (s.k0 === 1 && s.first === 0) {
+            if (!s.hit && lastHitAt >= s.Tc0 - 2 * FRAME_MS) {
+                s.hit = true;
+                scriptLog.push([now - start, "hit", 0, "", Math.round(s.Tc0 - start), r1((now - s.Tc0) / FRAME_MS), name]);
+                mark("script", "opener hit: no first press");
+            }
+            if (!s.hit) {
+                const beat = p != null && (isScriptBeat(name, "k0:") || isScriptBeat(name, "k1:") || isScriptBeat(name, "k2:"));
+                if (s.Tc1 == null && beat && p.med < TTE_NONE) {
+                    const tc = p.capT + p.med * FRAME_MS;
+                    const off = (tc - s.Tc0) / FRAME_MS;
+                    if (off >= SCRIPT_FIRST_MIN_F && off <= SCRIPT_FIRST_MAX_F) {
+                        s.Tc1 = tc;
+                        s.src = "head";
+                        scriptLog.push([now - start, "first-head", 1, "", Math.round(tc - start), r1(off), name]);
+                        mark("script", `first head ${name} at +${r1(off)} f`);
+                    }
+                }
+                if (s.Tc1 == null && now >= s.Tc0 + (SCRIPT_FALLBACK_F - SCRIPT_FIRST_LEAD_F) * FRAME_MS) {
+                    s.Tc1 = s.Tc0 + SCRIPT_FALLBACK_F * FRAME_MS;
+                    s.src = "fallback";
+                    scriptLog.push([now - start, "first-fallback", 1, "", Math.round(s.Tc1 - start),
+                        r1((s.Tc1 - now) / FRAME_MS), name]);
+                    mark("script", `first fallback +${SCRIPT_FALLBACK_F} f`);
+                }
+                if (p != null && s.Tc1 != null && now >= s.Tc1 - SCRIPT_FIRST_LEAD_F * FRAME_MS) {
+                    const d = { kind: /** @type {"dodge"} */ ("dodge"), Tc: s.Tc1, remF: (s.Tc1 - now) / FRAME_MS,
+                        lead: SCRIPT_FIRST_LEAD_F, src: "script" };
+                    const why = canPress(d, now);
+                    if (!why) {
+                        act = press(d, now);
+                        if (act) {
+                            s.first = 1;
+                            scriptN.presses++;
+                            scriptLog.push([now - start, "press", 1, d.kind, Math.round(s.Tc1 - start), r1(d.remF), name]);
+                            mark("script", `first ${d.kind} at ${r1(d.remF)} f (${s.src})`);
+                        }
+                    } else if (now > s.Tc1 + LATE_F * FRAME_MS) {
+                        s.first = -1;
+                        scriptN.skips++;
+                        scriptLog.push([now - start, "skip", 1, d.kind, Math.round(s.Tc1 - start), r1(d.remF), why]);
+                        mark("script", `first skipped (${why})`);
+                    }
+                }
+            }
+        }
+        if (s.k0 === -1 || s.hit) {
+            if (now > s.Tc0 + SCRIPT_FIRST_MAX_F * FRAME_MS) {
+                scriptN.cancels++;
+                scriptLog.push([now - start, "cancel", 0, "", Math.round(s.Tc0 - start),
+                    r1((s.Tc0 - now) / FRAME_MS), name]);
+                mark("script", "cancel (deadline)");
+                scriptPlan = null;
+                scriptCdUntil = now + SCRIPT_CD_F * FRAME_MS;
+            }
+        } else if (s.first === 1) {
+            // Keep the plan through the contact's grace window: the generic path would otherwise see the same k1
+            // reading on its contact tick (the `got` clear drops armed.dodge) and press the forbidden parry.
+            if (now > (s.Tc1 ?? s.Tc0) + GRACE_F * FRAME_MS) {
+                scriptPlan = null;
+                scriptCdUntil = now + SCRIPT_CD_F * FRAME_MS;
+            }
+        } else if (s.first === -1) {
+            scriptPlan = null;
+            scriptCdUntil = now + SCRIPT_CD_F * FRAME_MS;
+        } else if (now > s.Tc0 + SCRIPT_FIRST_MAX_F * FRAME_MS) {
+            s.first = -1;
+            scriptN.cancels++;
+            scriptLog.push([now - start, "cancel", 0, "", Math.round(s.Tc0 - start),
+                r1((s.Tc0 - now) / FRAME_MS), name]);
+            mark("script", "cancel (deadline)");
+            scriptPlan = null;
+            scriptCdUntil = now + SCRIPT_CD_F * FRAME_MS;
         }
         return act;
     }
@@ -1871,8 +2025,10 @@ export default function (args = {}) {
             if (curPred()?.grp === C11_GID) lastC11At = now;
             // the S plan's press (args.seqDefense) preempts this tick's generic d press; with the switch off seqAct is 0
             // and the path is the old one tick for tick
+            const scriptAct = scriptOn ? scriptTick(now) : 0;
             const seqAct = seqOn ? seqTick(now) : 0;
-            if (seqAct) act = seqAct;
+            if (scriptAct) act = scriptAct;
+            else if (seqAct) act = seqAct;
             else if (defend) act = runTick(now);
             // one defense decision per tick: the v2 preempt reuses it instead of calling decide() again
             const d = decide(now);
@@ -1993,6 +2149,7 @@ export default function (args = {}) {
         goldSeq: goldSeqOn ? goldSeqLog : null,
         chain: chainOn ? chainLog : null,
         seq: seqOn ? { plans: seqN.plans, presses: seqN.presses, skips: seqN.skips, cancels: seqN.cancels, log: seqLog } : null,
+        script: scriptOn ? { plans: scriptN.plans, presses: scriptN.presses, skips: scriptN.skips, cancels: scriptN.cancels, log: scriptLog } : null,
         curtain2: curtain2On ? { presses: curtain2Log.length, log: curtain2Log } : null,
         curtain: curtainOn ? { gap: curtainGap, enters: curtainEnters, dodges: curtainDodges } : null,
         attack: attackOn ? { presses: presses.attack, execs: atkExecs, log: atkLog, weapon } : null,
