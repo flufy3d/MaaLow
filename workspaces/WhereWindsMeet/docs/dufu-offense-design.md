@@ -124,6 +124,15 @@ can_attack(action):
 
 下面的 10 分钟 Stage 1/Stage 2 是旧设计，保留作历史记录，不再执行；10 分钟 Stage 1 的 6 局数据只作参考（off 自己 2/3 死亡，证明 10 分钟 off 基线不成立）。
 
+### 6 分钟输出 A/B（安全通过后）
+
+- 目标：6 分钟 boss 伤害 **≥30%**（stretch 35%），同时挨打/分 ≤1.5；当前 qA（`.70/.80/.85`）约 22%。
+- `qB`：light **.65** / follow **.70** / qishu **.80** / execute .80；先 2 对 2 或 4 对 4、6 分钟。
+- `qC`：light **.60** / follow **.65** / qishu **.75** / execute .80；只在 qB 安全时试。
+- `offenseQ` 可以只写要覆盖的键；`loop.py` 的 `by_key` 在 manifest 里出现 `offenseQ` 时默认按 `offense,offenseQ` 分组，qB/qC 不会合并。
+- 保留 `goldNow`、near 1500 ms、horizon `.25`、unknown/stale；不为了输出移除这些门。
+- 变体过安全线后再做 8 对 8、6 分钟确认，才考虑改默认；不过就停，不重训防守。
+
 ### Stage 1：8 对 8，10 分钟/局（旧设计，已停用）
 
 - 两臂：`offense:"off"` vs `offense:"v2"`，fresh，交替。
