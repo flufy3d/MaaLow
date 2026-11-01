@@ -176,6 +176,39 @@ else: 按下
   - **K（未实现）**：保留 k0 dodge 的保守变体；fast 档 k2 与 k0 dodge 的 500 ms 冷却冲突，离线覆盖明显低于 S，不采用。
   - **2 对 2 实机（r220–r223，2026-11-01，tag `seq_c11_2v2b`）**：`r220` false **dead 0.9 s**（无效，trace 无 HP）；`r221` true **dead 4.77 min**；`r222` false time 5.79 min；`r223` true time 5.79 min。有效局：false（r222）**0.52 挨打/分**、致命 **96.6%**、c11 0/0；true（r221+r223）**3.41 挨打/分**、致命 **85.7%**、c11 **6 序列 / 18 接触 / 18 命中**。seq 的 k1 parry 实际提前 7–10 帧、k2 dodge 0.5–2.3 帧，c11 ok=0（`k1:c11+c15+c23` gate2 0/8）。**失败/回滚**：true 臂死亡 + 致命 <90 + c11 全 hit；`seqDefense` 保持 opt-in、默认 false，不跑 8 对 8。false 臂的 r220 无效且有效局无 c11，c11 对照不平衡；但 true 臂安全失败已足够回滚。
 
+## 5.8 c11 分支脚本离线回放（2026-11-01，固定成本）
+
+**目的**：把 c11 从“逐接触决策”补成“tell → 整招脚本 → 分支 → 惩罚窗口”，先离线回答 k1/k2 能不能做到 0 命中。阶段 A/B/C 的结论是“杠杆在链内第 2/3 拍”；本节用整招时间表复核这个判断。
+
+**产物**：
+
+- `workspaces/WhereWindsMeet/move_scripts/c11.json`：分支脚本。`tell`（k0:c11/c40 连续两帧 P≥0.5）→ `gold_opener`（金光闪，`t0−3` 帧，2–5 帧窗口）→ 三个分支：
+  - `followup_hitstun`：k0 命中，k1/k2 在 +4..21 帧；`response:"none"`，不按，省 330 ms 卸势锁；
+  - `followup_after_dodge`：k0 闪掉，无光 follow-up 在 +20..67 帧；`response:"none"`，因为实机 0 ok；
+  - `followup_after_parry`：只有 parry 金光 k0 才可达，`response:"parry"`；老师规则禁止，仅诊断。
+  - `punish`：收招后 `min_gap_f` / `press_delay_f` / execute-light-follow 的窗口。
+- `tools/dufu_moveid/c11_frames.py`：逐帧表（tell、拍、角色 idle/dodge/parry/hitstun、按键、i-frame 估计、收招/惩罚）。
+- `tools/dufu_moveid/c11_replay.py`：离线回放，只读 `contacts/trace/result/args` + meta + movetable，不 import `s5_ab` / `s5_analyze`。
+
+**范围**：core29 = `r185–r219` 首拍 c11 的 general episode，**29 / 98 拍，20 局 / 130.1 分钟**；extended38 = `r185–r223` c11-only，**38 / 113 拍，23 局 / 146.5 分钟**；k1 证据另扫全 live `r001–r223`：206 局有 `fightMs`，合计 **1034.5 分钟**；其中 199 局有完整 contacts/meta，312 个 c11/c40 接触。
+
+**结果**：
+
+| 口径 | gold opener 缺失 observed | 脚本 k0 闪避 | k1 hit | k2 hit | k1+k2 | ok | k1 parry / ok | post gap 中位 | ≥42 / ≥61 | 惩罚（会排） |
+|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---|
+| core29 | 1/29 = 3.4% | 29/29 | 41 | 3 | **44** | 0 | 18 / 0 | 101 帧 | 29/29 · 28/29 | light 27 / execute 2 |
+| extended38 | 4/38 = 10.5% | 38/38 | 51 | 3 | **54** | 0 | 26 / 0 | 114.5 帧 | 35/38 · 34/38 | light 33 / execute 2 / none 3 |
+
+> 口径：`gold opener 缺失` = 没有 gold 色的 k0 接触；其中首拍直接 k1 的 3/38，proven dodge（有 k0:c11 的 1–8 帧 dodge 按键）2/38；r219 9012 是 gold 缺失但 follow-up k0 仍 hit。帧表里“k0 避开”的 3/38 是“完全没有 k0 接触”的更窄口径。
+
+- **k0 命中后必吃**：全库 hit→下一次 ok 的最小间隔 **12 帧**（2607 个样本 ≤15 帧只有 15 个）；视觉 r185 的 k0 硬直 **10093–10105（约 12 帧）**，k1 10106 又续到 10119；core29 **67/70** 个 follow-up hit 在 12 帧（保守下界）硬直内。k1 在 +9..+22（中位 +15），k2 在 +22..+27；相邻 gap 4–6（36/69）与 9–13（22/69）。
+- **k1 不可 parry**：全 live **135 次 k1 parry 按键 0 ok**，**27 次 ≥15 帧、17 次 ≥17 帧**；**34 次是在 15 帧内没有前一个按键的干净 parry（lead 0.3–24.4），仍然 0 ok**；35 个 k1 开头 episode（k0 已闪掉）35 个都 hit，33 个有 k0:c11 的 1–8 帧 dodge 按键。旧 120 局 index 的 20 次 k1 ok 全在 k0 被 parry/pf 后、k1 +59..67 的分支；要先 parry 金光 k0，老师规则不允许。3 个 live k0:c11 的“ok”是 none 色 follow-up，被前一个 c6 的 17–20 帧 parry 余波接住，不是金光 parry 窗口。
+- **目视核对**（`data/moveid/offense/online/c11_visual.md`，6 段）：r185 k0 命中后 k0 硬直 10093–10105（约 12 帧），k1 10106 又续到 10119，10120 回 idle；follow-up 10100/10106 和 10107 的 dodge 按键都在硬直里（这一条没有 k2 接触）；r201 5696 的 dodge roll 5665–5674（i-frame 约 5666–5672），k0 预测 5667 被闪掉，5696 时角色已 idle，5688 的 parry 被 5674 那次 parry 的收势吞掉；r217 3350 提前 14.5 帧的 roll 只到 3342/3343，3350 已站起；r221 664 的 parry 动作 671–672 出了，但被 673 的 k0 follow-up 打断，678 的 k1 在低位硬直里；r181 10627 / r055 14914 的 k0 “ok”是上一次 parry 的残余判定，不是新的 parry 窗口。
+- **k0 有窗口但救不了链**：33 个 k1 开头 episode 的 k0 dodge 按键预测提前 1–8 帧（实际 2–5）；`c11Lead=14`（实际 12–18）全部失败，默认 lead=5 实际中位约 1 帧太晚。脚本 `t0−3` 可以 38/38 排上（counterfactual，离线用真值 t0；运行时还要加头部 tte 误差，k0 这 1 下的收益可能打折），但只省开场 1 下，后续 follow-up 仍 100% hit。
+- **惩罚窗口存在**：extended38 的 post gap 中位 114.5 帧，34/38 ≥61；脚本会排 33 条 light、2 条 execute、3 条无窗口。离线没有实机伤害验证，offense 仍 `off`；这只是“有窗口/能排”，不是“打中了”。
+
+**结论：k1/k2 不是 0，离线验收失败。** 机械原因三条都成立：k0 命中是 12 帧硬直真连段；k1 在实机 0 ok（含 ≥17 帧提前）；唯一可 parry 的 follow-up 分支需要 parry 金光 k0（老师规则不允许）。k0 的 2–5 帧 i-frame 窗口存在，但只影响开场那一下。**c11 是固定成本，停止在这条链上投入**：不写运行时 `args.scriptDefense`，不跑 c11 的 2 对 2 / 8 对 8，不再调 lead/阈值；`seqDefense` 保持 opt-in、默认 false；v2 保留；默认 `offense:"off"` 不变。
+
 ## 6. M2：学习型动作排序（M1 稳定后）
 
 - 候选仍是 `pick` 给出的可行动作（execute/light/follow/qishu/no-op）。
@@ -228,3 +261,4 @@ loop.py ab (v2 vs vN, 6 min) -> ingest -> offense_online.py build -> train -> ev
 | M1.3 v3 | `offense:"v3"` 接线 | `off` 12/12，v2 不变 | **通过** |
 | M1.4 筛选 | 2 对 2、6 分钟 | v3 安全不差于 v2 且输出不明显下降 | **失败/回滚**：v3 2.15 vs v2 3.55 挨打/分，输出 24%/5% vs 39%/39% |
 | M1.5 晋级 | 8 对 8、16 局 | 安全门全过 + 输出 ≥30% | 未跑（筛选失败，按 §9 回滚） |
+| c11 分支脚本 | `move_scripts/c11.json` + `c11_replay.py` | k1/k2 命中 0 | **失败/固定成本**：core29 44、extended38 54；135 次 k1 parry 0 ok |

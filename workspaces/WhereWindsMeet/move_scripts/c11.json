@@ -1,0 +1,110 @@
+{
+  "id": "c11",
+  "version": 1,
+  "doc": "Phase-1 c11/c40 gold chain, branch script for offline replay only. Frame = 30 fps video frame; t = relative to the gold opener contact, or to the predicted opener when the opener was dodged. The script is loaded on the tell (first stable head naming of k0:c11/c40) and owns the chain until the first contact-free punish window.",
+  "source": {
+    "rounds": "r185-r223",
+    "core29": "r185-r219 general episodes whose first truth contact is c11/c40: 29 episodes / 98 beats",
+    "extended38": "r185-r223 c11-only clusters: 38 episodes / 113 beats (includes 3 k0-dodged episodes and the 6 seqDefense episodes in r221/r223)",
+    "tools": ["tools/dufu_moveid/c11_frames.py", "tools/dufu_moveid/c11_replay.py"],
+    "docs": ["docs/dufu-current.md", "docs/dufu-offense-online.md"]
+  },
+  "tell": {
+    "groups_contains": ["c11", "c40"],
+    "k": 0,
+    "colour": "gold",
+    "min_p": 0.5,
+    "window_f": [1, 90],
+    "note": "tell_f in the frame table is the first row of a >=2-row run with P(grp) >= 0.5; fallback = first row naming a k0 c11 group."
+  },
+  "clock": {
+    "fps": 30,
+    "frame_ms": 33.333333333333336,
+    "t0": "gold opener contact frame if it hit; otherwise the opener's predicted contact (dodge press frame + pressLog remF)"
+  },
+  "state": {
+    "hitstun_f": 12,
+    "dodge_iframe_f": [1, 5],
+    "dodge_lock_f": 12,
+    "parry_lock_f": 10,
+    "parry_cd_f": 7,
+    "note": "estimated from live data, all offsets are frames after the press/hit. hitstun_f = the minimum hit -> next ok gap in the 120-round data (12 f; 15 of 2607 at <=15); visual r185's k0 stun is 10093-10105 (12 f) and k1 10106 extends it to 10119, so 12 is the working lower bound. dodge_iframe = k0 dodge presses at 2-5 f predicted lead that produced no k0 contact (33 k1-start episodes); 12-18 f lead failed. These are estimates, not engine constants."
+  },
+  "beats": [
+    {
+      "id": "gold_opener",
+      "role": "k0_gold",
+      "match": {"k": 0, "colour": "gold", "groups_contains": ["c11", "c40"]},
+      "offset_f": [0, 0],
+      "response": "dodge",
+      "press_lead_f": [2, 5],
+      "state_required": ["idle"],
+      "state_forbidden": ["hitstun", "parry_lock", "dodge_lock"],
+      "branch_on_hit": "followup_hitstun",
+      "branch_on_ok": "followup_after_parry",
+      "branch_on_dodge": "followup_after_dodge",
+      "branches": {"hit": "followup_hitstun", "dodge": "followup_after_dodge", "whiff": "followup_after_dodge", "ok": "followup_after_parry"},
+      "note": "金光闪: dodge only. The observed success window is 2-5 f before contact; the c11Lead=14 rounds (r217/r219) pressed 12-18 f early and all failed because the roll had already ended."
+    },
+    {
+      "id": "followup_hitstun",
+      "role": "followup_after_hit",
+      "match": {"k": [0, 1, 2], "colour": ["none", "unknown"], "groups_contains": ["c11", "c40"]},
+      "offset_f": [4, 21],
+      "response": "none",
+      "state_required": ["hitstun"],
+      "state_forbidden": [],
+      "branch_on_hit": "followup_hitstun",
+      "branch_on_ok": "punish",
+      "branch_on_dodge": "punish",
+      "branches": {"hit": "followup_hitstun", "end": "punish"},
+      "note": "k1/k2 in the gold-hit branch. 0 ok in 135 live k1 parry presses; the first follow-up at +4..12 is inside the 12 f hitstun. Do not press: the press is swallowed and the 330 ms parry lock is spent."
+    },
+    {
+      "id": "followup_after_dodge",
+      "role": "followup_after_dodge",
+      "match": {"k": [0, 1, 2], "colour": ["none", "unknown"], "groups_contains": ["c11", "c40"]},
+      "offset_f": [20, 67],
+      "response": "none",
+      "state_required": ["idle"],
+      "state_forbidden": [],
+      "branch_on_hit": "followup_after_dodge",
+      "branch_on_ok": "punish",
+      "branch_on_dodge": "punish",
+      "branches": {"hit": "followup_after_dodge", "end": "punish"},
+      "note": "k0 dodged: the no-light follow-up still hits. 0 ok / 135 live k1 parry presses (17 at >=17 f lead); 33/33 k0-dodged episodes still hit. Do not press; save the cooldown for the punish window."
+    },
+    {
+      "id": "followup_after_parry",
+      "role": "followup_after_gold_parry",
+      "match": {"k": [0, 1, 2], "colour": ["none", "unknown"], "groups_contains": ["c11", "c40"]},
+      "offset_f": [27, 67],
+      "response": "parry",
+      "press_lead_f": [4, 10],
+      "state_required": ["idle"],
+      "state_forbidden": ["hitstun"],
+      "branch_on_hit": "followup_after_parry",
+      "branch_on_ok": "punish",
+      "branch_on_dodge": "punish",
+      "branches": {"ok": "punish", "hit": "followup_after_parry"},
+      "note": "Only reachable if the gold k0 is parried. The old 120-round index has 20 k1 ok, all with k1 at +59..67 after a k0 ok/pf; the live phase-1 policy never parries a gold opener. Forbidden by the 金光闪 teacher rule; diagnostic only."
+    }
+  ],
+  "punish": [
+    {
+      "id": "post_chain",
+      "after": "punish",
+      "min_gap_f": 20,
+      "press_delay_f": 13,
+      "actions": [
+        {"name": "execute", "min_gap_f": 45, "condition": "boss qi <= 25 and execute button lit"},
+        {"name": "light", "min_gap_f": 42, "condition": "weapon ready and boss in range"},
+        {"name": "follow", "min_gap_f": 61, "condition": "blue disc lit"}
+      ],
+      "note": "Offline only: count contact-free windows after the last hitstun frame and schedule the best action. No damage verification; runtime offense stays off in this milestone."
+    }
+  ],
+  "forbidden": {
+    "gold_parry": "teacher rule: 金光闪. The 3 live k0:c11 'ok' contacts are none-colour follow-ups parried by a leftover c6 parry press at 17-20 f, not a repeatable gold-parry window."
+  }
+}
