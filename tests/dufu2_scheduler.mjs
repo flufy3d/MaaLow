@@ -133,7 +133,7 @@ const tests = {
         const ds = dodgeDowns(ts), ps = parryDowns(ts);
         assert.equal(ps.length, 0, `卸势 taps: ${ps.map((t) => t.at - t0)}`);
         assert.equal(ds.length, 2, `闪避 taps: ${ds.map((t) => t.at - t0)}`);
-        assert.ok(near(ds[0].at, t0 + 1500 - 3 * frameMs, 2 * frameMs), `k0 dodge at ${ds[0].at - t0}`);
+        assert.ok(near(ds[0].at, t0 + 1500 - 5 * frameMs, 2 * frameMs), `k0 dodge at ${ds[0].at - t0}`);
         assert.ok(near(ds[1].at, t0 + 1500 + 33 * frameMs - 4 * frameMs, 2 * frameMs),
             `first dodge at ${ds[1].at - t0}`);
         assert.equal(result.script.plans, 1, JSON.stringify(result.script));
@@ -144,6 +144,45 @@ const tests = {
         assert.deepEqual(result.script.log.map((r) => r[2]), [0, 0, 1, 1], JSON.stringify(result.script.log));
         assert.equal(result.pressLog.filter(([, , , , , , , , , src]) => src === "script").length, 2,
             `pressLog: ${JSON.stringify(result.pressLog)}`);
+        // args.scriptK0Lead still overrides (the first 2v2 arm used 3; the default is 5)
+        const early = run("c11ScriptDodge", { scriptDefense: true, scriptK0Lead: 3 });
+        const et = fightTouches(early.touches, early.t0);
+        assert.ok(near(dodgeDowns(et)[0].at, early.t0 + 1500 - 3 * frameMs, 2 * frameMs),
+            `scriptK0Lead 3 dodge at ${dodgeDowns(et)[0].at - early.t0}`);
+    },
+    "c11 chain scriptDefense: refreshes a late k0 prediction before pressing"() {
+        // A 3 f late tell tte would press at c0 - 2 f with the fixed Tc0; the closer readings must pull it to c0 - 5 f.
+        const { result, touches, t0 } = run("c11ScriptRefresh", { scriptDefense: true });
+        const ds = dodgeDowns(fightTouches(touches, t0));
+        assert.equal(parryDowns(fightTouches(touches, t0)).length, 0, "a parry in the script refresh");
+        assert.equal(ds.length, 2, `dodges: ${ds.map((t) => t.at - t0)}`);
+        assert.ok(near(ds[0].at, t0 + 1500 - 5 * frameMs, 2 * frameMs), `k0 refresh dodge at ${ds[0].at - t0}`);
+        assert.ok(near(ds[1].at, t0 + 1500 + 33 * frameMs - 4 * frameMs, 2 * frameMs), `first dodge at ${ds[1].at - t0}`);
+        assert.equal(result.script.plans, 1, JSON.stringify(result.script));
+        assert.equal(result.script.presses, 2, JSON.stringify(result.script));
+        assert.equal(result.script.cancels, 0, JSON.stringify(result.script));
+    },
+    "c11 chain scriptDefense: the first-beat fallback can be turned off"() {
+        const on = run("c11ScriptNoHead", { scriptDefense: true });
+        assert.equal(dodgeDowns(fightTouches(on.touches, on.t0)).length, 2, "fallback did not press the first beat");
+        assert.equal(on.result.script.presses, 2, JSON.stringify(on.result.script));
+        assert.ok(on.result.script.log.some((r) => r[1] === "first-fallback"), JSON.stringify(on.result.script.log));
+        const off = run("c11ScriptNoHead", { scriptDefense: true, scriptFirstFallback: false });
+        assert.equal(dodgeDowns(fightTouches(off.touches, off.t0)).length, 1, "fallback off still pressed the first beat");
+        assert.equal(off.result.script.presses, 1, JSON.stringify(off.result.script));
+        assert.equal(off.result.script.cancels, 1, JSON.stringify(off.result.script));
+        assert.ok(!off.result.script.log.some((r) => r[1] === "first-fallback"), JSON.stringify(off.result.script.log));
+    },
+    "c11 chain scriptDefense: a late head reading replaces the first-beat fallback"() {
+        const { result, touches, t0 } = run("c11ScriptLateHead", { scriptDefense: true });
+        const ds = dodgeDowns(fightTouches(touches, t0));
+        assert.equal(parryDowns(fightTouches(touches, t0)).length, 0, "a parry in the late-head case");
+        assert.equal(ds.length, 2, `dodges: ${ds.map((t) => t.at - t0)}`);
+        assert.ok(near(ds[1].at, t0 + 1500 + 40 * frameMs - 4 * frameMs, 2 * frameMs),
+            `first dodge at ${ds[1].at - t0} (fallback would be +29 f)`);
+        assert.ok((result.script.log || []).some((r) => r[1] === "first-head"), JSON.stringify(result.script.log));
+        assert.equal(result.script.presses, 2, JSON.stringify(result.script));
+        assert.equal(result.script.cancels, 0, JSON.stringify(result.script));
     },
     "c11 chain scriptDefense: a hit opener suppresses the first follow-up"() {
         // The opener landed: k1/k2 are in hitstun, so the plan must not press the first follow-up (the user rule only

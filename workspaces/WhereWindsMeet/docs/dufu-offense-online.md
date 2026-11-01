@@ -212,9 +212,9 @@ else: 按下
 
 **决定（已被 2 对 2 取代）**：用户批准后已写默认 false 的 `args.scriptDefense` 并跑 r224–r227；**第一下 6/6 clean**，但安全门失败，`scriptDefense` 保持默认 false。详见下面的 2 对 2 结果。`seqDefense` 保持 opt-in、默认 false；v2 保留；默认 `offense:"off"` 不变。
 
-**运行时（2026-11-01，默认 false）**：`dufu2.js` 的 `args.scriptDefense` 实现上述计划（阶段一 defend only；与 `seqDefense` 互斥）；`Tc1` 取头部 c11/c40 拍 +20..67 帧、否则 fallback `Tc0+33`；k0 命中/skip 不按第一下，第一下按下后保留 6 帧 grace；后 k1/k2 交回 `decide()`。`result.script` 记录计划日志；`scriptDefense:false` 与旧路径逐条一致。
+**运行时（2026-11-01，默认 false）**：`dufu2.js` 的 `args.scriptDefense` 实现上述计划（阶段一 defend only；与 `seqDefense` 互斥）；k0 lead 默认 **5**（`args.scriptK0Lead` 1..8；r224–r227 那一轮用 3），`Tc1` 取头部 c11/c40 拍 +20..67 帧、否则 fallback `Tc0+33`；k0 命中/skip 不按第一下，第一下按下后保留 6 帧 grace；后 k1/k2 交回 `decide()`。`result.script` 记录计划日志；`scriptDefense:false` 与旧路径逐条一致。
 
-**2 对 2 结果（r224–r227，2026-11-01）**：false（r224/r226）vs true（r225/r227），6 分钟/局。false **27 hits / 11.58 min = 2.33/min**，致命 **90.2%**（with unverified），无死亡；true **29 / 10.41 = 2.78/min**，致命 **89.5%**，**r227 4.60 min 死亡**；金卸 0/39 vs 0/48。c11：false **4 seq / 12 contacts / 12 hit**；true **2 seq / 8 contacts / 8 hit**，true 的 2 条都是 **k0 hit** 的链，6 条 clean plan 没有 c11 contact。**第一下 6/6 clean**（5 head + 1 fallback；无 c11 contact），**第一下 dodge 本身成立，不是固定成本**；失败点是 k0（9 plans 里 2 hit / 1 skip；计划按 `Tc0−3` 但预测 Tc0 偏晚约 2–3 帧，实际 lead 0.4 / −0.6），所有 8 个 c11 hit 都来自这 2 条 k0-hit 链。**安全门失败，`scriptDefense` 保持默认 false 回滚**；不跑 8 对 8，下一步若要继续只应针对 k0 lead 再做一次经用户批准的 2 对 2。
+**2 对 2 结果（r224–r227，2026-11-01）**：false（r224/r226）vs true（r225/r227），6 分钟/局。false **27 hits / 11.58 min = 2.33/min**，致命 **90.2%**（with unverified），无死亡；true **29 / 10.41 = 2.78/min**，致命 **89.5%**，**r227 4.60 min 死亡**；金卸 0/39 vs 0/48。c11：false **4 seq / 12 contacts / 12 hit**；true **2 seq / 8 contacts / 8 hit**，true 的 2 条都是 **k0 hit** 的链，6 条 clean plan 没有 c11 contact。**第一下 6/6 clean**（5 head + 1 fallback；无 c11 contact），**第一下 dodge 本身成立，不是固定成本**；失败点是 k0（9 plans 里 2 hit / 1 skip；这一轮 `scriptK0Lead=3`，预测 Tc0 偏晚约 2–3 帧，实际 lead 0.4 / −0.6），所有 8 个 c11 hit 都来自这 2 条 k0-hit 链；下一批改为 `scriptK0Lead=5`。**安全门失败，`scriptDefense` 保持默认 false 回滚**；不跑 8 对 8。第二组（r228–r231，`scriptK0Lead=5`，fixed Tc0）：false 18/11.58 = 1.55/min、致命 91.7%、无死亡；true 26/11.58 = 2.25/min、致命 89.5%、r231 5.79 min 死亡；第一下 clean **9/9**（累计 15/15），k0 hit 2。**第三组（r232–r237，Tc0 逐帧 refresh + k0Lead 5）**：false 37/17.4 = **2.13/min**；true 27/17.4 = **1.55/min**，第一下 clean **13/13**，k0 hit **1/14**，c11 seq 1/5 vs false 2/6，双方无死亡。**refresh 是第一个净收益：true 少 0.58 挨打/分**；仍略高于 1.5 门，`scriptDefense` 保持 opt-in 默认 false，下一步在 6 分钟 2 对 2 里加 `attack:true` 验证进攻组合。
 
 ## 6. M2：学习型动作排序（M1 稳定后）
 
@@ -268,4 +268,4 @@ loop.py ab (v2 vs vN, 6 min) -> ingest -> offense_online.py build -> train -> ev
 | M1.3 v3 | `offense:"v3"` 接线 | `off` 12/12，v2 不变 | **通过** |
 | M1.4 筛选 | 2 对 2、6 分钟 | v3 安全不差于 v2 且输出不明显下降 | **失败/回滚**：v3 2.15 vs v2 3.55 挨打/分，输出 24%/5% vs 39%/39% |
 | M1.5 晋级 | 8 对 8、16 局 | 安全门全过 + 输出 ≥30% | 未跑（筛选失败，按 §9 回滚） |
-| c11 分支脚本 | `move_scripts/c11.json` + `c11_replay.py` + `scriptDefense` | 第一下 2 对 2 | **第一下 6/6 clean；安全门失败/回滚**：true 2.78 挨打/分、r227 4.6 min 死亡；k0 2 hit/1 skip；`scriptDefense` 默认 false |
+| c11 分支脚本 | `move_scripts/c11.json` + `c11_replay.py` + `scriptDefense` | 第一下 2 对 2 | **候选（opt-in）**：Tc0 refresh 后 true 1.55 vs false 2.13 挨打/分、13/13 clean、1/14 k0 hit、无死亡；仍高于 1.5，默认 false，下一步 attack 组合 |

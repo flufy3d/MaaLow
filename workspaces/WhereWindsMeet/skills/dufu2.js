@@ -143,11 +143,13 @@ const CHAIN_GAP_F = [40, 58], CHAIN_AFTER_F = 34, CHAIN_COVER_F = 8;
 // (the same chain's later c11 groups must not start a second one).
 const SEQ_G1_F = 15, SEQ_MAX_F = 45, SEQ_CD_F = 30;
 // script plan (args.scriptDefense, phase 1; @see scriptTick): user rule 2026-11-01 — the gold k0 is dodged, and the
-// first no-light follow-up is also dodged, never parried. k0 at Tc0 - 3 f (the observed 2-5 f i-frame window), then the
-// first c11 beat at Tc1 - 4 f (the after-dodge first follow-up is +28.7..44.6 f; a head reading is accepted only at
+// first no-light follow-up is also dodged, never parried. k0 at Tc0 - 5 f (the observed 2-5 f i-frame window; the first
+// 2v2's lead 3 put the two failing k0 presses at an actual 0.4 / -0.6 f because Tc0 was ~2.6 f late), then the first
+// c11 beat at Tc1 - 4 f (the after-dodge first follow-up is +28.7..44.6 f; a head reading is accepted only at
 // >= SCRIPT_FIRST_MIN_F, so the fast k1 of the hit branch is ignored); SCRIPT_FALLBACK_F is the median first-beat
 // offset when the head does not name it. No parry in the gap; the later k1/k2 are left to decide() (unknown).
-const SCRIPT_K0_LEAD_F = 3, SCRIPT_FIRST_LEAD_F = 4, SCRIPT_FIRST_MIN_F = 20, SCRIPT_FIRST_MAX_F = 67,
+// args.scriptK0Lead overrides the opener lead (1..8).
+const SCRIPT_K0_LEAD_F = 5, SCRIPT_FIRST_LEAD_F = 4, SCRIPT_FIRST_MIN_F = 20, SCRIPT_FIRST_MAX_F = 67,
     SCRIPT_FALLBACK_F = 33, SCRIPT_CD_F = 30;
 /** run directions (stick unit vector, y down = away from the locked boss); the sign of x alternates per run */
 /** @type {Record<string, [number, number]>} */
@@ -340,7 +342,8 @@ function f32b64(arrs) {
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
  *          model?: string, chain?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number,
  *          attack?: boolean, offense?: "off" | "v2" | "v3", offenseSet?: boolean, offenseCharge?: boolean,
- *          offenseGateThr?: number, c11Lead?: number, seqDefense?: boolean, scriptDefense?: boolean,
+ *          offenseGateThr?: number, c11Lead?: number, seqDefense?: boolean, scriptDefense?: boolean, scriptK0Lead?: number,
+ *          scriptFirstFallback?: boolean,
  *          offenseQ?: {execute?: number, qishu?: number, light?: number, follow?: number, set?: number, charge?: number}}} [args]
  */
 export default function (args = {}) {
@@ -386,6 +389,14 @@ export default function (args = {}) {
     // args.scriptDefense: the first-follow-up dodge plan (phase 1 defend only, default off; @see scriptTick). It is
     // mutually exclusive with seqDefense: the script owns the k0 + first follow-up, and the later beats stay generic.
     const scriptOn = phase === 1 && defend && (args.scriptDefense ?? false);
+    // args.scriptK0Lead: the opener dodge lead (frames). The first 2v2 arm used 3 and its two k0 hits had an actual
+    // lead of 0.4 / -0.6 f because the predicted Tc0 was ~2.6 f late; the default is now 5 (the false arm's dodge
+    // lead), which puts the same late prediction at an actual 2.4 f lead. The first follow-up lead stays 4.
+    const scriptK0Lead = typeof args.scriptK0Lead === "number" && isFinite(args.scriptK0Lead)
+        ? Math.max(1, Math.min(8, args.scriptK0Lead)) : SCRIPT_K0_LEAD_F;
+    // args.scriptFirstFallback: when the head never names the first follow-up, guess Tc0 + 33 f (the observed median).
+    // The live fallbacks are extra presses; false keeps the plan to head-named first beats only (A/B switch).
+    const scriptFirstFallback = args.scriptFirstFallback ?? true;
     // args.seqDefense: the S plan (phase 1 defend only, default off; @see seqTick and the header note)
     const seqOn = phase === 1 && defend && (args.seqDefense ?? false) && !scriptOn;
     // The S plan's keys and leads. k1 uses the phase-1 table's response for k1:c11+c15+c23 (parry; a missing row falls
@@ -1015,7 +1026,7 @@ export default function (args = {}) {
     /**
      * The first-follow-up dodge plan (args.scriptDefense, phase 1 defend only; @see SCRIPT_K0_LEAD_F):
      *   start  the k0:c11 gold opener (P(gold) >= goldDodgeP, a contact time known) opens one plan.
-     *   k0     a 闪避 for Tc0, due at Tc0 - 3 f (the observed 2-5 f window).
+     *   k0     a 闪避 for Tc0, due at Tc0 - 5 f (the observed 2-5 f window; args.scriptK0Lead overrides).
      *   hit    a contact landing around Tc0 (lastHitAt >= Tc0 - 2 f): the opener was not dodged; do not press the
      *          first follow-up (the k1/k2 are in hitstun), keep the plan's suppression until the deadline.
      *   first  after k0 was pressed and no opener hit: the first c11 beat at Tc1 >= Tc0 + 20 f (the after-dodge
@@ -1035,14 +1046,25 @@ export default function (args = {}) {
             scriptPlan = { Tc0, Tc1: null, k0: 0, first: 0, hit: false, src: null };
             scriptN.plans++;
             scriptLog.push([now - start, "plan", 0, "", Math.round(Tc0 - start), r1((Tc0 - now) / FRAME_MS), name]);
-            mark("script", `plan ${name}: k0 -${SCRIPT_K0_LEAD_F} f, first -${SCRIPT_FIRST_LEAD_F} f`);
+            mark("script", `plan ${name}: k0 -${scriptK0Lead} f, first -${SCRIPT_FIRST_LEAD_F} f`);
         }
         const s = scriptPlan;
         let act = 0;
+        if (s.k0 === 0 && p != null && isScriptBeat(name, "k0:") && p.med < TTE_NONE) {
+            // Refresh the opener prediction while it is still approaching: the tell's tte can be 3-4 f early or late,
+            // and the 2-5 f i-frame window is narrow. The closer readings are the better ones; a jump >12 f is a
+            // different contact, not this opener.
+            const tc0 = p.capT + p.med * FRAME_MS;
+            if (Math.abs(tc0 - s.Tc0) <= 12 * FRAME_MS && tc0 >= now - LATE_F * FRAME_MS) {
+                s.Tc0 = tc0;
+                // A fallback first beat is defined relative to Tc0; keep it on the latest opener clock.
+                if (s.Tc1 != null && s.src === "fallback") s.Tc1 = s.Tc0 + SCRIPT_FALLBACK_F * FRAME_MS;
+            }
+        }
         if (s.k0 === 0) {
-            if (now >= s.Tc0 - SCRIPT_K0_LEAD_F * FRAME_MS) {
+            if (now >= s.Tc0 - scriptK0Lead * FRAME_MS) {
                 const d = { kind: /** @type {"dodge"} */ ("dodge"), Tc: s.Tc0, remF: (s.Tc0 - now) / FRAME_MS,
-                    lead: SCRIPT_K0_LEAD_F, src: "script" };
+                    lead: scriptK0Lead, src: "script" };
                 const why = canPress(d, now);
                 if (!why) {
                     act = press(d, now);
@@ -1077,8 +1099,28 @@ export default function (args = {}) {
                         scriptLog.push([now - start, "first-head", 1, "", Math.round(tc - start), r1(off), name]);
                         mark("script", `first head ${name} at +${r1(off)} f`);
                     }
+                } else if (s.Tc1 != null && s.src === "head" && beat && p.med < TTE_NONE) {
+                    // The same first beat can be re-named with a better tte; stay on it while the new contact is within
+                    // 10 f of the current one (the later k1/k2 of the chain must not pull the first press).
+                    const tc = p.capT + p.med * FRAME_MS;
+                    const off = (tc - s.Tc0) / FRAME_MS;
+                    if (off >= SCRIPT_FIRST_MIN_F && off <= SCRIPT_FIRST_MAX_F && Math.abs(tc - s.Tc1) <= 10 * FRAME_MS) {
+                        s.Tc1 = tc;
+                    }
+                } else if (s.Tc1 != null && s.src === "fallback" && beat && p.med < TTE_NONE) {
+                    // The fallback guessed Tc0 + 33 f; a head reading within 12 f is better. Switch to it before the
+                    // fallback press (the plan retries until Tc1 + LATE_F).
+                    const tc = p.capT + p.med * FRAME_MS;
+                    const off = (tc - s.Tc0) / FRAME_MS;
+                    if (off >= SCRIPT_FIRST_MIN_F && off <= SCRIPT_FIRST_MAX_F && Math.abs(tc - s.Tc1) <= 12 * FRAME_MS
+                        && now <= s.Tc1 + LATE_F * FRAME_MS) {
+                        s.Tc1 = tc;
+                        s.src = "head";
+                        scriptLog.push([now - start, "first-head", 1, "", Math.round(tc - start), r1(off), name]);
+                        mark("script", `first head ${name} at +${r1(off)} f (fallback replaced)`);
+                    }
                 }
-                if (s.Tc1 == null && now >= s.Tc0 + (SCRIPT_FALLBACK_F - SCRIPT_FIRST_LEAD_F) * FRAME_MS) {
+                if (scriptFirstFallback && s.Tc1 == null && now >= s.Tc0 + (SCRIPT_FALLBACK_F - SCRIPT_FIRST_LEAD_F) * FRAME_MS) {
                     s.Tc1 = s.Tc0 + SCRIPT_FALLBACK_F * FRAME_MS;
                     s.src = "fallback";
                     scriptLog.push([now - start, "first-fallback", 1, "", Math.round(s.Tc1 - start),

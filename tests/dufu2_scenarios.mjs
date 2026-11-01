@@ -85,6 +85,56 @@ export const SCENARIOS = {
             },
         };
     },
+    c11ScriptRefresh() {
+        // The tell's k0 tte is 3 f late until 8 f before the contact; the plan must refresh Tc0 and still press at
+        // c0 - 5 f (not at the initial c0 - 2 f). The first follow-up is the same +33 f beat.
+        const c0 = 1500, c1 = c0 + 33 * frameMs;
+        return {
+            phase: 1, mode: "defend", fightMs: 4500, args: {},
+            scenario: {
+                head: (t) => {
+                    if (t >= c0 - 12 * frameMs && t <= c0 + 2 * frameMs) {
+                        const bias = t < c0 - 8 * frameMs ? 3 : 0;
+                        return { gid: 7, med: Math.round((c0 - t) / frameMs) + bias, col: 0, resp: 1 };
+                    }
+                    if (t >= c1 - 12 * frameMs && t <= c1 + 2 * frameMs) return { gid: 21, med: Math.round((c1 - t) / frameMs), col: 2, resp: 1 };
+                    return { gid: 97, med: 46, col: 2, resp: 2 };
+                },
+                hp: (t) => (t >= c1 ? 0.8 : 1),
+            },
+        };
+    },
+    c11ScriptNoHead() {
+        // The opener is named and dodged, but the first follow-up is never named. The default fallback presses Tc0+33;
+        // scriptFirstFallback:false leaves the first beat to the head and cancels at the deadline.
+        const c0 = 1500, c1 = c0 + 33 * frameMs;
+        return {
+            phase: 1, mode: "defend", fightMs: 4500, args: {},
+            scenario: {
+                head: (t) => {
+                    if (t >= c0 - 12 * frameMs && t <= c0 + 2 * frameMs) return { gid: 7, med: Math.round((c0 - t) / frameMs), col: 0, resp: 1 };
+                    return { gid: 97, med: 46, col: 2, resp: 2 };
+                },
+                hp: (t) => (t >= c1 ? 0.8 : 1),
+            },
+        };
+    },
+    c11ScriptLateHead() {
+        // The fallback guesses the first beat at c0 + 33 f, but the head names it at c0 + 40 f only after the fallback
+        // clock started. The plan must upgrade to the head and press at c1 - 4 f, not at the fallback c0 + 29 f.
+        const c0 = 1500, c1 = c0 + 40 * frameMs;
+        return {
+            phase: 1, mode: "defend", fightMs: 4500, args: {},
+            scenario: {
+                head: (t) => {
+                    if (t >= c0 - 12 * frameMs && t <= c0 + 2 * frameMs) return { gid: 7, med: Math.round((c0 - t) / frameMs), col: 0, resp: 1 };
+                    if (t >= c0 + 30 * frameMs && t <= c1 + 2 * frameMs) return { gid: 21, med: Math.round((c1 - t) / frameMs), col: 2, resp: 1 };
+                    return { gid: 97, med: 46, col: 2, resp: 2 };
+                },
+                hp: (t) => (t >= c1 ? 0.8 : 1),
+            },
+        };
+    },
     c11ScriptHit() {
         // The same timeline, but the opener lands (hp drops at c0): the plan must not press the first follow-up.
         const c0 = 1500, c1 = c0 + 33 * frameMs;
