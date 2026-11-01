@@ -51,10 +51,12 @@ def test_loop_gate_grouping():
     offense = {"rounds": [{"args": {"offense": "off"}}, {"args": {"offense": "v2"}}]}
     q = {"rounds": [{"args": {"offense": "v2", "offenseQ": {"light": 0.65}}},
                     {"args": {"offense": "v2", "offenseQ": {"light": 0.70}}}]}
+    c11 = {"rounds": [{"args": {"offense": "off"}}, {"args": {"offense": "off", "c11Lead": 14}}]}
     plain = {"rounds": [{"args": {"model": "dufu1b"}}]}
     assert loop.by_key(legacy) == "attack"
     assert loop.by_key(offense) == "offense"
     assert loop.by_key(q) == "offense,offenseQ"
+    assert loop.by_key(c11) == "offense,c11Lead"
     assert loop.by_key(plain) == "run"
 
 

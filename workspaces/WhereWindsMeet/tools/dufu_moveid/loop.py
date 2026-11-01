@@ -247,10 +247,13 @@ def gate(tag: str, by: str | None = None) -> None:
 
 def by_key(m: dict) -> str:
     """The switch the manifest's A/B grouped on: `offense,offenseQ` when any round overrides q (so qB/qC are separate
-    arms), else `offense` (v2, 2026-11-01), else the legacy `attack` (old manifests), else `run`."""
+    arms), `offense,c11Lead` for a c11-lead defense A/B, else `offense` (v2, 2026-11-01), else the legacy `attack`
+    (old manifests), else `run`."""
     args = [x.get("args") or {} for x in m.get("rounds", [])]
     if any("offenseQ" in a for a in args):
         return "offense,offenseQ"
+    if any("c11Lead" in a for a in args):
+        return "offense,c11Lead"
     if any("offense" in a for a in args):
         return "offense"
     if any("attack" in a for a in args):
