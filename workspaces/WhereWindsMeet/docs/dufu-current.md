@@ -121,8 +121,8 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 
 - **阶段一防守**：没有 ≥1pp 的低成本修正；79 个致命失败里 41 个是执行 / 机制（幕布 17、连段硬直 15、按键锁 8、喝药 1），38 个是模型（时机 16、没认出 12、认错 10）。继续调 lead / 阈值 / 历史 `chain11` 不会有量级变化。
 - **阶段二防守**：确认轮剩 257 个致命失败，主要是 k0 无光大组 79、k1 无光组 43、k2 无光组 40、k0:c27 25、火球雨各段合计约 37。
-- **进攻**：要按 TTK / boss 掉血速度评估，不能只看 6 分钟 A/B 的 26–46%；防守 gate 不变，进攻保持 opt-in，等关 3 过了再单独迭代输出。
-- **gate X 与 A/B 规模**：待离线分析后定；当前不因为进攻改防守阈值、老师规则或关卡判定。
+- **进攻**：按 TTK / boss 掉血速度评估，不能只看 6 分钟 A/B 的 26–46%；防守 gate 不变，进攻保持 opt-in。v2 设计和 gate 见 [dufu-offense-design.md](dufu-offense-design.md)。
+- **gate X 与 A/B 规模**：已定两段式——8 对 8、10 分钟/局 A/B（安全线 + 10 分钟 ≥1 条血 381 px），过了再 8 局击杀确认（TTK 中位 ≤20 分钟，15 分钟 stretch）。
 - **数据纪律**：录像拉到 PC 逐帧校验后再从 Pad 删；模型 / 阈值改动前后都用同一关 2 口径 16 局 + 按局 bootstrap 报区间。
 
 ## 2026-10-31 干净基座
@@ -132,6 +132,13 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - **代码**：`dufu2.js` 删除 `chain11` 路径，阶段一默认值折成 `parryLead=10 / curtainGap=false / curtain2=true`；新增 `tests/dufu2_scheduler.mjs`（10 条测试）和 pytest 入口，旧/新触摸序列对拍一致。
 - **Git**：删除已合并的 `dufu-unified`（本地 + 远程）、`refactor/oct26`；提交 4 个派生标签资产（2 个脚本 + 2 个 `s2_labels_p1*.json`），2 个空 `gate0_*_p1.json` 留未跟踪。
 - **Pad**：停掉遗留的 `zhenshou` Skill；5 个 10-23 旧录像、`guards off=[]`、viewers 0。
+
+## 2026-11-01 进攻 v2 设计
+
+- 用户确认：阶段一允许在安全长窗切横刀（陌刀默认、短窗/防守回陌刀）；Gate 两段式；阶段二放到阶段一之后。
+- 离线分析（30 fps 修正）：tte 不能当进攻门；`charge` 基本不打 HP；`strike` 只能作整套收尾，整套净 HP 中位 1.14 px；可用输出是 execute / qishu / light / follow。总血量中位 2 条 × 381 px；当前 10 分钟约 21%，现实保守 TTK 16.9 分钟。
+- Gate：Stage 1 = 8 对 8、10 分钟/局，安全线（挨打/分 ≤1.5、致命 ≥90%、金 ≤3%）+ 10 分钟 ≥1 条血（381 px）；Stage 2 = 8 局击杀确认，TTK 中位 ≤20 分钟（15 分钟 stretch，至少 6/8 击杀）。
+- 调度、动作表、日志和停止条件见 [dufu-offense-design.md](dufu-offense-design.md)。
 
 ## 历史
 

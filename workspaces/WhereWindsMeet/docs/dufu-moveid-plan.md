@@ -120,3 +120,10 @@ HEAD `7721712`。阶段一和阶段二的防守都已通过关 2；顺序 6 的�
 ## 进展
 
 2026-10-24～2026-10-28 的进展（顺序 1–6）已归档到 [archive/dufu-moveid-2026-10.md](archive/dufu-moveid-2026-10.md)。2026-10-31 及之后的进展写在 [dufu-current.md](dufu-current.md)。
+
+### 2026-11-01 进攻 v2 设计
+
+- 用户确认：阶段一允许在安全长窗切横刀（陌刀默认、短窗/防守回陌刀）；Gate 用两段式；阶段二放在阶段一之后。
+- 离线分析（30 fps 修正）结论：tte 不能当进攻门；`charge` 基本不打 HP；`strike` 不能独立按，整套净 HP 中位 1.14 px；可用输出是 execute / qishu / light / follow。总血量中位 2 条 × 381 px，当前 10 分钟约 21%，现实保守 TTK 16.9 分钟。
+- Gate：Stage 1 = 8 对 8、10 分钟/局，安全线 + 10 分钟 ≥1 条血（381 px）；Stage 2 = 8 局击杀确认，TTK 中位 ≤20 分钟（15 分钟 stretch，至少 6/8 击杀）。
+- 设计、调度、日志和停止条件见 [dufu-offense-design.md](dufu-offense-design.md)。下一步：子代理实现 `lib/dufu-offense.js` 与 `dufu2.js` 接线，先做防守 old-vs-new 对拍，再上实机。
