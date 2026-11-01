@@ -306,6 +306,16 @@ def offense_cycle(tag: str, export: bool = False, bossfill: bool = False) -> Non
     out = LIVE / f"loop_{tag}_offense.json"
     out.write_text(json.dumps({"tag": tag, "rounds": rounds, "eval": ev,
                                "at": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=1), encoding="utf-8")
+    # the policy registry (M3): every trained candidate is recorded; promotion is manual and needs the live gate.
+    regp = ROOT / "data" / "moveid" / "offense" / "online" / "registry.json"
+    reg = read_json(regp, {"policies": []}) or {"policies": []}
+    val = ev.get("value") or {}
+    reg["policies"].append({"tag": tag, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "rounds": rounds,
+                            "value_auc": val.get("auc"), "safety_auc": (ev.get("models") or {}).get("61", {}).get("auc"),
+                            "value_threshold": val.get("threshold"), "total_dmg_kept": val.get("total_dmg_kept_oof"),
+                            "promoted": False, "rollback_reason": None})
+    regp.parent.mkdir(parents=True, exist_ok=True)
+    regp.write_text(json.dumps(reg, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"offense cycle -> {out}", flush=True)
 
 
