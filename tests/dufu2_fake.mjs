@@ -8,6 +8,7 @@ export const T0 = { 1: 7400, 2: 0 }; // the phase-1 prep's taps/sleeps (A/B: the
 export const POINTS = {
     PARRY: [952, 495], DODGE: [924, 674], POTION: [700, 690], STICK: [175, 569], LEFT: [92, 569], RIGHT: [258, 569],
     LOCK: [1021, 667], ITEM_OPEN: [700, 633], ITEM_PICK: [702, 575], SLOT_ICON: [700, 666],
+    LIGHT: [945, 592], HEAVY: [1020, 478], EXECUTE: [852, 430], QISHU: [881, 525], SWITCH: [993, 320],
 };
 
 
@@ -42,6 +43,8 @@ export function timeline({ phase, gid, col = 2, resp = 1, contacts = [], from = 
  *   head(t) -> {gid, med, col, resp}; hp(t) -> ratio | {grey, red}; qi(t) -> px; boss(t) -> px;
  *   lock(t) -> bool; mean(t) -> 0..255; curtain(t) -> [a, b] | "covered" | null; slot(t) -> bool | undefined;
  *   match(tpl, t) -> bool (extra templates); onTap(p) hook.
+ *   进攻 v2: weapon(t) -> "modao" | "hengdao" | ""; execute(t) / blueDisc(t) / qishu(t) -> bool (the button /
+ *   the blue 爆发 disc / the lit 奇术 template); qishuLit(t) overrides the white-stroke read.
  * Returns {result, touches, sent, marks, t0}.
  */
 export function runFake(dufu, args = {}, scenario = {}) {
@@ -87,6 +90,15 @@ export function runFake(dufu, args = {}, scenario = {}) {
         if (poison) {
             if (roi && roi[0] === 670) return { hit: !slotNow(), box: null };
             return { hit: false, box: null };
+        }
+        // 进攻 v2 (tests/dufu2_scheduler.mjs): the weapon / 处决 / 蓝盘 / 奇术 templates
+        if (tpls[0] === "combat/modao_charge.png") return { hit: (scenario.weapon?.(rt()) ?? "") === "modao", box: null };
+        if (tpls[0] === "combat/hengdao_heavy.png") return { hit: (scenario.weapon?.(rt()) ?? "") === "hengdao", box: null };
+        if (tpls[0] === "combat/hengdao_swirl.png") return { hit: !!(scenario.blueDisc?.(rt())), box: null };
+        if (tpls[0] === "combat/execute.png") return { hit: !!(scenario.execute?.(rt())), box: null };
+        if (tpls[0] === "combat/qishu_ready.png") {
+            const on = !!(scenario.qishu?.(rt()));
+            return { hit: on, box: on ? [848, 493, 64, 64] : null };
         }
         return { hit: !!(scenario.match && scenario.match(template, rt())), box: null };
     };
@@ -163,6 +175,11 @@ export function runFake(dufu, args = {}, scenario = {}) {
         if (x === 222 && y === 140) return (scenario.quest2 ? hitBox([222, 140, 12, 4], 12) : miss());
         if (x === 220 && y === 147) return (scenario.quest2 ? hitBox([220, 147, 16, 4], 16) : miss());
         if (x === 220 && y === 144) return (scenario.quest2 ? miss() : hitBox([220, 144, 16, 3], 0));
+        // 奇术 button's white strokes (the matched template's centre +-18: 862, 507)
+        if (x === 862 && y === 507) {
+            const lit = scenario.qishuLit ? scenario.qishuLit(rt()) : !!(scenario.qishu?.(rt()));
+            return lit ? hitBox([862, 507, 36, 36], 40) : miss();
+        }
         // grey screen / 再次训练 are never up here
         if (x === 100 && y === 100 && w === 880 && h === 500) return miss();
         if (x === 945 && y === 668) return miss();

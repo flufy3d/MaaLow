@@ -36,8 +36,11 @@
 //             take is computed every tick and written to the trace (`would`) for the offline check.
 //   "defend"  defense + potion only, no offense: walk in until the boss bar shows, re-lock, 卸势 / 闪避 by the
 //             model (@see decide), potion at a quiet moment (@see potionTick), run from the 火球雨 (@see runTick).
-//             args.attack adds the shared offense: a charge in the near gate after an ok / boss-bar drop, and the
-//             气竭 execute (@see atkTick).
+//             args.offense "v2" adds the v2 offense engine (@see atk2Tick, lib/dufu-offense.js, design
+//             docs/dufu-offense-design.md); it never touches contacts 0-2 and every defense press / gold tell /
+//             curtain / 火球雨 preempts it. args.offense "off" (default) and no v2: args.attack adds the legacy shared
+//             offense: a charge in the near gate after an ok / boss-bar drop, and the 气竭 execute (@see atkTick).
+//             args.attack is ignored while offense is "v2" (they are different schedulers, never mixed).
 // provider (args.provider): "qnn" (default; falls back to cpu without the plugin: the result's `provider` says what
 //   ran) or "cpu". phase: 1 | 2 (default 2). Phase 2: model dufu2b, no poison / no curtain, the quest line is not an
 //   end, 跑 / 金光火球窗 / chain on. Phase 1: model dufu1b, poison in prep, 幕布, the quest line's 阶段二 = cleared,
@@ -49,16 +52,20 @@
 //   maalow do skill dufu2 --args '{"mode":"shadow","ms":300000}'
 //   maalow do skill dufu2 --args '{"mode":"defend","provider":"qnn","ms":600000}' --timeout 660000
 //   maalow do skill dufu2 --args '{"mode":"defend","phase":1,"ms":600000}' --timeout 660000
+//   maalow do skill dufu2 --args '{"mode":"defend","phase":1,"offense":"v2","ms":600000}' --timeout 660000
 //   (phase 2 defaults since 2026-10-25 关 2: model dufu2b, 闪避 lead 5, run diag from the 火球雨, the 金光火球 window;
 //   the A/B switches: run, runDir, goldSeq, model, dodgeLead, chain, tools/dufu_moveid/README.md「顺序 5 续」;
-//   phase 1 defaults: model dufu1b, 卸势 lead 10, 闪避 lead 5, 幕布 on without the gap walk, curtain2 on)
+//   phase 1 defaults: model dufu1b, 卸势 lead 10, 闪避 lead 5, 幕布 on without the gap walk, curtain2 on;
+//   offense v2 switches: offense, offenseSet, offenseCharge, tools/dufu_moveid/s5_offense_table.py)
 import { stats } from "./lib/stats.js";
-import { BOSS_RED, BOSS_ROI, ME_X, countAtLeast, gapNow, health, readMean, readQi } from "./lib/dufu-reads.js";
+import { BOSS_RED, BOSS_ROI, ICON_WHITE, ME_X, countAtLeast, gapNow, health, readMean, readQi } from "./lib/dufu-reads.js";
+import { NEXT_SHARE } from "./lib/dufu-offense-table.js";
+import { NEAR_DROP_MS, NEAR_OK_MS, WINDOWS as OFF_WINDOWS, emptyP, nearNow, pick as offensePick, quietP, REASON as OFF_REASON, REASON_NAMES as OFF_REASON_NAMES } from "./lib/dufu-offense.js";
 import { DEFAULTS as DEFAULTS2, GROUPS as GROUPS2 } from "./lib/dufu2-table.js";
 import { DEFAULTS as DEFAULTS1, GROUPS as GROUPS1 } from "./lib/dufu1-table.js";
 
 /** @type {SkillMeta} */
-export const meta = { description: "独夫 with the dufu2 move-ID student — phase 2 (default, model dufu2b) or phase 1 (model dufu1b: poison prep, 幕布, quest-line 阶段二): shadow (look only) / defend (卸势 / 闪避 / potion; args.attack: near-gate charge + 处决)", timeout: 660_000 };
+export const meta = { description: "独夫 with the dufu2 move-ID student — phase 2 (default, model dufu2b) or phase 1 (model dufu1b: poison prep, 幕布, quest-line 阶段二): shadow (look only) / defend (卸势 / 闪避 / potion; args.offense v2: execute / qishu / light / follow on contact 3, or the legacy args.attack)", timeout: 660_000 };
 
 const FRAME_MS = 1000 / 30;
 /** @type {Box} */ const BIG = [290, 55, 530, 530];
@@ -174,7 +181,9 @@ const CURTAIN2_NAME = "k1:c18"; // the 幕布 second sweep (37/37 hit, 0 / 37 pa
 // quiet moment (P(contact within 45 f) < 0.2, the next contact > 45 f away), then charge once and release. 陌刀 蓄力 on
 // CHARGE (0.7 s), 横刀 轻蓄力 on LIGHT (0.6 s, HLIGHT_HOLD_MS in dufu.js is the full one); the phase only changes which
 // weapon the character is on. 气竭: the execute button up with the boss's 真气 drained -> 轻击 filler, 处决 at 2.4 s.
-const ATK_NEAR_MS = 1500, ATK_DROP_MS = 1500, ATK_BUSY_MS = 1500;
+// near gate of the legacy attack, and the v2 engine's near gate: one source (lib/dufu-offense.js, 1500 ms). The
+// design text says 3 s; dufu2's own legacy gate has always been 1.5 s, so 1.5 s is kept (no separate 3000).
+const ATK_NEAR_MS = NEAR_OK_MS, ATK_DROP_MS = NEAR_DROP_MS, ATK_BUSY_MS = 1500;
 const ATK_QUIET_F = 45, ATK_QUIET_P = 0.2;
 const ATK_MODAO_MS = 700, ATK_HENG_MS = 600;
 const ATK_HIT_QUIET_MS = 1000;
@@ -187,6 +196,25 @@ const EXEC_TH = 0.7, EXEC_FILL_MS = 2400, EXEC_LIGHT_MS = 300, EXEC_TAP_MS = 50;
 /** @type {[string, Box][]} */ const WEAPON_T = [["combat/modao_charge.png", [988, 446, 64, 68]], ["combat/hengdao_heavy.png", [988, 446, 64, 68]]];
 const WEAPON_TH = 0.7, WEAPON_EVERY = 250;
 const BOSS_DROP_PX = 1.5, BOSS_DROP_WIN_MS = 1200, BOSS_DROP_MAX_PX = 80, BOSS_RING_MS = 4000;
+// ---- 进攻 v2 (args.offense): the engine's reads and commit times (design 3.3). The actions go on contact 3 only.
+/** @type {Point} */ const QISHU = [881, 525]; // 奇术 (dufu.js QISHU)
+/** @type {Point} */ const SWITCH = [993, 320]; // weapon switch (dufu.js)
+/** @type {Box} */ const QISHU_ROI = [848, 493, 64, 64];
+const QISHU_T = "combat/qishu_ready.png";
+const QS_LIT_PX = 30; // white strokes in the button: the 奇术 is ready (dufu.js qsLitRead)
+const EXEC_T = "combat/execute.png";
+const SWIRL_T = "combat/hengdao_swirl.png"; // the blue 爆发 disc on 重击 after a 横刀 ok (dufu.js pfTick)
+const ATK2_DISC_EVERY = 250, ATK2_QISHU_EVERY = 250, ATK2_EXEC_EVERY = 250; // the v2 button reads (4 Hz)
+/** commit + safety (frames -> ms, design 3.3): no new action until it is over */
+const ATK2_COMMIT_MS = { execute: 1500, qishu: 2333, light: 600, follow: 1233, set: 4800, charge: 700 };
+const ATK2_EXEC_WINDUP_MS = 1500; // the 处决 animation: nothing else may start
+const ATK2_QISHU_COOL_MS = 3000; // a retry of a failed 奇术 tap
+const ATK2_SWITCH_WAIT_MS = 1500, ATK2_SWITCH_TRIES = 2; // the weapon confirms ~24 f after the switch tap
+const ATK2_LAND_MS = 2000; // boss HP / 真气 after an action (design 6: 前 / 后 2 s)
+const ATK2_CHARGE_MS = 700; // 陌刀 蓄力 hold (dufu.js ATK_MODAO_MS)
+const ATK2_CHAIN_CLEAR_MS = 30 * FRAME_MS; // the 串中 clear (design 5.1: < 30 f after the last contact)
+const ATK2_OPENING_MS = 15_000; // dufu.js QS_OPEN_MS: the opening 奇术 window, from the first boss-bar sighting
+/** @type {Record<number, number>} */ const WEAPON_CODE = { "": 0, modao: 1, hengdao: 2 };
 // end of the round (dufu.js deadCheck / haltCheck)
 /** @type {Box} */ const GREY_ROI = [100, 100, 880, 500];
 const GREY = { lower: [0, 0, 0], upper: [180, 30, 255], method: 40 };
@@ -197,9 +225,15 @@ const WON_TH = 0.8, DEAD_EVERY = 170, BOSS_EVERY = 250, BOSS_GONE_MS = 10_000;
 const END_MARGIN_MS = 15_000;
 // trace
 const TRACE_EVENT = "dufu2_trace", PAIR_EVENT = "dufu2_pair", TRACE_CHUNK = 150;
+// 进攻 v2 columns (appended 2026-11-01, names only; s5_analyze looks columns up by name): chainPos / chainLen = the
+// current contact chain (frames within HIST_GAP_F), nextShare = the last contact's prefix-group next.share (-1 none),
+// weapon 0 unknown / 1 陌刀 / 2 横刀, atkTier 0 none / 1 execute / 2 qishu / 3 light+follow / 4 set / 5 charge,
+// atkQ = the action's P(empty) requirement, atkReason = the numeric decision reason (result.offense.reasonNames),
+// bossPx = BOSS_ROI px, lock = the lock icon lit, range = the near gate as a 0/1 proxy (ok / boss drop within
+// 1.5 s; NOT a real distance; an execute with range 0 is legal and the action log shows it).
 const TRACE_COLS = ["wall", "seq", "cap", "n", "fill", "dup", "hp", "qi", "boss", "h0", "h1", "h2", "h3",
     "grp", "grpP", "gold", "red", "none", "dodge", "parry", "rnone", "med", "p10", "act", "would", "contact", "pipe", "loop",
-    "c7P", "run"];
+    "c7P", "run", "chainPos", "chainLen", "nextShare", "weapon", "atkTier", "atkQ", "atkReason", "bossPx", "lock", "range"];
 const ACT = { parry: 1, dodge: 2, potion: 3, lock: 4, walk: 5, run: 6, attack: 7 };
 
 /**
@@ -257,7 +291,7 @@ function f32b64(arrs) {
  *          trace?: boolean, pair?: number, tag?: string, approach?: boolean, dodgeLead?: number | null,
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
  *          model?: string, chain?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number,
- *          attack?: boolean}} [args]
+ *          attack?: boolean, offense?: "off" | "v2", offenseSet?: boolean, offenseCharge?: boolean}} [args]
  */
 export default function (args = {}) {
     const mode = args.mode ?? "shadow";
@@ -306,8 +340,18 @@ export default function (args = {}) {
     // args.curtain2: phase 1 only, force the 闪避 on k1:c18 (the 幕布 second sweep: 37/37 hit, 0 parried;
     // the prefix group has no ok/pf so its label defaults to parry, @see the gate-1 live notes). Default on.
     const curtain2On = phase === 1 && (args.curtain2 ?? true);
+    // args.offense: "off" (default) | "v2" — the v2 offense engine (defend only; contact 3; design
+    // docs/dufu-offense-design.md). args.attack is the legacy offense and is ignored while v2 is on: they are two
+    // different schedulers, never mixed.
+    const offenseArg = args.offense ?? "off";
+    if (offenseArg !== "off" && offenseArg !== "v2") throw new Error(`offense ${offenseArg}: off | v2`);
+    const offenseOn = defend && offenseArg === "v2";
     // args.attack: the shared offense (defend only; default off until the A/B says it does not cost hits, @see atkTick)
-    const attackOn = defend && (args.attack ?? false);
+    const attackOn = defend && !offenseOn && (args.attack ?? false);
+    // args.offenseSet / args.offenseCharge: the T4 整套 / T5 蓄力 are interface-only in v1 (design 3.3: set ~0 HP,
+    // charge is 真气 only), so both default off; the engine still reports them when switched on.
+    const offenseSet = offenseOn && (args.offenseSet ?? false);
+    const offenseCharge = offenseOn && (args.offenseCharge ?? false);
     // args.curtain / args.curtainGap: the phase-1 幕布 state machine (default on) / its gap walk (default off: only
     // dodge; the finalized 2026-10-28 config does not walk)
     const curtainOn = phase === 1 && (args.curtain ?? true);
@@ -451,6 +495,12 @@ export default function (args = {}) {
     }
     const warmMs = Date.now() - warm0;
     mark("start", `mode ${mode}, provider ${provider} (ran ${JSON.stringify(ran)}${Object.keys(fellBack).length ? `, fallback ${JSON.stringify(fellBack)}` : ""}), warm ${warmMs} ms, ${untilMs} ms`);
+    if (offenseOn) {
+        mark("atk2", `offense v2: ${phase === 1 ? "陌刀 -> 横刀 on long windows" : "横刀 native"}, set ${offenseSet ? "requested (T4 not implemented)" : "off"}, charge ${offenseCharge ? "on" : "off"}`);
+        if (args.attack) mark("atk2", "legacy attack ignored (offense v2)");
+    } else if (args.offense === "v2") {
+        mark("atk2", `offense v2 ignored in ${mode} (defend only)`);
+    }
 
     // ---- trace
     /** @type {number[][]} */
@@ -516,7 +566,7 @@ export default function (args = {}) {
     /** @type {{t: number, f: number, kind: "hit" | "ok", seenF: number}[]} */
     const contacts = [];
     let hpBase = /** @type {number | null} */ (null), hpNow = /** @type {number | null} */ (null), hpThis = /** @type {number | null} */ (null);
-    let qiNow = -1, bossNow = 0, bossSeen = false, bossGoneAt = 0;
+    let qiNow = -1, bossNow = 0, bossSeen = false, bossSeenAt = 0, bossGoneAt = 0;
     let prevCap = 0, lastSeq = -1;
     let lastParryAt = 0, lastDodgeAt = 0, lastOkAt = 0, lastHitAt = 0, lastOwnAt = 0;
     let realParryAt = 0; // our last real 卸势 touch (ok detection; the shadow's would-presses only set lastParryAt)
@@ -549,6 +599,7 @@ export default function (args = {}) {
     // potion
     let potionsUsed = 0, potionTaps = 0, potionDueAt = 0, lastPotionFailAt = 0, lastPotionOkAt = 0, holdUntil = 0;
     let slotSwaps = 0, slotMiss = 0; // in-fight quick-slot swaps (the game reverted the slot to the poison after the coating, r167)
+    let lastSlotSwapAt = 0; // the item menu was open: offense stays off it for a moment
     /** @type {{at: number, hp0: number} | null} */ let potionPend = null;
     const potS = { oks: 0, fails: 0, waitWhy: /** @type {Record<string, number>} */ ({}) };
     // offense (args.attack; @see atkTick). The boss-bar ring gives the "a hit landed" near-gate anchor (dufu.js's
@@ -559,6 +610,30 @@ export default function (args = {}) {
     let atkBusyUntil = 0, atkExecs = 0;
     /** @type {{t: number, light: number, tapped: boolean} | null} */ let execPend = null;
     /** @type {any[]} */ const atkLog = [];
+    // 进攻 v2 (args.offense; @see atk2Tick). Reads (execute button / blue disc / 奇术 lit), the one pending weapon
+    // switch, the commit clock, and the press/land/cancel log (design 6).
+    let exeBtn = false, blueDisc = false, qishuReady = false;
+    let lastExecRead = 0, lastDiscRead = 0, lastQishuRead = 0;
+    let lastExecuteAt = 0, qishuCoolUntil = 0;
+    let atk2BusyUntil = 0;
+    /** @type {{at: number, action: string, tier: number, q: number, why: string, tries: number, contactN: number,
+     *          contactT: number, contactF: number} | null} */
+    let atk2Switch = null;
+    /** @type {{at: number, boss0: number, qi0: number, a: string, tier: number, q: number} | null} */ let atk2Hold = null;
+    const atk2Count = { execute: 0, qishu: 0, light: 0, follow: 0, set: 0, charge: 0, switches: 0 };
+    /** @type {Record<string, number>} */ const atk2Cancel = {};
+    /** @type {{t: number, a: string, ev: string, tier: number, q: number, why: string, boss0?: number, boss1?: number,
+     *          bossPrev?: number, qi0?: number, qi1?: number, held?: number, at?: number, dmg?: number | null,
+     *          near?: boolean}[]} */
+    const atk2Log = [];
+    /** @type {{at: number, boss0: number, bossPrev: number, qi0: number, a: string, tier: number, q: number}[]} */
+    const atk2Pend = [];
+    let atk2QSum = 0, atk2QN = 0;
+    let lastAtkTier = 0, lastAtkQ = 0, lastAtkReason = 0;
+    /** the tick's prefix-chain view (trace) */
+    let chainPos = 0, chainLen = 0;
+    /** the last contact's prefix group (the design's contact-history group; -1 = none known) and its next.share */
+    let lastContactGid = -1, lastShare = /** @type {number | null} */ (null);
     // lock / approach / end
     let lastLockRead = 0, lastLockTap = 0, lockLit = true, lastBossRead = 0, lastDeadCheck = 0;
     let deadSeen = 0, greySeen = 0, wonSeen = 0;
@@ -931,6 +1006,7 @@ export default function (args = {}) {
             }
             slotSwaps++;
             slotMiss = 0;
+            lastSlotSwapAt = now;
             tap(ITEM_OPEN);
             sleep(PREP_MENU_MS);
             upsDue(true);
@@ -995,7 +1071,10 @@ export default function (args = {}) {
         lastWeaponRead = now;
         const mo = match(WEAPON_T[0][0], { image: im, roi: WEAPON_T[0][1], threshold: WEAPON_TH }).hit;
         const he = match(WEAPON_T[1][0], { image: im, roi: WEAPON_T[1][1], threshold: WEAPON_TH }).hit;
-        weapon = mo && !he ? "modao" : he && !mo ? "hengdao" : "";
+        // after a 横刀 ok its 重击 is the blue 爆发 disc (dufu.js offWeaponNow counts the swirl as 横刀 too). Only the
+        // v2 offense needs it: defense / the legacy attack keep the two-template read (no extra match per 4 Hz).
+        const sw = offenseOn && match(SWIRL_T, { image: im, roi: WEAPON_T[1][1], threshold: WEAPON_TH }).hit;
+        weapon = mo && !he && !sw ? "modao" : (he || sw) && !mo ? "hengdao" : "";
         return weapon;
     }
     /** 气竭: the execute button up and the boss's 真气 drained -> 轻击 filler, 处决 at EXEC_FILL_MS. @param {number} now
@@ -1076,6 +1155,299 @@ export default function (args = {}) {
         return ACT.attack;
     }
 
+    // ---- 进攻 v2 (args.offense === "v2"; design docs/dufu-offense-design.md): lib/dufu-offense.js picks, this block
+    // only carries the action out on contact 3. Every defense press / gold tell / curtain / 火球雨 preempts it before
+    // the defense's own tick (atk2Preempt), and the engine's T0 list blocks the rest (lib/dufu-offense.js).
+    /** The contacts' current chain: length and 0-based position (the prefix head's k). */
+    function chainNow() {
+        const n = contacts.length;
+        if (!n) return { len: 0, pos: -1 };
+        const last = contacts[n - 1].f;
+        let len = 0;
+        for (let i = n - 1; i >= 0 && contacts[i].f >= last - HIST_GAP_F; i--) len++;
+        return { len, pos: len - 1 };
+    }
+    /** The v2 reads: the 处决 button (low 真气 only), the blue 爆发 disc, the lit 奇术 button (4 Hz). One 处决 tap per
+     *  window: the button shows for ~2.4 s and the animation is longer than its own commit. */
+    function atk2Reads(now, im) {
+        // the 处决 button: 4 Hz (its window is ~2.4 s) and one tap per 5 s window; low 真气 only (the match is
+        // short-circuited otherwise)
+        if (now - lastExecRead >= ATK2_EXEC_EVERY) {
+            lastExecRead = now;
+            exeBtn = qiNow >= 0 && qiNow <= 25 && now - lastExecuteAt >= 5000
+                && match(EXEC_T, { image: im, roi: EXEC_ROI, threshold: EXEC_TH }).hit;
+        } else if (now - lastExecuteAt < 5000) {
+            exeBtn = false; // a just-tapped button is not a second window
+        }
+        if (now - lastDiscRead >= ATK2_DISC_EVERY) {
+            lastDiscRead = now;
+            blueDisc = match(SWIRL_T, { image: im, roi: WEAPON_T[1][1], threshold: WEAPON_TH }).hit;
+        }
+        if (now < qishuCoolUntil) qishuReady = false;
+        else if (now - lastQishuRead >= ATK2_QISHU_EVERY) {
+            lastQishuRead = now;
+            const hit = match(QISHU_T, { image: im, roi: QISHU_ROI, threshold: WEAPON_TH });
+            qishuReady = false;
+            if (hit.hit && hit.box) {
+                const [x, y, w, h] = hit.box;
+                const cx = Math.round(x + w / 2), cy = Math.round(y + h / 2);
+                qishuReady = color({ ...ICON_WHITE, image: im, roi: [cx - 18, cy - 18, 36, 36], count: QS_LIT_PX }).hit;
+            }
+        }
+    }
+    /** @param {number} now @param {string} what @param {string} why @param {number} held @param {number} [tier]
+     *  @param {number} [q] */
+    function atk2CancelNow(now, what, why, held = 0, tier = 0, q = 0) {
+        atk2Cancel[why] = (atk2Cancel[why] ?? 0) + 1;
+        if (atk2Log.length >= 2000) atk2Log.shift();
+        atk2Log.push({ t: Math.round(now - start), a: what, ev: "cancel", tier, q: r3(q), why, held: Math.round(held) });
+        mark("atk2", `cancel ${what} (${why})${held ? ` after ${Math.round(held)} ms` : ""}`);
+    }
+    /** Why a defense press / special window preempts the offense now ("" = none). The order is the defense's own:
+     *  火球雨 > 幕布 > 喝药 > 挨打 1 s > a defense press due (the caller's decide result) > a predicted contact > a
+     *  gold tell. @param {number} now @param {boolean} defenseDue the main loop's decide(now) was non-null */
+    function atk2PreemptWhy(now, defenseDue) {
+        if (running != null || (pred != null && pred.c7P >= RUN_P)) return "rain";
+        if (inCurtain) return "curtain";
+        if (potionPend != null || now < holdUntil) return "potion";
+        if (lastHitAt && now - lastHitAt < ATK_HIT_QUIET_MS) return "hit";
+        if (defenseDue) return "defense";
+        if (pred != null && (pred.med <= 25 || pWithin(20) >= 0.15)) return "defense";
+        if (pred != null && pred.col[0] >= goldDodgeP) return "gold";
+        return "";
+    }
+    /** Called before the defense's tick: a pending switch / held charge lets go at once. @param {number} now
+     *  @param {boolean} defenseDue the main loop's decide(now) was non-null */
+    function atk2Preempt(now, defenseDue) {
+        if (!offenseOn) return "";
+        const why = atk2PreemptWhy(now, defenseDue);
+        if (!why) return "";
+        if (atk2Switch) {
+            atk2CancelNow(now, atk2Switch.action, why, now - atk2Switch.at, atk2Switch.tier, atk2Switch.q);
+            atk2Switch = null;
+        }
+        if (atk2Hold) {
+            freeContact(3);
+            atk2CancelNow(now, "charge", why, now - atk2Hold.at, atk2Hold.tier, atk2Hold.q);
+            atk2Hold = null;
+            atk2BusyUntil = now + 300;
+        }
+        return why;
+    }
+    /** The press/land log (design 6): boss px and 真气 at the press and 2 s after it. @param {number} now */
+    function atk2Land(now) {
+        for (let i = atk2Pend.length - 1; i >= 0; i--) {
+            const p = atk2Pend[i];
+            if (now < p.at) continue;
+            atk2Pend.splice(i, 1);
+            const dmg = p.boss0 > 50 && bossNow > 50 ? p.boss0 - bossNow : null;
+            if (atk2Log.length >= 2000) atk2Log.shift();
+            atk2Log.push({ t: Math.round(now - start), a: p.a, ev: "land", tier: p.tier, q: r3(p.q), why: "",
+                at: Math.round(p.at - start), boss0: p.boss0, bossPrev: p.bossPrev, boss1: bossNow, qi0: p.qi0, qi1: qiNow, dmg });
+            mark("atk2", `land ${p.a}: boss ${p.boss0} -> ${bossNow}${dmg != null ? ` (${dmg} px)` : ""}, 真气 ${p.qi0} -> ${qiNow}`);
+        }
+    }
+    /** The boss bar `ms` ago (the closest ring sample; -1 when the ring is shorter). @param {number} ms */
+    function bossAt(ms) {
+        const target = Date.now() - ms;
+        /** @type {{t: number, b: number} | null} */ let best = null;
+        for (const s of bossRing) if (!best || Math.abs(s.t - target) < Math.abs(best.t - target)) best = s;
+        return best ? best.b : -1;
+    }
+    /** Carry out one engine action on contact 3. @param {number} now @param {{action: string, tier: number, q: number,
+     *  reason: string, holdMs?: number}} d @returns {number} an act */
+    function atk2Do(now, d) {
+        if (!defend || halt) return 0;
+        const a = d.action;
+        if (a !== "execute" && a !== "qishu" && a !== "follow" && a !== "light" && a !== "charge") {
+            atk2CancelNow(now, a, "disabled"); // the T4 整套 interface: no action sequence in v1
+            return 0;
+        }
+        if (a === "charge" && !offenseCharge) {
+            atk2CancelNow(now, a, "disabled");
+            return 0;
+        }
+        const boss0 = bossNow, qi0 = qiNow, bossPrev = bossAt(ATK2_LAND_MS);
+        const near = nearNow({ now, lastOkAt, lastDropAt });
+        if (a === "charge") {
+            freeContact(3);
+            touch.down(HEAVY, 3);
+            const hold = d.holdMs ?? ATK2_CHARGE_MS;
+            ups.push({ c: 3, at: Date.now() + hold });
+            atk2Hold = { at: now, boss0, qi0, a, tier: d.tier, q: d.q };
+            atk2BusyUntil = now + hold;
+        } else {
+            /** @type {Point} */
+            const p = a === "execute" ? EXECUTE : a === "qishu" ? QISHU : a === "follow" ? HEAVY : LIGHT;
+            const t = Date.now();
+            freeContact(3);
+            touch.down(p, 3);
+            ups.push({ c: 3, at: t + (a === "execute" ? EXEC_TAP_MS : TAP_MS) });
+            atk2BusyUntil = now + (ATK2_COMMIT_MS[a] ?? 600);
+            if (a === "execute") { lastExecuteAt = now; exeBtn = false; }
+            if (a === "qishu") { qishuCoolUntil = now + ATK2_QISHU_COOL_MS; qishuReady = false; }
+            if (a === "follow") blueDisc = false; // one tap per disc
+        }
+        atk2Count[a] = (atk2Count[a] ?? 0) + 1;
+        presses.attack++;
+        atk2QSum += d.q;
+        atk2QN++;
+        if (atk2Log.length >= 2000) atk2Log.shift();
+        atk2Log.push({ t: Math.round(now - start), a, ev: "press", tier: d.tier, q: r3(d.q), why: d.reason, boss0, bossPrev, qi0, near });
+        atk2Pend.push({ at: now + ATK2_LAND_MS, boss0, bossPrev, qi0, a, tier: d.tier, q: d.q });
+        mark("atk2", `${a} tier T${d.tier} q ${r3(d.q)} (${d.reason}, weapon ${weapon || "?"}, med ${pred?.med ?? -1})`);
+        return ACT.attack;
+    }
+    /** Tap the weapon switch and queue the engine action until the 横刀 template confirms. @param {number} now
+     *  @param {{action: string, tier: number, q: number, reason: string}} d */
+    function atk2StartSwitch(now, d) {
+        if (atk2Switch || now < atk2BusyUntil) return 0;
+        const t = Date.now();
+        freeContact(3);
+        touch.down(SWITCH, 3);
+        ups.push({ c: 3, at: t + TAP_MS });
+        atk2Count.switches++;
+        presses.attack++;
+        // the last contact at the switch's start: the confirmation re-checks it (a contact that arrives during the
+        // 1.5 s wait makes the queued action stale, even when no defense press was due for it)
+        const lastC = contacts.length ? contacts[contacts.length - 1] : null;
+        atk2Switch = { at: now, action: d.action, tier: d.tier, q: d.q, why: d.reason, tries: 1,
+            contactN: contacts.length, contactT: lastC ? lastC.t : 0, contactF: lastC ? lastC.f : -1 };
+        if (atk2Log.length >= 2000) atk2Log.shift();
+        atk2Log.push({ t: Math.round(now - start), a: "switch", ev: "press", tier: d.tier, q: r3(d.q), why: d.reason,
+            near: nearNow({ now, lastOkAt, lastDropAt }) });
+        mark("atk2", `switch -> 横刀 for ${d.action} (${d.reason}) at contacts ${contacts.length}`);
+        return ACT.attack;
+    }
+    /** @param {number} now @param {Image} im @param {boolean} defenseDue the main loop's decide(now) was non-null
+     *  @returns {number} an act */
+    function atk2SwitchTick(now, im, defenseDue) {
+        const s = atk2Switch;
+        if (!s) return 0;
+        const w = weaponNow(im, now);
+        if (w === "hengdao") {
+            atk2Switch = null;
+            // The queued action was chosen `now - s.at` ago. Re-check before tapping: a new contact (even without a
+            // defense press due), a special window / defense press that appeared, or too long a wait makes it stale.
+            const lastC = contacts.length ? contacts[contacts.length - 1] : null;
+            const stale = atk2PreemptWhy(now, defenseDue) !== ""
+                || contacts.length !== s.contactN
+                || (lastC != null && (lastC.t > s.at || lastC.f !== s.contactF))
+                || !nearNow({ now, lastOkAt, lastDropAt }) // the queued light/follow would now be outside the near gate
+                || now - s.at > 2 * ATK2_SWITCH_WAIT_MS;
+            if (stale) {
+                lastAtkTier = 0;
+                lastAtkQ = 0;
+                lastAtkReason = OFF_REASON.stale ?? 0;
+                atk2CancelNow(now, s.action, "stale", now - s.at, s.tier, s.q);
+                return 0;
+            }
+            lastAtkTier = s.tier;
+            lastAtkQ = s.q;
+            lastAtkReason = OFF_REASON[s.why] ?? 0;
+            return atk2Do(now, { action: s.action, tier: s.tier, q: s.q, reason: s.why });
+        }
+        if (now - s.at < ATK2_SWITCH_WAIT_MS) return 0;
+        if (s.tries < ATK2_SWITCH_TRIES) { // the tap did not take: once more
+            const t = Date.now();
+            freeContact(3);
+            touch.down(SWITCH, 3);
+            ups.push({ c: 3, at: t + TAP_MS });
+            atk2Count.switches++;
+            presses.attack++;
+            s.tries++;
+            s.at = now;
+            mark("atk2", `switch retry ${s.tries} for ${s.action}`);
+            return ACT.attack;
+        }
+        atk2Switch = null;
+        atk2CancelNow(now, s.action, "switch", now - s.at, s.tier, s.q);
+        return 0;
+    }
+    /** The v2 special windows the engine cannot see (design 5.1). @param {number} now */
+    function offenseSpecial(now) {
+        return {
+            curtainCovered: curtainOn && inCurtain && gapLast === "covered",
+            curtainSweep: curtainOn && inCurtain,
+            fireballRain: runOn && (running != null || (pred != null && pred.c7P >= RUN_P)),
+            goldFireball: goldSeqOn && goldSeq != null && now <= goldSeq.anchor + GOLD_SEQ_F * FRAME_MS,
+            phaseTransition: false, // no read yet; the T4 整套 is off in v1 anyway
+            running: running != null,
+            potionPending: potionPend != null || now < holdUntil
+                || (lastPotionOkAt > 0 && now - lastPotionOkAt < POTION_SETTLE_MS)
+                || (lastSlotSwapAt > 0 && now - lastSlotSwapAt < 1500), // the item menu was open
+            executeWindup: now - lastExecuteAt < ATK2_EXEC_WINDUP_MS,
+            c30Chain: chainOn && pred != null && pred.grp === C30_K2_GID && (chainDue != null || chainLen >= 2),
+        };
+    }
+    /** 进攻 v2's tick: the engine's decision and its action on contact 3. @param {number} now @param {Image} im
+     *  @param {boolean} defenseDue a defense press is due this tick @returns {number} an act */
+    function atk2Tick(now, im, defenseDue) {
+        if (!offenseOn) return 0;
+        atk2Land(now);
+        const ch = chainNow();
+        chainLen = ch.len;
+        chainPos = ch.pos;
+        lastShare = lastContactGid >= 0 ? (NEXT_SHARE[phase]?.[lastContactGid] ?? null) : null;
+        if (!defend || halt) return 0;
+        weaponNow(im, now);
+        atk2Reads(now, im);
+        if (atk2Hold) {
+            if (now < atk2BusyUntil) return 0;
+            const h = atk2Hold;
+            freeContact(3);
+            atk2Hold = null;
+            if (atk2Log.length >= 2000) atk2Log.shift();
+            atk2Log.push({ t: Math.round(now - start), a: "charge", ev: "release", tier: h.tier, q: r3(h.q), why: "time",
+                at: Math.round(h.at - start), held: Math.round(now - h.at), boss0: h.boss0, boss1: bossNow,
+                qi0: h.qi0, qi1: qiNow });
+            mark("atk2", `release charge after ${Math.round(now - h.at)} ms, 真气 ${h.qi0} -> ${qiNow}`);
+            atk2BusyUntil = now + 800; // 46 f commit+safety (design 3.3): 700 ms hold + 800 ms
+        }
+        if (atk2Switch) return atk2SwitchTick(now, im, defenseDue);
+        if (now < atk2BusyUntil) return 0;
+        // The engine's group is the LAST CONTACT's prefix group (design 4: the contact history's group / k /
+        // next.share); its next.share is only the chain prior. The empty-window prior is the group model right after
+        // that contact (< 30 f, the design's 3.2 anchor) and the pooled quiet_far anchor after 30 f.
+        const gname = lastContactGid >= 0 && lastContactGid < IDLE ? GRP_NAMES[lastContactGid] : null;
+        const g = gname ? GROUPS[gname] : null;
+        const last = contacts.length ? contacts[contacts.length - 1] : null;
+        const live = last != null && now - last.t < ATK2_CHAIN_CLEAR_MS;
+        /** @type {Record<number, number | null>} */ const pE = {};
+        for (const f of OFF_WINDOWS) {
+            // A contact < 30 f old with no group (the head was idle) is not a quiet window: pE is 0, the engine's
+            // "unknown" block. quiet_far is only the prior when there is NO recent contact (>= 30 f / none yet).
+            pE[f] = live ? (lastShare != null ? emptyP(lastShare, f) : 0) : quietP(phase, f);
+        }
+        // Opening 奇术 (dufu.js qsWhere: the boss bar up, no hit/ok yet, within QS_OPEN_MS): the ranged 奇术 is the old
+        // engine's opening action. Only qishu's window is lifted; light / follow still need the near gate and quietP.
+        const opening = bossSeenAt > 0 && contacts.length === 0 && now - bossSeenAt <= ATK2_OPENING_MS;
+        if (opening) pE[70] = 1.0;
+        // Layer guard (beyond the engine's T0 list): a defense press due this tick or a contact predicted within
+        // 25 f leaves the hand free (the legacy atkTick's pred.med guard). The design's 30 f chain rule is in the
+        // engine; this covers the tte head's own short window, which next.share cannot see.
+        const guard = defenseDue || (pred != null && (pred.med <= 25 || pWithin(20) >= 0.15 || pred.col[0] >= goldDodgeP));
+        const d = offensePick({
+            now, phase, weapon, bossPx: bossNow, qi: qiNow,
+            executeButton: exeBtn, blueDisc, qishuReady,
+            lastContactAt: last ? last.t : 0,
+            lastContactKind: last ? last.kind : "",
+            lastHitAt, lastDropAt, lastOkAt,
+            group: gname && g ? { name: gname, k: g.k, nextShare: lastShare } : null,
+            contactChainLen: chainLen, contactChainPos: chainPos,
+            special: offenseSpecial(now),
+            defenseBusyUntil: guard ? now + 2 * FRAME_MS : 0,
+            pEmpty: pE,
+            allow: { set: false, charge: offenseCharge }, // the 整套 is interface-only in v1 (args.offenseSet logs it)
+        });
+        lastAtkTier = d.action ? d.tier : 0;
+        lastAtkQ = d.action ? d.q : 0;
+        lastAtkReason = OFF_REASON[d.reason] ?? 0;
+        if (!d.action) return 0;
+        if (d.switchFirst) return atk2StartSwitch(now, d);
+        return atk2Do(now, d);
+    }
+
     // The end checks are spread over the ticks (one part per tick, each part every DEAD_EVERY): the 成功 page
     // templates, the 再次训练 button, and the grey screen (an 880x500 scan, only while the bars are gone).
     let endPart = 0;
@@ -1152,6 +1524,9 @@ export default function (args = {}) {
             // bars -> contacts
             const tR = Date.now();
             const got = reads(img, cap);
+            if (got) { // the last contact's prefix group: the head's prediction just before it was detected
+                lastContactGid = pred != null && pred.grp < IDLE ? pred.grp : -1;
+            }
             const now0 = Date.now();
             if (now0 - lastBossRead >= BOSS_EVERY) {
                 lastBossRead = now0;
@@ -1159,6 +1534,7 @@ export default function (args = {}) {
                 bossDropTick(now0);
                 if (bossNow > 50 && !bossSeen) {
                     bossSeen = true;
+                    bossSeenAt = now0;
                     mark("boss", `bar after ${Math.round((now0 - t0) / 1000)} s`);
                 }
             }
@@ -1224,10 +1600,13 @@ export default function (args = {}) {
             if (got) armed.parry = armed.dodge = null; // the contact came: the next prediction is a new one
             if (curPred()?.grp === C11_GID) lastC11At = now;
             if (defend) act = runTick(now);
+            // one defense decision per tick: the v2 preempt reuses it instead of calling decide() again
+            const d = decide(now);
+            // 进攻 v2: the 2 s results of earlier actions, then a pending switch / held charge lets go at once
+            if (offenseOn) { atk2Land(now); atk2Preempt(now, d != null); }
             // a charge in progress lets go before a defense press (the old skill's offYield: a held finger restarts it)
             if (atkHold && pred && (pred.med <= 35 || pWithin(25) >= 0.15
                 || pred.col[0] >= goldDodgeP)) atkRelease("defense");
-            const d = decide(now);
             if (d && !canPress(d, now)) {
                 wouldAct = ACT[d.kind];
                 if (defend) act = press(d, now) || act;
@@ -1243,7 +1622,7 @@ export default function (args = {}) {
             if (defend && !act) act = goldBeatTick(now);
             if (defend && !act) act = chainTick(now);
             if (defend && !act) act = potionTick(now, img);
-            if (defend && !act) act = atkTick(now, img);
+            if (defend && !act) act = offenseOn ? atk2Tick(now, img, d != null) : atkTick(now, img);
             // 幕布 (phase 1): the gap walk runs even when a key went this tick; the covered fallback only when none did
             if (curtainOn) {
                 const c = curtainTick(img, now, act !== 0);
@@ -1289,10 +1668,20 @@ export default function (args = {}) {
             looks++;
             if (traceOn) {
                 const p = curPred();
+                if (offenseOn) { // the prefix-chain view (even on a tick another module took)
+                    const ch = chainNow();
+                    chainLen = ch.len;
+                    chainPos = ch.pos;
+                    lastShare = lastContactGid >= 0 ? (NEXT_SHARE[phase]?.[lastContactGid] ?? null) : null;
+                }
+                // range is the near gate proxy (ok / boss drop within 1.5 s), not a distance read; execute may act at 0
+                const nearGate = offenseOn ? nearNow({ now, lastOkAt, lastDropAt }) : false;
                 rows.push([tA - start, img.seq, cap - start, tick - 1, nFill, dup, hpNow == null ? -1 : r3(hpNow), qiNow, bossNow,
                     ...lastH, p ? p.grp : -1, p ? r3(p.grpP) : 0, ...(p ? p.col.map(r3) : [0, 0, 0]), ...(p ? p.resp.map(r3) : [0, 0, 0]),
                     p ? p.med : -1, r3(pWithin(10)), act, wouldAct, got, Math.round(pipe * 10) / 10, loopMs,
-                    p ? r3(p.c7P) : 0, running ? running.sign * (1 + Object.keys(RUN_DIRS).indexOf(running.dir)) : 0]);
+                    p ? r3(p.c7P) : 0, running ? running.sign * (1 + Object.keys(RUN_DIRS).indexOf(running.dir)) : 0,
+                    chainPos, chainLen, lastShare == null ? -1 : r3(lastShare), WEAPON_CODE[weapon] ?? 0,
+                    lastAtkTier, r3(lastAtkQ), lastAtkReason, bossNow, lockLit ? 1 : 0, nearGate ? 1 : 0]);
                 traceN++;
                 if (rows.length >= TRACE_CHUNK) traceFlush();
             }
@@ -1314,7 +1703,9 @@ export default function (args = {}) {
         } catch (_) { /* stopped: the last chunk is lost */ }
     }
     const fightMs = Date.now() - t0;
+    if (offenseOn) atk2Land(Date.now()); // the last actions' 2 s window is the round's end
     const ms = Object.fromEntries(Object.entries(tm).map(([k, v]) => [k, stats(v)]));
+    const offPresses = atk2Count.execute + atk2Count.qishu + atk2Count.light + atk2Count.follow + atk2Count.charge;
     const res = {
         reason, mode, phase, provider, model: mdir, ran, fallback: fellBack, nn: { available: nn.available, qnn: nn.qnn, soc: nn.soc?.model }, warmMs,
         fightMs, ticks, looks, fills, skipped, dups, bossSeen,
@@ -1326,6 +1717,16 @@ export default function (args = {}) {
         curtain2: curtain2On ? { presses: curtain2Log.length, log: curtain2Log } : null,
         curtain: curtainOn ? { gap: curtainGap, enters: curtainEnters, dodges: curtainDodges } : null,
         attack: attackOn ? { presses: presses.attack, execs: atkExecs, log: atkLog, weapon } : null,
+        offense: offenseOn ? {
+            engine: "v2", presses: offPresses, switches: atk2Count.switches,
+            actions: { execute: atk2Count.execute, qishu: atk2Count.qishu, light: atk2Count.light,
+                follow: atk2Count.follow, set: atk2Count.set, charge: atk2Count.charge },
+            cancels: atk2Cancel, qAvg: atk2QN ? r3(atk2QSum / atk2QN) : null,
+            pending: atk2Pend.length, log: atk2Log, lastWeapon: weapon,
+            allow: { set: false, charge: offenseCharge }, setRequested: offenseSet, reasonNames: OFF_REASON_NAMES,
+            traceCols: TRACE_COLS.slice(-10),
+            traceNote: "range = the near gate proxy (0/1: ok or boss-bar drop within 1.5 s), not a real distance; execute may act at 0",
+        } : null,
         hitsPerMin: fightMs > 0 ? Math.round((hits / (fightMs / 60_000)) * 100) / 100 : 0,
         ms, start, t0, marks, pressLog,
         trace: { event: TRACE_EVENT, rows: traceN, chunks: traceChunks, cols: TRACE_COLS },

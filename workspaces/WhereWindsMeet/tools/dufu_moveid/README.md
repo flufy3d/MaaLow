@@ -108,6 +108,8 @@ TORCH="uv run --no-project --with torch --with timm --with numpy --with av --wit
     --index https://download.pytorch.org/whl/cu130 --index-strategy unsafe-best-match"
 # 招式表 -> model/dufu<PHASE>/movetable.json + skills/lib/dufu<PHASE>-table.js
 uv run --no-project --with numpy python $D/s5_movetable.py [--live]
+# 进攻 v2 的 next.share 表 -> skills/lib/dufu-offense-table.js（重训/改前缀表后跑一次）
+uv run python $D/s5_offense_table.py
 # 录像 -> data/moveid[/p1]/live/video、bars、对拍截图；--delete 只删这些轮次
 uv run --with opencv-python-headless python $D/s5_pull.py [--delete]
 # 每帧光色（顺序 2 的分类器，全帧）
@@ -138,6 +140,9 @@ MOVEID_PHASE=1 uv run python $D/loop.py run --n 16 --tag gate3 --batch 8 \
   --args '{"mode":"defend","provider":"qnn","model":"dufu1b"}'
 MOVEID_PHASE=1 uv run python $D/loop.py ab --n 12 --tag ab_attack \
   --alt '[{"attack":false,"model":"dufu1b"},{"attack":true,"model":"dufu1b"}]'
+# 进攻 v2：默认 off，A/B 只切 offense；gate 自动按 offense 分组
+MOVEID_PHASE=1 uv run python $D/loop.py ab --n 16 --tag off_stage1 --ms 600000 \
+  --alt '[{"offense":"off","model":"dufu1b"},{"offense":"v2","model":"dufu1b"}]'
 MOVEID_PHASE=1 uv run python $D/loop.py ingest --tag gate3
 MOVEID_PHASE=1 uv run python $D/loop.py gate --tag gate3
 MOVEID_PHASE=1 uv run python $D/loop.py train --tag live_b --live r... --val r...
@@ -146,7 +151,7 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 
 - `run` / `ab`：每局前如果是接着打（上一局 `time`），先跑一局不录像、不建 round 目录的 `shadow` 让 boss 把角色打死；下一局 `dufu_enter` 就是满血 fresh。开始前临时关掉 `AutoPickup`、`DismissIdleSlideshow`、`CloseItemTip`，结束时恢复原来的 `off` 列表。
 - `ingest`：`s5_pull --delete`（校验大小 / 字节样本 / 逐帧解码后才删 Pad）→ `s5_color` → `s5_analyze`；`--batch N` 每 N 局自动 ingest。
-- `gate`：`s5_ab`（按 `attack` 分组）+ 按局表；`report` 出 markdown。manifest 是 `live/loop_<tag>.json`，gate 是 `loop_<tag>_gate.json`。
+- `gate`：`s5_ab` 按 manifest 的开关自动分组（`offense` / legacy `attack` / `run`，`--by` 可覆盖）+ 按局表；`report` 出 markdown。manifest 是 `live/loop_<tag>.json`，gate 是 `loop_<tag>_gate.json`。
 - `train`：`s5_retrain cache → train → eval`，`s4_export --out model/dufu<PHASE>_<tag>`，只推这个模型目录，不覆盖正在用的 champion。擂台用 `ab --alt [{"model":"a"},{"model":"b"}]`。
 
 ## 当前模型与产物

@@ -12,7 +12,7 @@
 
 ## 2. 已定决策（2026-11-01 用户确认）
 
-1. **阶段一允许在安全长窗切横刀**：陌刀默认；长窗切横刀打 `light` / `follow`，短窗/防守回陌刀。金光闪、红光卸、幕布、火球雨规则不变。
+1. **阶段一允许在安全长窗切横刀**：陌刀默认；长窗切横刀打 `light` / `follow`，短窗/防守回陌刀（首版暂不回切，见 §10）。金光闪、红光卸、幕布、火球雨规则不变。
 2. **Gate 两段式**：先 8 对 8、10 分钟/局 A/B；过了再 8 局击杀确认（20 分钟上限）。
 3. **阶段二放在阶段一之后**：阶段二没有进攻 A/B，不能把阶段一 TTK 直接套过去。
 
@@ -82,7 +82,7 @@ OOF 在接触前 30 帧仍给 21–26% 的“空窗”，真值是 0；live trac
   - 阶段一：幕布 c18+6/c5+6、抓取、气竭按钮；无红光。
   - 阶段二：火球雨 c7 链尾 +10、金光火球两发之间禁止、气竭按钮、无幕布。
 - 武器包：
-  - 阶段一：陌刀默认；长窗切横刀打 light/follow，短窗/防守回陌刀。
+  - 阶段一：陌刀默认；长窗切横刀打 light/follow，短窗/防守回陌刀（首版暂不回切，见 §10）。
   - 阶段二：横刀原生 light/follow/qishu/execute/整套。
 
 ## 5. 调度
@@ -105,7 +105,7 @@ can_attack(action):
 
 - 长窗优先级：`execute` > `qishu`（火球雨尾/ok 低 share 长窗）> `light`（短窗）> `follow`（蓝盘）> `整套`（阶段转换）> `charge`（攒气，可选）。
 - `P(empty)` 用离线经验表/组表查，不靠 tte。
-- 阶段一武器 stance：切横刀前先确认窗口足够长（至少够 light 42f 或 follow 61f 的 q），一次切换尽量打多个动作；防守/短窗回陌刀。不要每个动作都切。
+- 阶段一武器 stance：切横刀前先确认窗口足够长（至少够 light 42f 或 follow 61f 的 q），一次切换尽量打多个动作；防守/短窗回陌刀（首版暂不回切，见 §10）。不要每个动作都切。
 - 处决按钮窗优先 execute；没有按钮只 light。`qishu` 只在长窗；`整套` 只在阶段转换/开场；`charge` 只攒气。
 
 ## 6. 开关与日志
@@ -153,3 +153,20 @@ can_attack(action):
 - 遇到幕布/抓取特殊机制、Stage 1 安全不过、Stage 2 gate 失败：停下来问用户，不自动降级。
 - 进攻默认关；只有 Stage 1/2 都过才考虑改默认。
 - 每批结束用 `contacts.json`/`result.json` 独立复算，不只看 `s5_ab`。
+
+## 10. 首版实现状态（2026-11-01）
+
+已落地、未上机：
+
+- 新 `skills/lib/dufu-offense.js`（纯决策）+ `dufu-offense-table.js`（`next.share` 编译表）；`dufu2.js` 的 `args.offense: "v2"` 接线、contact 3 动作、trace 10 列、`result.offense` 日志；`args.offense` 默认 `"off"`，legacy `args.attack` 保留。
+- 工具：`s5_offense_table.py` 重新生成 `next.share`；`s5_push.py` 已把两个新 lib 加入推送清单；`loop.py gate` 自动按 `offense` / legacy `attack` / `run` 分组。
+- 测试：`pytest` 39 passed；`dufu2_scheduler` 28 条；`dufu_offense` 12 条；固定基线 `4c80b3c` 的 `offense:"off"` 对拍 12/12 场景逐条一致。
+- 首版边界（有意保留）：
+  - T4 `set` 只有接口，`dufu2` 恒传 `allow.set=false`；T5 `charge` 默认关，启用时才在陌刀窗口优先于切刀轻击。
+  - 幕布 v1 **整段 `inCurtain` 封锁**，设计里的 c18+6 轻击窗暂缓；Stage 1 先看伤害是否够。
+  - 阶段一首次切横刀后**不回切陌刀**；charge/set 默认关，回切只多 24 f 风险，若要严格回切再加状态机。
+  - near 门沿用 legacy `dufu2` 的 **1500 ms**（不是旧 `dufu.js` 的 3 s）；ok / boss 血条下降刷新。
+  - trace `range` 是 near 门代理 0/1，不是真实距离；`lock` 是锁图标。
+  - 开场奇术按旧 `qsTick` 放行（boss 血条已出现、无 contact、15 s 内，P(empty70)=1）；可能远距离空放，Stage 1 观察。
+  - 处决按钮 4 Hz 读取（最多 250 ms 延迟）；切刀 pending 在 3 s / 新 contact / 特殊窗 / near 过期时取消。
+- 下一步：push 新 lib 到 Pad → 6 分钟单局 smoke → Stage 1 8 对 8、10 分钟/局。

@@ -1,5 +1,6 @@
-"""Order 5: push only dufu2's files to the app (skills/dufu2.js + both move tables; --model: the phase's model dir),
-after checking the Pad is idle (no task / skill, not recording, no remote viewer). Other local changes stay local.
+"""Order 5: push only dufu2's files to the app (skills/dufu2.js + both move tables + the offense engine; --model: the
+phase's model dir), after checking the Pad is idle (no task / skill, not recording, no remote viewer). Other local
+changes stay local.
 
     uv run python workspaces/WhereWindsMeet/tools/dufu_moveid/s5_push.py [--model] [--dry]
 """
@@ -22,7 +23,8 @@ from npu_bench import idle  # noqa: E402
 
 WS = "WhereWindsMeet"
 ROOT = REPO / "workspaces"
-FILES = ["skills/dufu2.js", "skills/lib/dufu1-table.js", "skills/lib/dufu2-table.js"]
+FILES = ["skills/dufu2.js", "skills/lib/dufu1-table.js", "skills/lib/dufu2-table.js",
+         "skills/lib/dufu-offense.js", "skills/lib/dufu-offense-table.js"]
 MODELS = ["model/dufu1"] if PHASE == 1 else ["model/dufu2", "model/dufu2b"]
 if PHASE == 1 and (ROOT / WS / "model" / "dufu1b").exists():
     MODELS.append("model/dufu1b")   # the live-retrained phase-1 student (s5_retrain.py), once exported

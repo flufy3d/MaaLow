@@ -133,10 +133,13 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - **Git**：删除已合并的 `dufu-unified`（本地 + 远程）、`refactor/oct26`；提交 4 个派生标签资产（2 个脚本 + 2 个 `s2_labels_p1*.json`），2 个空 `gate0_*_p1.json` 留未跟踪。
 - **Pad**：停掉遗留的 `zhenshou` Skill；5 个 10-23 旧录像、`guards off=[]`、viewers 0。
 
-## 2026-11-01 进攻 v2 设计
+## 2026-11-01 进攻 v2 设计与首版实现
 
-- 用户确认：阶段一允许在安全长窗切横刀（陌刀默认、短窗/防守回陌刀）；Gate 两段式；阶段二放到阶段一之后。
+- 用户确认：阶段一允许在安全长窗切横刀（陌刀默认、长窗横刀、短窗/防守回陌刀——首版暂不回切）；Gate 两段式；阶段二放到阶段一之后。
 - 离线分析（30 fps 修正）：tte 不能当进攻门；`charge` 基本不打 HP；`strike` 只能作整套收尾，整套净 HP 中位 1.14 px；可用输出是 execute / qishu / light / follow。总血量中位 2 条 × 381 px；当前 10 分钟约 21%，现实保守 TTK 16.9 分钟。
+- 首版实现已落地、默认关：`lib/dufu-offense.js` + `dufu-offense-table.js`、`dufu2.js` 的 `args.offense:"v2"`、trace 10 列、`result.offense`、`loop.py gate` 按 offense 分组、`s5_push.py` 推送新 lib。
+- 测试：pytest 39 passed；`dufu2_scheduler` 28 条；`dufu_offense` 12 条；固定基线 `4c80b3c` 的 `offense:"off"` 对拍 12/12 逐条一致。
+- 首版边界：T4/T5 只有接口；幕布整段封锁（c18+6 窗暂缓）；阶段一切横刀后不回切；near 1500 ms；`range` 是 near 代理不是距离；开场奇术放行。
 - Gate：Stage 1 = 8 对 8、10 分钟/局，安全线（挨打/分 ≤1.5、致命 ≥90%、金 ≤3%）+ 10 分钟 ≥1 条血（381 px）；Stage 2 = 8 局击杀确认，TTK 中位 ≤20 分钟（15 分钟 stretch，至少 6/8 击杀）。
 - 调度、动作表、日志和停止条件见 [dufu-offense-design.md](dufu-offense-design.md)。
 

@@ -4,6 +4,8 @@
         --args '{"mode":"defend","provider":"qnn","model":"dufu1b"}'
     # phase 1 now defaults to the finalized config: parryLead 10, curtainGap false, curtain2 true (chain11 removed).
     MOVEID_PHASE=1 uv run python .../loop.py ab --n 12 --tag ab_attack --alt '[{"attack":false},{"attack":true}]'
+    MOVEID_PHASE=1 uv run python .../loop.py ab --n 16 --tag ab_offense --ms 600000 \
+        --alt '[{"mode":"defend","offense":"off"},{"mode":"defend","offense":"v2"}]'
     MOVEID_PHASE=1 uv run python .../loop.py ingest --tag gate3
     MOVEID_PHASE=1 uv run python .../loop.py gate --tag gate3
 
@@ -12,7 +14,8 @@ dir) lets the boss kill the character first; then one dufu_rounds round (record 
 switched off for the test and restored (the original off list) in the finally. The manifest is live/loop_<tag>.json.
 `ab`: the same, with the args' list alternated per round (dufu_rounds --alt).
 `ingest`: s5_pull --delete (verify + bars) -> s5_color -> s5_analyze on the manifest's rounds.
-`gate`: s5_ab by attack + the per-round table (hits/min, fatal rate, gold), writes live/loop_<tag>_gate.json.
+`gate`: s5_ab grouped by the manifest's own switch (offense when any round sets it, else the legacy attack; `--by`
+overrides) + the per-round table (hits/min, fatal rate, gold), writes live/loop_<tag>_gate.json.
 """
 from __future__ import annotations
 
@@ -198,18 +201,31 @@ def ingest(m: dict) -> None:
         raise SystemExit("s5_analyze failed")
 
 
-def gate(tag: str) -> None:
+def gate(tag: str, by: str | None = None) -> None:
     m = load_manifest(tag)
     rounds = [x["round"] for x in m["rounds"]]
     if not rounds:
         raise SystemExit("no rounds in the manifest")
+    key = by or by_key(m)
     out = LIVE / f"loop_{tag}_gate.json"
-    if py(D / "s5_ab.py", *rounds, "--by", "attack", "--out", str(out)) != 0:
+    print(f"gate {tag}: s5_ab --by {key}", flush=True)
+    if py(D / "s5_ab.py", *rounds, "--by", key, "--out", str(out)) != 0:
         raise SystemExit("s5_ab failed")
     g = json.loads(out.read_text(encoding="utf-8"))
     print(json.dumps({k: {kk: v[kk] for kk in ("fatal_without_unverified", "fatal_with_unverified", "gold_parried",
                                                "why_fatal", "hits_per_min", "by_round_counts") if kk in v}
                       for k, v in g.items()}, ensure_ascii=False, indent=1))
+
+
+def by_key(m: dict) -> str:
+    """The switch the manifest's A/B grouped on: `offense` when any round sets it (v2, 2026-11-01), else the legacy
+    `attack` (old manifests), else s5_ab's own default (`run`). Old gate files keep their meaning: nothing is mixed."""
+    args = [x.get("args") or {} for x in m.get("rounds", [])]
+    if any("offense" in a for a in args):
+        return "offense"
+    if any("attack" in a for a in args):
+        return "attack"
+    return "run"
 
 
 def train(tag: str, live: list[str], val: list[str], base: str = "final", epochs: int = 2, lr: float = 3e-4,
@@ -283,6 +299,7 @@ def main() -> None:
     i.add_argument("--tag", required=True)
     g = sub.add_parser("gate")
     g.add_argument("--tag", required=True)
+    g.add_argument("--by", default=None, help="s5_ab grouping key (default: the manifest's own switch: offense / attack / run)")
     t = sub.add_parser("train")
     t.add_argument("--tag", required=True)
     t.add_argument("--live", nargs="+", required=True)
@@ -301,7 +318,7 @@ def main() -> None:
     elif o.cmd == "ingest":
         ingest(load_manifest(o.tag))
     elif o.cmd == "gate":
-        gate(o.tag)
+        gate(o.tag, o.by)
     elif o.cmd == "train":
         print(train(o.tag, o.live, o.val, o.base, o.epochs, o.lr, o.live_rep))
     elif o.cmd == "report":
