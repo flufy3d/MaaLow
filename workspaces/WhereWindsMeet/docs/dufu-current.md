@@ -189,6 +189,14 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - 可行动上界（每拍 truth_resp + 默认 lead/冷却）：c11 **73/98 拍可排（74.5%）**，整链全可排 **9/29**；主要损失是 k2 dodge 与 k0 dodge 的 500 ms 冷却冲突（fast 档 k0→k2 只隔 10–11 帧）。
 - **结论：c11 的杠杆在链内第 2/3 拍，不在第一下。** 阶段 B 优先预排 k1 parry + k2 dodge，并处理 k0 dodge 占用的 500 ms 冷却；离线覆盖达标后再上机。未改任何默认、未上机。
 
+## 2026-11-01 阶段 B：c11 序列防守原型（arg-gated，未上机）
+
+- 实现 `args.seqDefense`（默认 false；只对阶段一 `defend` 生效）。开启时是 S 方案：识别到 `k0:*c11*` 金光 opener 后**跳过 k0 dodge**，按表预排第一下 `k1:*c11*` 的 **parry**（`Tc1 = Tc0 + 15` 帧，按下 `Tc1 - parryLead` = k0+5 帧），k2 由头的 `k2:*c11*` 预测在 `Tc2 - dodgeLead` 帧按 **dodge**。计划按键走现有 `canPress`/`press`，被喝药/冷却挡住就重试到 `Tc + LATE_F` 后记 skip；计划期 `decide()` 对 k0 和欠着的 k1/k2 返回 null，skip 的拍交还通用路径。`SEQ_MAX_F=45`、`SEQ_CD_F=30`。
+- **为什么 k1 用 +15 而不是 +10**：28 个首拍 k0 的 episode 里，第一个 `k1:*c11*` 组的累计 offset 是 `[9..20]`，**中位 15**；+10 往往是第二拍 k0。固定 +10 对中位 k1 会按早 15 帧；+15 给真实 k1 的提前量是 4–15 帧（中位 10）。真实 trace 里头只在 k0 时刻才叫 k1（med 4–6），等头叫 k1 再按必然太晚，所以 k1 必须用表预排。
+- 测试：`tests/dufu2_scenarios.mjs` 加 slow（k1 +10、k2 +21）与 fast（k1 +9、k2 +15）两档；`seqDefense:true` 均发 2 个 seq 键、无 k0 dodge；`false` 与基线逐条一致（off parity 15/15）。`node tests/dufu2_scheduler.mjs` 40/40；`uv run pytest -q` 48 passed。
+- 离线覆盖（`seq_coverage.py`，c11-only 32 条 / 95 拍，可触发 29 条 / 90 拍）：首个 k1 组 **22/29**，k1 offset 中位 15、计划提前 4–15（中位 10）；k2 组只有 **3/29**（其余第三拍多是 k1，不是 k2）；直接目标 **25/95 = 26.3%** 接触；至少一个计划拍的序列 **23/29 = 79.3%**，按“每计划拍省 1 下”算每条序列命中下降中位 **33.3%**（20–66.7%）。直接接触口径低于 30%，但按序列口径过线；k1 parry 是否能打断后续 k1 要靠 2 对 2 实测。
+- 阶段 C 入口：`loop.py by_key` 新增 `offense,seqDefense`；`c11_chain.py` 的 arm 标签在 args 有 `seqDefense` 时追加该键，旧局标签不变。**尚未上机、未改默认**。
+
 ## 历史
 
 - 方案设计（为什么换 / 目标 / 核心思路 / 运行时 / 模型 / 关卡 / 约束 / 顺序）：[dufu-moveid-plan.md](dufu-moveid-plan.md)

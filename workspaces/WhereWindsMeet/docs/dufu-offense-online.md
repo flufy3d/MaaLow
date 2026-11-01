@@ -168,10 +168,12 @@ else: 按下
   2. 没有 k0 闪避成功的证据：29 个 c11 episode 中 28 个首拍 k0 hit，3 个 k1 开头的 episode（c11-only）也没有 k0:c11 覆盖按键；按键级 151 条 k0:c11 dodge 中 real 23 条实际提前中位 1.0 帧（lead=5 子集 0.8，lead=14 子集 12.2–18.3），失败是太晚或太早，不是没按。
   3. c11 index 1/2 共 52 拍、ok=0；intended 里 k1 parry 中位提前 0.4 帧、k2 dodge 0.3 帧，均太晚。对照全部 episode index 1/2 的 ok 率 73.5%/78.2%，ok 由 parry 支撑（intended actual lead 中位 7.5）。
 - **可行动上界**：按每拍 truth_resp + 默认 lead/冷却，c11 73/98 拍可排（74.5%），整链 9/29；主要损失是 k2 dodge 与 k0 dodge 的 500 ms 冷却冲突（fast 档 k0→k2 只隔 10–11 帧）。
-- **阶段 B 候选（未实施）**：
-  - **S（推荐）**：识别到 k0:c11 后跳过 k0 dodge（数据上 k0 dodge 从未盖住），预排 **k1 parry（offset1−10）** + **k2 dodge（offset2−5）**。离线覆盖上界：k1 27/27、k2 25/25，至少一拍 27/29、两拍 25/29（未计 episode 外冷却）。
-  - **K（保守）**：保留 k0 dodge，再预排 k1 parry + k2 dodge；k1 parry 需越过 `armed.dodge` 的 6 帧 GRACE 阻挡，k2 dodge 在 fast 档与 k0 dodge 冷却冲突（仅 11/25 可排），三拍全排 11/29。
-  - 两者都 arg-gated（`args.seqDefense`，默认 false），不改 `off` 行为；先在 `tests/dufu2_scenarios.mjs` 用 k0 1500 / k1 1510 / k2 1521 验证至少 2 个正确按键，再用 `episodes.json` 复核覆盖，不达标不上机。
+- **阶段 B 原型（已实现，arg-gated，未上机）**：
+  - **S（已实现）**：识别到 `k0:*c11*` 金光 opener 后跳过 k0 dodge；第一下 `k1:*c11*` 用表响应 **parry**，`Tc1 = Tc0 + 15` 帧、按下 `Tc1 - parryLead` = k0+5 帧；`k2:*c11*` 由头的预测在 `Tc2 - dodgeLead` 帧按 **dodge**。`args.seqDefense` 默认 false，只对阶段一 defend 生效；计划按键走 `canPress`/`press`，不绕冷却，skip 的拍交还通用路径。
+  - **为什么 +15**：28 个首拍 k0 的 c11 episode 里，第一个 `k1:*c11*` offset 中位 **15**（范围 9–20）；+10 通常是第二拍 k0。固定 +10 对中位 k1 按早 15 帧；+15 给真实 k1 的提前量 4–15 帧（中位 10）。真实 trace 里头只在 k0 时刻才叫 k1（med 4–6），不能等头。
+  - **离线覆盖**（`seq_coverage.py`）：c11-only 32 条 / 95 拍，可触发 29 条；首个 k1 组 **22/29**，k2 组只有 **3/29**（其余第三拍多是 k1）；直接目标 **25/95 = 26.3%** 接触，至少一个计划拍的序列 **23/29 = 79.3%**，每条序列命中下降中位 **33.3%**（20–66.7%）。按序列口径过 30%，直接接触口径不过；2 对 2 若没有 ≥30% 的 c11 命中/序列下降，优先补第二拍 k1，而不是改默认。
+  - **测试**：slow（k1 +10、k2 +21）与 fast（k1 +9、k2 +15）两档，`seqDefense:true` 均发 2 个 seq 键、无 k0 dodge；`false` 与基线逐条一致（off parity 15/15）。`dufu2_scheduler` 40/40、pytest 48 passed。
+  - **K（未实现）**：保留 k0 dodge 的保守变体；fast 档 k2 与 k0 dodge 的 500 ms 冷却冲突，离线覆盖明显低于 S，不采用。
 
 ## 6. M2：学习型动作排序（M1 稳定后）
 

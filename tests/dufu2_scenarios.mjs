@@ -7,6 +7,25 @@ export const FINAL_P1 = { phase: 1, model: "dufu1b", parryLead: 10, curtainGap: 
 
 const p1Contact = (gid, c, opts = {}) => ({ head: timeline({ phase: 1, gid, contacts: [c], ...opts }) });
 
+/** c11Chain's contact times (ms since t0): k0 1500, k1 = k0 + 10 frames, k2 = k0 + 21 frames — the episode table's slow
+ *  main档 (i1 median 9 / p75 11, i2 median 15 -> 21 from k0). The scheduler test checks the planned presses against them. */
+export const C11_CHAIN = { c0: 1500, c1: 1500 + 10 * frameMs, c2: 1500 + 21 * frameMs };
+/** c11ChainFast: the real fast档 (k1 = k0 + 9 frames, k2 = k0 + 15 — the episode table's min first-k1 offset, not the
+ *  old +5/+10 guess); the S plan must still get both beats out. */
+export const C11_CHAIN_FAST = { c0: 1500, c1: 1500 + 9 * frameMs, c2: 1500 + 15 * frameMs };
+
+/** The c11 chain's fake world: k0 (gid 7, gold opener) -> k1 (gid 21, parry) -> k2 (gid 35, dodge), each named from 12
+ *  frames before its contact to 2 frames after (checked in that order), and each contact is a hit (hp 1.0 -> 0.4). */
+const c11ChainWorld = (c0, c1, c2) => ({
+    head: (t) => {
+        if (t >= c0 - 12 * frameMs && t <= c0 + 2 * frameMs) return { gid: 7, med: Math.round((c0 - t) / frameMs), col: 0, resp: 1 };
+        if (t >= c1 - 12 * frameMs && t <= c1 + 2 * frameMs) return { gid: 21, med: Math.round((c1 - t) / frameMs), col: 2, resp: 1 };
+        if (t >= c2 - 12 * frameMs && t <= c2 + 2 * frameMs) return { gid: 35, med: Math.round((c2 - t) / frameMs), col: 2, resp: 0 };
+        return { gid: 97, med: 46, col: 2, resp: 2 };
+    },
+    hp: (t) => (t >= c2 ? 0.4 : t >= c1 ? 0.6 : t >= c0 ? 0.8 : 1), // three hits: k0, k1, k2
+});
+
 /** The boss bar steps 300 -> 290 at t0: two low samples ~500 ms later open the legacy near gate (lastDropAt). */
 const bossDrop = (t0) => (t) => (t >= t0 ? 290 : 300);
 
@@ -32,6 +51,22 @@ export const SCENARIOS = {
     c11Gold() {
         // k0:c11+c15+c23 (phase-1 gid 7): the gold c11 opener; the table's dodge lead is 14, the live global is 5
         return { phase: 1, mode: "defend", fightMs: 3000, args: {}, scenario: p1Contact(7, 1500, { col: 0, resp: 1 }) };
+    },
+    c11Chain() {
+        // The phase-1 c11 chain on the slow main档: k0 1500 / +10 f / +21 f (the episode table's i1 median 9, i2 15 ->
+        // 21 from k0; the task's k1 1510 / k2 1521 are FRAME numbers). The fake world's clock is ms, so the contacts are
+        // 1500 + 10 / 21 frames (@see C11_CHAIN). k0 is the gold opener (gid 7), k1 the table's parry (gid 21), k2 the
+        // unparryable 闪避 (gid 35) with the resp head's dodge. The scenario keeps the default args (no seqDefense): the
+        // tests override it, so the old-vs-new parity check replays the same scenario with the default off.
+        const { c0, c1, c2 } = C11_CHAIN;
+        return { phase: 1, mode: "defend", fightMs: 3000, args: {}, scenario: c11ChainWorld(c0, c1, c2) };
+    },
+    c11ChainFast() {
+        // The same chain on the real fast档 (k1 = k0 + 9 f, k2 = k0 + 15 f, @see C11_CHAIN_FAST): the S plan's fixed
+        // Tc1 = k0 + 15 f puts the 卸势 at k1 - 4 f, and the head names k2 from k0 + 3 f on, so the 闪避 still comes out
+        // (immediately, k2 - 5 f already past). Default args again, so the parity check replays it with seqDefense off.
+        const { c0, c1, c2 } = C11_CHAIN_FAST;
+        return { phase: 1, mode: "defend", fightMs: 3000, args: {}, scenario: c11ChainWorld(c0, c1, c2) };
     },
     curtainCovered() {
         return { phase: 1, mode: "defend", fightMs: 2500, args: {}, scenario: { curtain: (t) => (t >= 1000 ? "covered" : null) } };

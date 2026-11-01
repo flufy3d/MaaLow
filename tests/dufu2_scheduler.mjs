@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import dufu2 from "../workspaces/WhereWindsMeet/skills/dufu2.js";
 import { POINTS, T0, fightTouches, frameMs, runFake } from "./dufu2_fake.mjs";
-import { SCENARIOS } from "./dufu2_scenarios.mjs";
+import { C11_CHAIN, C11_CHAIN_FAST, SCENARIOS } from "./dufu2_scenarios.mjs";
 
 // Behavioral regression tests for dufu2.js (phases 1 and 2) against a deterministic fake world.
 // The head logits are constructed from the scenario's contact timeline; no model / screenshot is used.
@@ -63,6 +63,67 @@ const tests = {
         const c = run("c11Gold", { c11Lead: 14 });
         const d = dodgeDowns(fightTouches(c.touches, c.t0));
         assert.ok(d.length >= 1 && near(d[0].at, c.t0 + 1500 - 14 * frameMs, 2 * frameMs), `c11Lead dodge at ${d[0]?.at - c.t0}`);
+    },
+    "c11 chain S plan: seqDefense skips k0, then parries k1 and dodges k2"() {
+        // The S plan (args.seqDefense): from the k0:c11 gold opener, k1 is scheduled at the table's fixed k0 + 15 frames
+        // (the real first-k1 offset is +9..+20, median 15), so the 10-frame 卸势 lead lands at k0 + 5 f = k1 - 5 f on
+        // this +10 chain; k2 is taken from the head (k0 + 21 f) and pressed 5 f early. k0 itself is never dodged.
+        const { c0, c1, c2 } = C11_CHAIN;
+        const on = run("c11Chain", { seqDefense: true });
+        const ts = fightTouches(on.touches, on.t0);
+        const ps = parryDowns(ts), ds = dodgeDowns(ts);
+        assert.equal(ps.length, 1, `卸势 taps: ${ps.map((t) => t.at - on.t0)}`);
+        assert.ok(near(ps[0].at, on.t0 + c1 - 5 * frameMs, 2 * frameMs),
+            `k1 卸势 at ${ps[0].at - on.t0} vs ${c1 - 5 * frameMs} (Tc0 + 15 f - 10 f)`);
+        const lead = (c1 - (ps[0].at - on.t0)) / frameMs;
+        assert.ok(lead >= 4 && lead <= 10, `k1 lead ${lead} f outside 4..10`);
+        assert.equal(ds.length, 1, `闪避 taps: ${ds.map((t) => t.at - on.t0)}`);
+        assert.ok(near(ds[0].at, on.t0 + c2 - 5 * frameMs, 2 * frameMs), `k2 闪避 at ${ds[0].at - on.t0} vs ${c2 - 5 * frameMs}`);
+        // k0's own dodge (c0 - 5 f) is the one the plan skips
+        assert.ok(!ds.some((t) => near(t.at, on.t0 + c0 - 5 * frameMs, 2 * frameMs)), `a k0 dodge: ${ds.map((t) => t.at - on.t0)}`);
+        assert.ok(ds[0].at > on.t0 + c1, `the dodge came before the k1 contact: ${ds[0].at - on.t0}`);
+        assert.equal(on.result.seq.plans, 1, JSON.stringify(on.result.seq));
+        assert.equal(on.result.seq.presses, 2);
+        assert.equal(on.result.seq.skips, 0);
+        assert.equal(on.result.seq.cancels, 0);
+        assert.deepEqual(on.result.seq.log.map((r) => r[1]), ["plan", "press", "press"], JSON.stringify(on.result.seq.log));
+        assert.deepEqual(on.result.seq.log.map((r) => r[2]), [0, 1, 2], JSON.stringify(on.result.seq.log));
+        assert.equal(on.result.pressLog.filter(([, , , , , , , , , src]) => src === "seq").length, 2,
+            `pressLog: ${JSON.stringify(on.result.pressLog)}`);
+        // the switch off: the old path, k0's dodge included, and a different press sequence
+        const off = run("c11Chain", { seqDefense: false });
+        const ot = fightTouches(off.touches, off.t0);
+        assert.equal(off.result.seq, null);
+        assert.ok(dodgeDowns(ot).some((t) => near(t.at, off.t0 + c0 - 5 * frameMs, 2 * frameMs)),
+            `no k0 dodge: ${dodgeDowns(ot).map((t) => t.at - off.t0)}`);
+        assert.notDeepEqual(ds.map((t) => t.at), dodgeDowns(ot).map((t) => t.at), "the seq dodge is the default one");
+        assert.notDeepEqual(ps.map((t) => t.at), parryDowns(ot).map((t) => t.at), "the seq 卸势 is the default one");
+    },
+    "c11 chain S plan, fast档: the fixed +15 k1 still lands inside the 4..15 frame window"() {
+        // Real fast档 (k1 = k0 + 9 f, k2 = k0 + 15 f; @see C11_CHAIN_FAST): the fixed Tc1 = k0 + 15 f puts the 卸势 at
+        // k0 + 5 f = k1 - 4 f (inside the 4..15 frame lead the fixed +15 guarantees), and the head names k2 from k0 + 3 f
+        // on, so the 闪避 comes out at once (k2 - 4 f here; the head may be 1-2 f later).
+        const { c0, c1, c2 } = C11_CHAIN_FAST;
+        const { result, touches, t0 } = run("c11ChainFast", { seqDefense: true });
+        const ts = fightTouches(touches, t0);
+        const ps = parryDowns(ts), ds = dodgeDowns(ts);
+        assert.equal(ps.length, 1, `卸势 taps: ${ps.map((t) => t.at - t0)}`);
+        assert.ok(near(ps[0].at, t0 + c1 - 5 * frameMs, 2 * frameMs),
+            `k1 卸势 at ${ps[0].at - t0} vs ${c1 - 5 * frameMs} (Tc0 + 15 f - 10 f)`);
+        const lead = (c1 - (ps[0].at - t0)) / frameMs;
+        assert.ok(lead >= 3.5 && lead <= 15, `k1 lead ${lead} f outside 4..15 (3.5: the 33 ms tick grid)`);
+        assert.equal(ds.length, 1, `闪避 taps: ${ds.map((t) => t.at - t0)}`);
+        assert.ok(near(ds[0].at, t0 + c2 - 5 * frameMs, 3 * frameMs),
+            `k2 闪避 at ${ds[0].at - t0} vs ${c2 - 5 * frameMs} (k2 - 5 f)`);
+        assert.ok(ds[0].at > t0 + c1, `the dodge came before the k1 contact: ${ds[0].at - t0} vs ${c1}`);
+        assert.ok(ds[0].at < t0 + c2, `the dodge came after the k2 contact: ${ds[0].at - t0} vs ${c2}`);
+        assert.ok(!ds.some((t) => near(t.at, t0 + c0 - 5 * frameMs, 2 * frameMs)), `a k0 dodge: ${ds.map((t) => t.at - t0)}`);
+        assert.equal(result.seq.plans, 1, JSON.stringify(result.seq));
+        assert.equal(result.seq.presses, 2, JSON.stringify(result.seq));
+        assert.equal(result.seq.skips, 0, JSON.stringify(result.seq));
+        assert.deepEqual(result.seq.log.map((r) => r[2]), [0, 1, 2], JSON.stringify(result.seq.log));
+        assert.equal(result.pressLog.filter(([, , , , , , , , , src]) => src === "seq").length, 2,
+            `pressLog: ${JSON.stringify(result.pressLog)}`);
     },
     "phase 1: 幕布 covered falls back to one 闪避"() {
         const { result, touches, t0 } = run("curtainCovered");

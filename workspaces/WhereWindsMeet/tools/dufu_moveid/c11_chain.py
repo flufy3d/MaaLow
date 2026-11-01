@@ -48,7 +48,12 @@ def sequences(cs: list[dict]) -> list[list[dict]]:
 
 
 def arm_of(args: dict) -> str:
-    return f"c11Lead={args.get('c11Lead')},offense={args.get('offense', 'off')}"
+    """The A/B arm: c11Lead / offense, plus seqDefense only when the round set it (the S plan, stage C). Rounds without
+    the key keep the old label, so the previous reports stay comparable (`seqDefense=None` is not spelled out)."""
+    arm = f"c11Lead={args.get('c11Lead')}"
+    if "seqDefense" in args:
+        arm += f",seqDefense={args['seqDefense']}"
+    return f"{arm},offense={args.get('offense', 'off')}"
 
 
 def main() -> None:

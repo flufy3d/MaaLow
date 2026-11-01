@@ -45,6 +45,14 @@
 //   ran) or "cpu". phase: 1 | 2 (default 2). Phase 2: model dufu2b, no poison / no curtain, the quest line is not an
 //   end, 跑 / 金光火球窗 / chain on. Phase 1: model dufu1b, poison in prep, 幕布, the quest line's 阶段二 = cleared,
 //   no 跑 / 金光火球窗 / chain, args.curtain2 / args.curtain / args.curtainGap as A/B switches.
+// args.seqDefense (phase 1 defend only, default off): the S plan from the offline c11 episodes
+//   (tools/dufu_moveid/offense_episodes.py): the k0:c11 gold opener starts one plan, k0 itself is not pressed (28 of the
+//   29 episodes' k0 contacts were hits; its dodge was never covered and only spent the 500 ms dodge cooldown k2 needs),
+//   a 卸势 goes for the k1 contact (k0 + SEQ_G1_F = 15 frames; the live head only names k1 at the k0 moment) and a 闪避
+//   for the k2 contact (the head's own k2:*c11 prediction, dodgeLead before it). The plan presses through canPress /
+//   press, so the game cooldowns, `armed` and the potion hold block it like any other press (retried every tick, skipped
+//   after Tc + LATE_F); the plan is canceled SEQ_MAX_F (45) frames after k0 and does not restart within SEQ_CD_F (30).
+//   Phase 2 is not enabled (its k1:c11+c40 is an unparryable 闪避, not a 卸势).
 // Trace: one row per tick (TRACE_COLS), event TRACE_EVENT in chunks of TRACE_CHUNK rows (~25 KB each); run
 //   skills/event_pad.js after fetching them (tools/dufu_rounds.py does). args.pair N (shadow checks): every N-th
 //   tick the screenshot is saved (captures/dufu2_live/<tag>_<n>.png) and event PAIR_EVENT carries the head logits and
@@ -121,6 +129,15 @@ const GOLD_SEQ_F = 150, GOLD_SEQ_BEAT_F = 27, GOLD_SEQ_N = 5, GOLD_SEQ_MIN_F = 8
 // (33 of the 43 fatal k2:c30 failures there had no press at all). Two device contacts 40-58 f apart and the head
 // naming k2:c30 within CHAIN_AFTER_F of the second: a 卸势 is pressed for second + CHAIN_AFTER_F (unless one was).
 const CHAIN_GAP_F = [40, 58], CHAIN_AFTER_F = 34, CHAIN_COVER_F = 8;
+// S plan (args.seqDefense, phase 1; @see seqTick): the c11 chain's beats from the episode table. The 28 episodes whose
+// first beat is k0 put their first k1:*c11 group at +9..+20 frames after k0 (median 15, p25 11 — the table's earlier
+// "+10" is often the second k0, not k1). A fixed +15 gives the real first-beat k1 a 4..15 frame lead (median 10) with
+// the 10-frame 卸势 lead, and the live head only names k1 at the k0 moment (med 4-6), so k1 cannot be taken from the
+// head. k2 is NOT put on that clock (the fast档's k1 is k0 + 9 and its k2 k0 + 15): as soon as k1 is resolved, k2
+// comes from the head's own k2:*c11 prediction. SEQ_MAX_F: the plan's deadline (k2 is ~15 f after k0 in the fast档, 21
+// in the slow one; 45 leaves the press a late frame and the skip). SEQ_CD_F: no new plan for this long after one ends
+// (the same chain's later c11 groups must not start a second one).
+const SEQ_G1_F = 15, SEQ_MAX_F = 45, SEQ_CD_F = 30;
 /** run directions (stick unit vector, y down = away from the locked boss); the sign of x alternates per run */
 /** @type {Record<string, [number, number]>} */
 const RUN_DIRS = { side: [1, 0], diag: [0.7071, 0.7071], back: [0, 1] };
@@ -277,6 +294,10 @@ function argmax(p) {
     return a;
 }
 const r3 = (/** @type {number} */ x) => Math.round(x * 1000) / 1000;
+const r1 = (/** @type {number} */ x) => Math.round(x * 10) / 10;
+/** A c11 chain beat's group name: `k` is "k0:" / "k1:" / "k2:" (the S plan's beats and its skipped opener).
+ *  @param {string | null} name @param {string} k */
+const isSeqBeat = (name, k) => name != null && name.startsWith(k) && name.includes("c11");
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 /** base64 of bytes. @param {ArrayLike<number>} b */
 function b64(b) {
@@ -306,7 +327,7 @@ function f32b64(arrs) {
  *          run?: boolean, runDir?: "side" | "diag" | "back" | ("side" | "diag" | "back")[], goldSeq?: boolean,
  *          model?: string, chain?: boolean, curtain?: boolean, curtainGap?: boolean, curtain2?: boolean, parryLead?: number,
  *          attack?: boolean, offense?: "off" | "v2" | "v3", offenseSet?: boolean, offenseCharge?: boolean,
- *          offenseGateThr?: number, c11Lead?: number,
+ *          offenseGateThr?: number, c11Lead?: number, seqDefense?: boolean,
  *          offenseQ?: {execute?: number, qishu?: number, light?: number, follow?: number, set?: number, charge?: number}}} [args]
  */
 export default function (args = {}) {
@@ -349,6 +370,16 @@ export default function (args = {}) {
     // than the move table's 14 for the k0:c11+c15+c23 opener; a dodge at 14 can still be inside its i-frames for the
     // k1 beat at +5..+6, while a dodge at 5 expires before it. Only the groups whose name has c11 and only dodges.
     const c11Lead = typeof args.c11Lead === "number" ? args.c11Lead : null;
+    // args.seqDefense: the S plan (phase 1 defend only, default off; @see seqTick and the header note)
+    const seqOn = phase === 1 && defend && (args.seqDefense ?? false);
+    // The S plan's keys and leads. k1 uses the phase-1 table's response for k1:c11+c15+c23 (parry; a missing row falls
+    // back to parry), k2 is the unparryable 闪避. The leads are decide()'s own expressions for these groups (phase 1:
+    // 卸势 10, 闪避 5; args.c11Lead still overrides the c11 dodge lead as it does for the opener).
+    const SEQ_K1_NAME = "k1:c11+c15+c23", SEQ_K2_NAME = "k2:c11";
+    const seqK1Kind = /** @type {"parry" | "dodge"} */ (GROUPS[SEQ_K1_NAME]?.response === "dodge" ? "dodge" : "parry");
+    const seqK1Lead = seqK1Kind === "parry" ? parryLead ?? GROUPS[SEQ_K1_NAME]?.parry_lead ?? DEFAULTS.parry_lead
+        : dodgeLead ?? GROUPS[SEQ_K1_NAME]?.dodge_lead ?? DEFAULTS.dodge_lead;
+    const seqK2Lead = c11Lead ?? dodgeLead ?? GROUPS[SEQ_K2_NAME]?.dodge_lead ?? DEFAULTS.dodge_lead;
     // args.run: run from the 火球雨 (phase 2 only, default on, @see runTick); args.runDir: one direction or a list
     // cycled per run (default diag: r036-r071 side 1.58 hits per 火球雨 episode (24), diag 0.64 (14))
     const runOn = phase === 2 && defend && (args.run ?? true);
@@ -537,6 +568,7 @@ export default function (args = {}) {
     } else if (args.offense === "v2") {
         mark("atk2", `offense v2 ignored in ${mode} (defend only)`);
     }
+    if (args.seqDefense && !seqOn) mark("seq", `seqDefense ignored (${phase === 1 ? mode : "phase 2"})`);
 
     // ---- trace
     /** @type {number[][]} */
@@ -631,6 +663,14 @@ export default function (args = {}) {
     const would = { parry: 0, dodge: 0 };
     /** @type {any[]} */
     const pressLog = []; // [t ms, kind, grp, pGold, pDodge, pParry, med, remF, lead, src]
+    // the S plan (args.seqDefense, phase 1; @see seqTick): Tc0 / Tc1 = the k0 / k1 contact times, Tc2 = the head's k2
+    // estimate, k1 / k2 = 0 due / 1 pressed / -1 skipped (once a plan ends, SEQ_CD_F frames of quiet)
+    /** @type {{Tc0: number, Tc1: number, Tc2: number | null, k1: 0 | 1 | -1, k2: 0 | 1 | -1} | null} */
+    let seqPlan = null;
+    let seqCdUntil = 0;
+    const seqN = { plans: 0, presses: 0, skips: 0, cancels: 0 };
+    /** @type {any[]} */
+    const seqLog = []; // [t ms, event, target (0 = the plan / 1 = k1 / 2 = k2), key, Tc ms, remF, grp]; times since start
     /** @type {any[]} */
     const curtain2Log = []; // phase 1 args.curtain2: [t ms, grp, remF, lead]
     /** @type {{shot: number[], pipe: number[], prep: number[], run: number[], inferWall: number[], reads: number[], loop: number[], head: number[]}} */
@@ -798,6 +838,14 @@ export default function (args = {}) {
         const Tc = pred.capT + pred.med * FRAME_MS;
         const remF = (Tc - now) / FRAME_MS;
         const name = pred.grp < IDLE ? GRP_NAMES[pred.grp] : null;
+        // args.seqDefense: the plan owns the c11 chain's beats. The opener (k0:c11) gets no 闪避 from here — offline its
+        // dodge was never covered and its 500 ms cooldown is the k2 beat's. k1 / k2 are the plan's while it still owes
+        // them (k = 0) or has pressed them (k = 1): the fixed Tc1 = k0 + 15 f is later than the head's own k1 window, so
+        // without this the generic path would grab k1 at its 8-frame lead and the plan's press would be blocked by
+        // `armed` until the hit cleared it (a second, late 卸势). A beat the plan skipped (k = -1) stays open to this
+        // path, so a cooldown-blocked plan still leaves the generic fallback.
+        if (seqPlan != null && (isSeqBeat(name, "k0:")
+            || (seqPlan.k1 !== -1 && isSeqBeat(name, "k1:")) || (seqPlan.k2 !== -1 && isSeqBeat(name, "k2:")))) return null;
         // phase-1 grab follow-ups (k*:grab, the gold grab's close-up) cannot be answered: no press at all
         if (phase === 1 && name && name.endsWith(":grab")) return null;
         const row = name ? GROUPS[name] : null;
@@ -844,6 +892,95 @@ export default function (args = {}) {
         if (d.src === "curtain2") curtain2Log.push([now - start, p.grp, Math.round(d.remF * 10) / 10, d.lead]);
         pressLog.push([now - start, d.kind, p.grp, r3(p.col[0]), r3(p.resp[0]), r3(p.resp[1]), p.med, Math.round(d.remF * 10) / 10, d.lead, d.src]);
         return ACT[d.kind];
+    }
+
+    /**
+     * The S plan (args.seqDefense, phase 1 defend only; @see SEQ_G1_F):
+     *   start  the k0:c11 gold opener (P(gold) >= goldDodgeP, a contact time known, k0 not yet LATE_F past) opens one
+     *          plan; Tc0 = the opener's predicted contact, Tc1 = Tc0 + SEQ_G1_F (15: the episodes' first k1:*c11 beat is
+     *          +9..+20 f after k0, median 15, and the live head only names k1 at the k0 moment).
+     *   k1     a 卸势 (the table's response for k1:c11+c15+c23) for Tc1, due at Tc1 - seqK1Lead (the 10-frame lead then
+     *          lands at k0 + 5 f: a 4..15 frame lead on the real k1, median 10).
+     *   k2     as soon as k1 is resolved (pressed or skipped) the head's own k2:*c11 reading gives Tc2 (refreshed every
+     *          tick until the press; the closer readings are the better ones); a 闪避 for it, due at Tc2 - seqK2Lead.
+     *   skip   k0: decide() returns null for the opener while the plan runs (its dodge was never covered offline); k1 / k2
+     *          are the plan's while it still owes or has pressed them, and a beat the plan skipped is left to decide().
+     *   end    both beats resolved -> SEQ_CD_F frames of quiet; past Tc0 + SEQ_MAX_F -> cancel, same quiet.
+     * Every press goes through canPress(now) / press(now): a game cooldown, armed[key] (a press already made for this
+     * contact) or holdUntil (a drink) blocks it — the plan retries on every tick until Tc + LATE_F, then records a skip
+     * and moves on. Nothing bypasses a cooldown or holds a key outside the normal tap / dodge paths, and press() keeps
+     * the armed[key] = Tc bookkeeping (k1 arms Tc1, k2 arms Tc2), so the k1 卸势 is not blocked by k0's 闪避 grace.
+     * @param {number} now @returns {number} an act
+     */
+    function seqTick(now) {
+        const p = curPred();
+        const name = p != null && p.grp < IDLE ? GRP_NAMES[p.grp] : null;
+        if (!seqPlan) {
+            if (now < seqCdUntil || !p || !isSeqBeat(name, "k0:") || p.col[0] < goldDodgeP || p.med >= TTE_NONE) return 0;
+            const Tc0 = p.capT + p.med * FRAME_MS;
+            if ((Tc0 - now) / FRAME_MS < -LATE_F) return 0;
+            seqPlan = { Tc0, Tc1: Tc0 + SEQ_G1_F * FRAME_MS, Tc2: null, k1: 0, k2: 0 };
+            seqN.plans++;
+            seqLog.push([now - start, "plan", 0, "", Math.round(Tc0 - start), r1((Tc0 - now) / FRAME_MS), name]);
+            mark("seq", `plan ${name}: k0 skipped, k1 at +${SEQ_G1_F} f`);
+        }
+        const s = seqPlan;
+        let act = 0;
+        if (s.k1 === 0) {
+            if (now >= s.Tc1 - seqK1Lead * FRAME_MS) {
+                const d = { kind: seqK1Kind, Tc: s.Tc1, remF: (s.Tc1 - now) / FRAME_MS, lead: seqK1Lead, src: "seq" };
+                const why = canPress(d, now);
+                if (!why) {
+                    act = press(d, now); // a halt (the 成功 page) makes tap() fail: leave the beat due and retry
+                    if (act) {
+                        s.k1 = 1;
+                        seqN.presses++;
+                        seqLog.push([now - start, "press", 1, d.kind, Math.round(s.Tc1 - start), r1(d.remF), name]);
+                        mark("seq", `k1 ${d.kind} at ${r1(d.remF)} f`);
+                    }
+                } else if (now > s.Tc1 + LATE_F * FRAME_MS) {
+                    s.k1 = -1;
+                    seqN.skips++;
+                    seqLog.push([now - start, "skip", 1, d.kind, Math.round(s.Tc1 - start), r1(d.remF), why]);
+                    mark("seq", `k1 skipped (${why})`);
+                }
+            }
+        } else if (s.k2 === 0) {
+            // k1 is resolved (pressed or skipped): the k2 beat is taken from the head's own reading, not from the k1
+            // clock. Tc1 is only the assumed k1 time (k0 + 15 f); the fast档's k1 is k0 + 9 f and its k2 k0 + 15 f, so
+            // waiting for now >= Tc1 would already miss k2's lead. Reading k2 as soon as it is named keeps the slow档
+            // (named ~Tc0 + 9 f, pressed at Tc0 + 16 f) and lets the fast档 press as soon as the head names it.
+            if (p && isSeqBeat(name, "k2:") && p.med < TTE_NONE) s.Tc2 = p.capT + p.med * FRAME_MS;
+            if (s.Tc2 != null && now >= s.Tc2 - seqK2Lead * FRAME_MS) {
+                const d = { kind: /** @type {"dodge"} */ ("dodge"), Tc: s.Tc2, remF: (s.Tc2 - now) / FRAME_MS, lead: seqK2Lead, src: "seq" };
+                const why = canPress(d, now);
+                if (!why) {
+                    act = press(d, now);
+                    if (act) {
+                        s.k2 = 1;
+                        seqN.presses++;
+                        seqLog.push([now - start, "press", 2, d.kind, Math.round(s.Tc2 - start), r1(d.remF), name]);
+                        mark("seq", `k2 ${d.kind} at ${r1(d.remF)} f`);
+                    }
+                } else if (now > s.Tc2 + LATE_F * FRAME_MS) {
+                    s.k2 = -1;
+                    seqN.skips++;
+                    seqLog.push([now - start, "skip", 2, d.kind, Math.round(s.Tc2 - start), r1(d.remF), why]);
+                    mark("seq", `k2 skipped (${why})`);
+                }
+            }
+        }
+        if (s.k1 !== 0 && s.k2 !== 0) {
+            seqPlan = null;
+            seqCdUntil = now + SEQ_CD_F * FRAME_MS;
+        } else if (now > s.Tc0 + SEQ_MAX_F * FRAME_MS) {
+            seqN.cancels++;
+            seqLog.push([now - start, "cancel", 0, "", Math.round(s.Tc0 - start), r1((s.Tc0 - now) / FRAME_MS), name]);
+            mark("seq", "cancel (deadline)");
+            seqPlan = null;
+            seqCdUntil = now + SEQ_CD_F * FRAME_MS;
+        }
+        return act;
     }
 
     // ---- run (the 火球雨)
@@ -1732,7 +1869,11 @@ export default function (args = {}) {
             if (armed.dodge != null && now > armed.dodge + GRACE_F * FRAME_MS) armed.dodge = null;
             if (got) armed.parry = armed.dodge = null; // the contact came: the next prediction is a new one
             if (curPred()?.grp === C11_GID) lastC11At = now;
-            if (defend) act = runTick(now);
+            // the S plan's press (args.seqDefense) preempts this tick's generic d press; with the switch off seqAct is 0
+            // and the path is the old one tick for tick
+            const seqAct = seqOn ? seqTick(now) : 0;
+            if (seqAct) act = seqAct;
+            else if (defend) act = runTick(now);
             // one defense decision per tick: the v2 preempt reuses it instead of calling decide() again
             const d = decide(now);
             // 进攻 v2: the 2 s results of earlier actions, then a pending switch / held charge lets go at once
@@ -1740,7 +1881,7 @@ export default function (args = {}) {
             // a charge in progress lets go before a defense press (the old skill's offYield: a held finger restarts it)
             if (atkHold && pred && (pred.med <= 35 || pWithin(25) >= 0.15
                 || pred.col[0] >= goldDodgeP)) atkRelease("defense");
-            if (d && !canPress(d, now)) {
+            if (d && !seqAct && !canPress(d, now)) {
                 wouldAct = ACT[d.kind];
                 if (defend) act = press(d, now) || act;
                 else {
@@ -1851,6 +1992,7 @@ export default function (args = {}) {
         run: runOn ? { dirs: runDirs, runs: runLog } : null,
         goldSeq: goldSeqOn ? goldSeqLog : null,
         chain: chainOn ? chainLog : null,
+        seq: seqOn ? { plans: seqN.plans, presses: seqN.presses, skips: seqN.skips, cancels: seqN.cancels, log: seqLog } : null,
         curtain2: curtain2On ? { presses: curtain2Log.length, log: curtain2Log } : null,
         curtain: curtainOn ? { gap: curtainGap, enters: curtainEnters, dodges: curtainDodges } : null,
         attack: attackOn ? { presses: presses.attack, execs: atkExecs, log: atkLog, weapon } : null,
