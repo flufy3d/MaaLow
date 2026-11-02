@@ -122,7 +122,7 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
 - **阶段一防守**：没有 ≥1pp 的低成本修正；79 个致命失败里 41 个是执行 / 机制（幕布 17、连段硬直 15、按键锁 8、喝药 1），38 个是模型（时机 16、没认出 12、认错 10）。继续调 lead / 阈值 / 历史 `chain11` 不会有量级变化。
 - **阶段二防守**：确认轮剩 257 个致命失败，主要是 k0 无光大组 79、k1 无光组 43、k2 无光组 40、k0:c27 25、火球雨各段合计约 37。
 - **进攻**：按 TTK / boss 掉血速度评估，不能只看 6 分钟 A/B 的 26–46%；防守 gate 不变，进攻保持 opt-in。v2 设计和 gate 见 [dufu-offense-design.md](dufu-offense-design.md)。
-- **c11 防守链**：第一下已改为**闪避**（老师 2026-11-01：金光 k0 只能闪，金光后的第一下也只能闪；k1/k2 未知）。之前 135 次 k1 parry 0 ok 是用错应对；离线 33 个 proven 第一下 episode 里 **21/33** 可排干净第二次 dodge。2 对 2 累计：第一下 **15/15 clean**（r224–r231 两组，fixed Tc0；k0 hit 4、skip 1，true 总挨打偏高）；加 **Tc0 逐帧 refresh** 后 r232–r237 **13/13 clean、k0 hit 1/14**，true **1.55 vs false 2.13 挨打/分**、无死亡。`scriptDefense` 仍 **opt-in 默认 false**；下一步验证 `attack:true` 组合，不设默认。
+- **c11 防守链**：第一下已改为**闪避**（老师 2026-11-01：金光 k0 只能闪，金光后的第一下也只能闪；k1/k2 未知）。累计第一下 **46/46 clean**；防守 refresh true **1.55 vs false 2.13**，进攻+script true **1.81 vs false 2.10**、boss 31.2% vs 27.6%；k0 仍偶发（7/54）。`scriptDefense` 仍 **opt-in 默认 false**；10 分钟 attack+script **time / 44.5% boss 条，未通关**；下一步优先幕布 c5+c18 和 c1 组，不设默认。
 - **gate 口径（2026-11-01 更新）**：当前只跑 **8 对 8、6 分钟/局** 安全 A/B；旧 10 分钟 Stage 1/Stage 2 停用（10 分钟 off 自己 2/3 死亡）。6 分钟安全通过后再做 `offenseQ` 输出 A/B，目标 boss 伤害 ≥30%（stretch 35%），不重训防守。
 - **数据纪律**：录像拉到 PC 逐帧校验后再从 Pad 删；模型 / 阈值改动前后都用同一关 2 口径 16 局 + 按局 bootstrap 报区间。
 
@@ -238,6 +238,22 @@ MOVEID_PHASE=1 uv run python $D/loop.py report --tag gate3
   - **第二组（r228–r231，`scriptK0Lead=5`，fixed Tc0）**：false（r228/r230）**18 hits / 11.58 min = 1.55/min**，致命 **91.7%**，无死亡；true（r229/r231）**26 / 11.58 = 2.25/min**，致命 **89.5%**，r231 **5.79 min 死亡**；c11 第一下 clean **9/9**，k0 hit **2**，c11 seq 2 / 7 hit（false 1 / 5）。**第一下累计 15/15 clean**（两组 6+9，0 c11 contact）；但 k0Lead 5 单独没有压掉 k0 hit，true 总挨打仍高。
   - **第三组（r232–r237，Tc0 逐帧 refresh + `scriptK0Lead=5`）**：false（r232/r234/r236）**37 hits / 17.4 min = 2.13/min**；true（r233/r235/r237）**27 / 17.4 = 1.55/min**；true 第一下 clean **13/13**，k0 hit **1/14 plans**，c11 seq 1 / 5 hit（false 2 / 6），双方无死亡。**这是第一组真正的净收益：true 比 false 少 0.58 挨打/分；k0 refresh 把 k0 hit 从 2/9 降到 1/14。** true 1.55 仍略高于 1.5 门，未设默认。
   - **结论/下一步**：`scriptDefense` 仍**默认 false**（opt-in）；第一下 + k0 refresh 是有效候选。下一步在 6 分钟 2 对 2 里加 `attack:true`，验证“进攻 + c11 防守”是否还能保持 ≤1.5；通过后再谈 8 对 8/通关；不改 `seqDefense`/默认/v2。
+
+### 2026-11-02 c11 + 进攻 2 对 2（`attack:true`）
+
+- **配置**：阶段一、6 分钟/局、`offense:"off"`、`model:"dufu1b"`、`attack:true`；tag `seq_c11_attack_2v2`。false（r238/r240/r242/r244/r246）vs true（r239/r243/r245/r247；r241 因 **boss 卡住不进场**——1 contact / 0 ok——标记 invalid，已用演练场 **再次演练** 重置）。
+- **结果**（`c11_2v2_check.py`，boss dmg 取 trace 的 `boss` 条最大值→最后非零值）：
+  - false（仅进攻）：**61 hits / 29.0 min = 2.10/min**，boss **27.6%**，真值 fatal **35** / 金 **8**，c11 **3 seq / 9 hit**。
+  - true（进攻 + c11 script）：**42 / 23.2 = 1.81/min**，boss **31.2%**，真值 fatal **30** / 金 **6**，c11 **2 seq / 7 hit**；第一下 clean **18/18**，k0 hit **2/20 plans**；双方无死亡。
+- **结论：进攻 + c11 script 是净收益**（少 0.29 挨打/分、boss 伤害更高；c11 hit 9→7，第一下 18/18 clean）。累计第一下 **46/46 clean**（防守两组 15 + refresh 13 + 进攻 18）；k0 仍偶发（refresh 后 4 组累计 7/54，约 13%）。`scriptDefense` 仍 **opt-in 默认 false**。
+
+### 2026-11-02 10 分钟通关尝试（r248，未通关）
+
+- **配置**：阶段一、`ms=600000`、`attack:true`、`scriptDefense:true`、`scriptK0Lead=5`、`offense:"off"`、`model:"dufu1b"`；tag `clear_c11_attack_10m`。
+- **结果**：r248 **time**，9.79 min，**25 hits = 2.55/min**；boss 条从 max 382 到末值 212（**44.5%**）；c11 **1 seq / 3 hit**，第一下 clean **7/7**，k0 hit 1；没有 `cleared`。
+- **boss 条不是线性**：trace 在 ~450 s 从 148 回填到 221（阶段/条切换），44.5% 是末条位置，不是累计伤害；6 分钟进攻+script 平均 31.2%，10 分钟没有通关。
+- **r248 命中分布**：`k0:c5+c18` 3（全 fatal；dodge lead −0.5 / 7.3 / −0.9）、`k0:c1+c2+c4+c9+c17+c19` 3（无按键）、unrecognised 3、c11 3（k0 1 + k1 1 + k0 1）、`k0:c12+c26` 3、`k0:c10+c13` 3、c0 2，其余各 1。下一步优先 **幕布 c5+c18**（3 个 fatal，lead 有太晚/太早）和 c1 组（3 个无按键），不是继续 c11。
+- **状态**：`scriptDefense` 仍默认 false；不设默认、不跑 8 对 8、不改 v2；10 分钟尝试没有通关，不能写成已通关。
 
 ## 历史
 

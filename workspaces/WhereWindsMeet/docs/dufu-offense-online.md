@@ -268,4 +268,4 @@ loop.py ab (v2 vs vN, 6 min) -> ingest -> offense_online.py build -> train -> ev
 | M1.3 v3 | `offense:"v3"` 接线 | `off` 12/12，v2 不变 | **通过** |
 | M1.4 筛选 | 2 对 2、6 分钟 | v3 安全不差于 v2 且输出不明显下降 | **失败/回滚**：v3 2.15 vs v2 3.55 挨打/分，输出 24%/5% vs 39%/39% |
 | M1.5 晋级 | 8 对 8、16 局 | 安全门全过 + 输出 ≥30% | 未跑（筛选失败，按 §9 回滚） |
-| c11 分支脚本 | `move_scripts/c11.json` + `c11_replay.py` + `scriptDefense` | 第一下 2 对 2 | **候选（opt-in）**：Tc0 refresh 后 true 1.55 vs false 2.13 挨打/分、13/13 clean、1/14 k0 hit、无死亡；仍高于 1.5，默认 false，下一步 attack 组合 |
+| c11 分支脚本 | `move_scripts/c11.json` + `c11_replay.py` + `scriptDefense` | 第一下 2 对 2 + 进攻 2 对 2 + 10 分钟 | **候选（opt-in）**：防守 refresh true 1.55 vs false 2.13；进攻 true **1.81 vs 2.10**、boss 31.2% vs 27.6%、第一下 18/18 clean；累计 46/46；10 分钟 44.5% boss 条、2.55 挨打/分、**未通关**；默认 false |

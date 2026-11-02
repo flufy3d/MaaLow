@@ -3,7 +3,8 @@
     MOVEID_PHASE=1 uv run python workspaces/WhereWindsMeet/tools/dufu_moveid/c11_2v2_check.py r220 r221 r222 r223
 
 Reads only live/<round>/contacts.json, args.json and result.json (no s5_ab / s5_analyze import). A round shorter than
-MIN_S is marked invalid (the first 2v2 round died at the arena entrance) and excluded from the arm totals. The c11
+MIN_S is marked invalid (the first 2v2 round died at the arena entrance) and excluded from the arm totals. A round
+with fewer than MIN_CONTACTS truth contacts is a boss-stuck round (r241: 1 contact, 0 oks) and is excluded too. The c11
 sequence definition matches c11_chain.py: truth contacts whose dec.grp contains c11/c40, clustered by gap <= 30 f.
 
 First follow-up: the plan-level `clean first dodge` is the decisive metric. A plan is clean when the k0 press went, the
@@ -11,7 +12,9 @@ opener did not hit and was not skipped, and a first-follow-up press went; any c1
 the first follow-up was not avoided, none means it was dodged. The sequence-level `ff` columns are the old hit-branch
 view (a sequence that starts with a gold k0 hit has its k1/k2 in hitstun, so those contacts are not first-dodge
 failures). The script columns come from result.script (args.scriptDefense); the old seq plan is result.seq. Fatal =
-dec.fatal on a hit; gold = colour "gold" on a hit (raw counts; the safety gate stays s5_ab / gate).
+dec.fatal on a hit; gold = colour "gold" on a hit (raw counts; the safety gate stays s5_ab / gate). `boss_damage` is
+the trace `boss` bar's max -> last nonzero fill; the bar can refill at a phase/bar switch (r248: 148 -> 221), so it is
+the end-bar position, not cumulative damage.
 """
 from __future__ import annotations
 
@@ -27,6 +30,7 @@ from common import OUT  # noqa: E402
 
 LIVE = OUT / "live"
 MIN_S = 60.0
+MIN_CONTACTS = 10  # a boss-stuck round has 0-1 truth contacts; exclude it from the arm totals
 GAP_F = 30
 FRAME_MS = 1000 / 30
 
@@ -63,6 +67,29 @@ def first_followup(seq: list[dict]) -> dict | None:
 def presses(contact: dict, key: str, lo: float, hi: float) -> list[dict]:
     return [p for p in contact.get("presses") or []
             if p.get("key") == key and p.get("lead") is not None and lo <= float(p["lead"]) <= hi]
+
+
+def boss_damage(d: Path) -> float | None:
+    """The boss bar's max -> last nonzero fill (the trace `boss` column); % of the max px removed."""
+    try:
+        chunks = json.loads((d / "trace.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    cols = None
+    rows = []
+    for ch in chunks:
+        cols = ch.get("cols") or cols
+        rows += ch.get("rows") or []
+    if not cols or not rows:
+        return None
+    ix = {c: i for i, c in enumerate(cols)}
+    if "boss" not in ix:
+        return None
+    vals = [float(r[ix["boss"]]) for r in rows if len(r) > ix["boss"] and r[ix["boss"]]]
+    if not vals:
+        return None
+    mx = max(vals)
+    return round(100 * (1 - vals[-1] / mx), 1) if mx else None
 
 
 def main() -> None:
@@ -137,10 +164,12 @@ def main() -> None:
         seq = res.get("seq") or {}
         arm = next((f"{k}={args[k]}" for k in ("scriptDefense", "seqDefense", "c11Lead") if k in args), "default")
         row = {"round": rn, "arm": arm, "reason": res.get("reason"),
-               "fight_s": round(fight_s, 1), "valid": fight_s >= MIN_S,
+               "fight_s": round(fight_s, 1), "stuck": len(truth) < MIN_CONTACTS,
+               "valid": fight_s >= MIN_S and len(truth) >= MIN_CONTACTS,
                "truth": len(truth), "hits": len(hits), "hit_per_min": round(len(hits) / (fight_s / 60), 3) if fight_s else None,
                "fatal": sum(1 for t in hits if (t.get("dec") or {}).get("fatal")),
                "gold": sum(1 for t in hits if t.get("colour") == "gold"),
+               "boss_damage": boss_damage(d),
                "c11_contacts": len(c11), "c11_hits": len(c11h), "c11_seqs": len(seqs),
                "c11_seq_hits": sum(seq_hits), "c11_seq_hit_dist": dict(collections.Counter(seq_hits)),
                "ff_contacts": len(ff), "ff_hits": ff_hits, "ff_dodge": ff_dodge, "ff_parry": ff_parry,
@@ -152,21 +181,25 @@ def main() -> None:
                "script_cancels": script.get("cancels", 0),
                "seq_presses": seq.get("presses", 0), "seq_plans": seq.get("plans", 0)}
         rows.append(row)
-    print("| round | arm | result | min | hits | hits/min | fatal | gold | c11 seq | c11 hits | clean first dodge | k0 hit/skip | script plans/press/first | valid |")
-    print("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|")
+    print("| round | arm | result | min | hits | hits/min | boss dmg | fatal | gold | c11 seq | c11 hits | clean first dodge | k0 hit/skip | script plans/press/first | valid |")
+    print("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|")
     for x in rows:
+        dmg_s = "-" if x["boss_damage"] is None else f"{x['boss_damage']:.1f}%"
         print(f"| {x['round']} | {x['arm']} | {x['reason']} | {x['fight_s']/60:.2f} | {x['hits']} | {x['hit_per_min']} | "
+              f"{dmg_s} | "
               f"{x['fatal']} | {x['gold']} | {x['c11_seqs']} | {x['c11_hits']} | "
               f"{x['clean_dodged']}/{x['clean_attempts']} | {x['k0_hit_plans']}/{x['k0_skip_plans']} | "
               f"{x['script_plans']}/{x['script_presses']}/{x['script_first_presses']} | "
-              f"{'yes' if x['valid'] else 'NO'} |")
+              f"{'yes' if x['valid'] else ('NO (boss stuck)' if x['stuck'] else 'NO')} |")
     for arm in sorted({x["arm"] for x in rows}):
         v = [x for x in rows if x["arm"] == arm and x["valid"]]
         if not v:
             continue
         mins = sum(x["fight_s"] for x in v) / 60
         hits = sum(x["hits"] for x in v)
+        dmg = [x["boss_damage"] for x in v if x["boss_damage"] is not None]
         print(f"\n{arm}: valid rounds {len(v)}, {mins:.1f} min, hits {hits} = {hits / mins:.2f}/min, "
+              f"boss dmg {('-' if not dmg else f'{sum(dmg) / len(dmg):.1f}%')}, "
               f"c11 seqs {sum(x['c11_seqs'] for x in v)}, c11 hits {sum(x['c11_hits'] for x in v)}, "
               f"clean first dodge {sum(x['clean_dodged'] for x in v)}/{sum(x['clean_attempts'] for x in v)}, "
               f"k0 hit/skip {sum(x['k0_hit_plans'] for x in v)}/{sum(x['k0_skip_plans'] for x in v)}, "
